@@ -205,3 +205,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+/ritus-server/static
+ritus-server/secret_user_api_key.py
+/ritus-client/public/data
+/ritus-server/migrations
+/ritus-server/models
+ritus-server/.DS_Store
+.DS_Store
