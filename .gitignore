@@ -218,3 +218,4 @@ ritus-server/=3.0.0
 /ritus-server/uploads
 ritus-client/package-lock.json
 ritus-client/package-lock.json
+/releases

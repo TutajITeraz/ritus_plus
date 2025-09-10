@@ -66,7 +66,7 @@ npm install
 
 ### To build all in one server:
 npm run build 
-cp dist/* ../ritus-server/static/ -r
+cp -r dist/* ../ritus-server/static/
 ```
 
 ### Following commands must be executed in the project directory to compile it from the scratch
