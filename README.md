@@ -53,44 +53,44 @@ user_api_key = "?????????"
 
 
 ritus-server/models/blla.mlmodel 
+(please get if from kraken repository)
 
 
 ### Following commands must be executed in the project directory to compile it from the scratch!
 
 ```
-### Check pip version:
-    pip --version
-# If pip is not installed, install it:
-# Manjaro linux command:
-    pacman -Syu python-pip
-# Ubuntu linux command:
-    sudo apt install Python3-pip
+## Client
+cd ritus-client
+npm install vite
+npm install
 
-# Install pkg-config (Ubuntu):
-    sudo apt install pkg-config
-# Install pkg-config (Manjaro):
-    sudo pamac install pkg-config
+### To build all in one server:
+npm run build 
+cp dist/* ../ritus-server/static/ -r
+```
 
-
-python3 -m venv .venv
-source .venv/bin/activate
+### Following commands must be executed in the project directory to compile it from the scratch
 
 ## Server
-cd ritus-server
-pip install -r requirements.txt
-pip install flask flask-migrate flask-sqlalchemy
-
-flask --app server.py db init
-flask --app server.py db migrate -m "Initial"
-flask --app server.py db upgrade
-
-python server.py
-
-## Client
-npm install vite
-
-# To build all in one server:
-npm run build ; cp dist/* ../ritus-server/static/ -r
-
-# To use 
 ```
+cd ritus-server
+./easy_install_mac.sh 
+```
+
+### To run the server later, use the following command:
+./run_server.sh
+
+### To install required libraries:
+
+### Check pip version:
+    pip --version
+### If pip is not installed, install it:
+#### Manjaro linux command:
+    pacman -Syu python-pip
+#### Ubuntu linux command:
+    sudo apt install Python3-pip
+
+#### Install pkg-config (Ubuntu):
+    sudo apt install pkg-config
+#### Install pkg-config (Manjaro):
+    sudo pamac install pkg-config

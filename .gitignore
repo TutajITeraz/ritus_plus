@@ -212,3 +212,9 @@ ritus-server/secret_user_api_key.py
 /ritus-server/models
 ritus-server/.DS_Store
 .DS_Store
+ritus-client/package-lock.json
+ritus-server/=1.3.0
+ritus-server/=3.0.0
+/ritus-server/uploads
+ritus-client/package-lock.json
+ritus-client/package-lock.json

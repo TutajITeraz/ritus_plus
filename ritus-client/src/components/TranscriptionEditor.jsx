@@ -18,11 +18,11 @@ const TranscriptionEditor = ({
     console.debug("Parsing transcriptionText to HTML:", text);
     const result = text
       ? text
-          .replace(/<red>/gi, "<b>")
-          .replace(/<\/red>/gi, "</b>")
-          .replace(/<func>/gi, "<i>")
-          .replace(/<\/func>/gi, "</i>")
-          .replace(/\n/g, "<br>")
+        .replace(/<red>/gi, "<b>")
+        .replace(/<\/red>/gi, "</b>")
+        .replace(/<func>/gi, "<i>")
+        .replace(/<\/func>/gi, "</i>")
+        .replace(/\n/g, "<br>")
       : '<span style="color: gray;">No transcription available</span>';
     console.debug("Parsed HTML:", result);
     return result;
@@ -50,9 +50,15 @@ const TranscriptionEditor = ({
       "Initializing editor with transcriptionText:",
       transcriptionText
     );
-    editor.innerHTML = parseToHtml(transcriptionText || "");
-    cleanEditor();
-    setLocalContent(parseToTaggedText(editor.innerHTML));
+    const newHtml = parseToHtml(transcriptionText || "");
+    // Normalize for comparison to account for div vs br
+    const normalizedCurrent = editor.innerHTML.replace(/<div>/gi, "<br>").replace(/<\/div>/gi, "");
+    const normalizedNew = newHtml.replace(/<div>/gi, "<br>").replace(/<\/div>/gi, "");
+    if (normalizedCurrent !== normalizedNew) {
+      editor.innerHTML = newHtml;
+      cleanEditor();
+      setLocalContent(parseToTaggedText(editor.innerHTML));
+    }
   }, [transcriptionText, isDisabled]);
 
   // Prevent default backspace behavior

@@ -313,7 +313,7 @@ const Sidebar = ({
       <Image
         src="/logo.svg"
         alt="Logo"
-        width="100%"
+        width="60%"
         mb={4}
         cursor="pointer"
         onClick={() => navigate("/")}
