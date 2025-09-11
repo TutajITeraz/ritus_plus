@@ -22,7 +22,13 @@ Sometimes function is also assigned as <red> and this need to be fixed by you.
 
 I want you to fix this text and tags. You should use knowledge of known Latin words, phrases and of course prayers, liturgical ceremony, saints etc, to make this text better.
 Use prayers from the critical sources and corpus orationem if you know it.
-If you notice that text is missing or the ending or begging is missing - feel free to add it.
+Your task is to fix the text but do not create new text. You can add one or two words if you are sure that it is missing, but do not create new prayers or long phrases.
+
+You should fix typos, OCR errors, wrong or missing tags. You should fix the grammar and spelling mistakes. 
+Do not change the meaning of the text. Do not change the prayer to another one, do not change the rite to another one. 
+You should fix the structure of the text, like paragraphs, line breaks, punctuation, capitalization, spacing etc.
+Your job is to be an OCR proofreader, not a text editor!
+
 Also you should fix the <red> and <func> tags. You can remove them if you think that algorithm mark them by mistake, you can modify them or add them.
 I want only rite names to be inside <red> tags.
 
