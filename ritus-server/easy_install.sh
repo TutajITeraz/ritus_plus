@@ -109,6 +109,12 @@ run_cmd "kraken get 10.5281/zenodo.10886224"
 print_and_log "Downloading catmus-medieval.mlmodel..."
 run_cmd "kraken get 10.5281/zenodo.12743230"
 
+cp ~/.config/kraken/* ./models/
+
+print_and_log "Downloading and installing Kraken model (blla.mlmodel)..."
+mkdir -p models
+curl -L -o models/blla.mlmodel https://github.com/mittagessen/kraken/raw/refs/heads/main/kraken/blla.mlmodel
+
 # Ask if the user wants to run the server now
 read -p "Do you want to run the Kraken server now? (y/n): " server_choice
 

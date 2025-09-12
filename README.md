@@ -61,12 +61,11 @@ ritus-server/models/blla.mlmodel
 ```
 ## Client
 cd ritus-client
-npm install vite
 npm install
 
 ### To build all in one server:
 npm run build 
-cp -r dist/* ../ritus-server/static/
+cp -r dist ../ritus-server/static
 ```
 
 ### Following commands must be executed in the project directory to compile it from the scratch

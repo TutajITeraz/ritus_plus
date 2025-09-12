@@ -75,7 +75,7 @@ print("-------------")
 # Configuration
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///projects.db"
 app.config["UPLOAD_FOLDER"] = "uploads" #lowercase uploads!
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16MB max upload size
+app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1024MB max upload size
 SERVER_URL = "http://127.0.0.1:5000"
 
 # Initialize db with app
