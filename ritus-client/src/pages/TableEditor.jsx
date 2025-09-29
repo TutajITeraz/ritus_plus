@@ -438,7 +438,7 @@ const TableEditor = () => {
         <Image
           src="/logo.svg"
           alt="Logo"
-          width="300px"
+          height="40px"
           mb={4}
           cursor="pointer"
           onClick={() => navigate("/")}

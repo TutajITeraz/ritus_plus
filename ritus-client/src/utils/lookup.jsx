@@ -12,13 +12,26 @@ USAGE:
 export const parseCSV = (csvText) => {
   csvText = csvText.toLowerCase();
   const lines = csvText.trim().split("\n");
-  const headers = lines[0]
-    .split(",")
+  // Autodetect delimiter: comma or tab
+  const headerLine = lines[0];
+  const commaCount = (headerLine.match(/,/g) || []).length;
+  const tabCount = (headerLine.match(/\t/g) || []).length;
+  const delimiter = tabCount > commaCount ? "\t" : ",";
+
+  const headers = headerLine
+    .split(delimiter)
     .map((header) => header.replace(/^"(.*)"$/, "$1").trim());
+
+  // Build regex for matching values (handles quoted values)
+  const valueRegex =
+    delimiter === ","
+      ? /(".*?"|[^",\s]+)(?=\s*,|\s*$)/g
+      : /(".*?"|[^"\t\s]+)(?=\s*\t|\s*$)/g;
+
   const data = lines.slice(1).map((line) => {
     const values =
       line
-        .match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g)
+        .match(valueRegex)
         ?.map((value) => value.replace(/^"(.*)"$/, "$1").trim()) || [];
     return headers.reduce((obj, header, index) => {
       obj[header] = values[index] || "";
