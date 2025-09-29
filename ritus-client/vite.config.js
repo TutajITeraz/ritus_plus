@@ -10,4 +10,18 @@ export default defineConfig({
       "@": path.resolve(__dirname, "src"),
     },
   },
+  server: {
+    open: true, // Automatycznie otwiera przeglądarkę
+  },
+  // Konfiguracja dla builda
+  build: {
+    rollupOptions: {
+      input: {
+        main: './index.html', // Domyślna wersja
+        tableonly: './index-tableonly.html', // Wersja TableOnly
+      },
+
+      
+    },
+  },
 });

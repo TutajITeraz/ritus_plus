@@ -219,3 +219,4 @@ ritus-server/=3.0.0
 ritus-client/package-lock.json
 ritus-client/package-lock.json
 /releases
+/ritus-client/dist-tableonly

@@ -1,34 +1,39 @@
+
+import sys
+import argparse
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import os
 from PIL import Image as PILImage
 from PIL import ImageFile
-import torch
-from kraken import binarization, rpred, pageseg, blla
-from kraken.lib import vgsl
-from kraken.lib.models import load_any
 import webbrowser
 from threading import Timer, Thread
 import logging
 import json
 from models import db, Project, Image, Content, BatchProcessing
 from batch_analysis import batch_process_project
-
 from image_processing import split_line_boundary_by_color
-
 from ai_tools import gpt_autofix
 from secret_user_api_key import user_api_key
-
 import cv2
 import re
-#import numpy as np
-#import matplotlib.pyplot as plt
-
 from flask_caching import Cache
 from cache_config import cache, init_cache
-
-import os
 import getpass
+
+# Parse --no-kraken option
+parser = argparse.ArgumentParser()
+parser.add_argument('--no-kraken', action='store_true', help='Disable kraken OCR and related routes')
+args, unknown = parser.parse_known_args()
+NO_KRAKEN = args.no_kraken
+
+if not NO_KRAKEN:
+    import torch
+    from kraken import binarization, rpred, pageseg, blla
+    from kraken.lib import vgsl
+    from kraken.lib.models import load_any
+    #import numpy as np
+    #import matplotlib.pyplot as plt
 
 
 def get_model_path(model_name):
@@ -87,94 +92,98 @@ if not os.path.exists(app.config["UPLOAD_FOLDER"]):
 import torch
 
 
-# Kraken configuration
-if torch.cuda.is_available():
-    selected_device = "cuda:0"
-    logger.info("CUDA is available. Using GPU for Kraken models.")
-else:
-    selected_device = "cpu"
-    logger.info("Using CPU for Kraken models (MPS/autocast not supported).")
+
+if not NO_KRAKEN:
+    # Kraken configuration
+    if torch.cuda.is_available():
+        selected_device = "cuda:0"
+        logger.info("CUDA is available. Using GPU for Kraken models.")
+    else:
+        selected_device = "cpu"
+        logger.info("Using CPU for Kraken models (MPS/autocast not supported).")
+
+    logger.info(f"Selected device: {selected_device}")
+
+    MODEL_PATHS = {
+        "Tridis_Medieval_EarlyModern.mlmodel": get_model_path("Tridis_Medieval_EarlyModern.mlmodel"),
+        "cremma-generic-1.0.1.mlmodel": get_model_path("cremma-generic-1.0.1.mlmodel"),
+        "ManuMcFondue.mlmodel": get_model_path("ManuMcFondue.mlmodel"),
+        "catmus-medieval.mlmodel": get_model_path("catmus-medieval.mlmodel"),
+        "blla.mlmodel": get_model_path("blla.mlmodel"),
+    }
+
+    logger.info("Loading models...")
+    baseline_model_path = MODEL_PATHS.get("blla.mlmodel")
+    if not baseline_model_path:
+        raise FileNotFoundError("blla.mlmodel not found in ./models or Application Support/kraken")
+    baseline_model = vgsl.TorchVGSLModel.load_model(baseline_model_path).to(device=selected_device)
+
+    last_ocr_model_name = "Tridis_Medieval_EarlyModern.mlmodel"
+    ocr_model_path = MODEL_PATHS.get(last_ocr_model_name)
+    if not ocr_model_path:
+        raise FileNotFoundError(f"{last_ocr_model_name} not found in ./models or Application Support/kraken")
+    ocr_model = load_any(ocr_model_path, device=selected_device)
+    logger.info("Loading models...DONE")
 
 
-logger.info(f"Selected device: {selected_device}")
+# Only define kraken-dependent functions if not NO_KRAKEN
+if not NO_KRAKEN:
+    def serialize_segmentation(segmentation):
+        serialized_lines = []
+        for line in segmentation:
+            serialized_lines.append({
+                "id": line.id,
+                "baseline": line.baseline,
+                "boundary": line.boundary,
+                "text": line.text,
+                "base_dir": line.base_dir,
+                "type": line.type,
+                "imagename": line.imagename,
+                "tags": line.tags,
+                "split": line.split,
+                "regions": line.regions,
+            })
+        return serialized_lines
 
-MODEL_PATHS = {
-    "Tridis_Medieval_EarlyModern.mlmodel": get_model_path("Tridis_Medieval_EarlyModern.mlmodel"),
-    "cremma-generic-1.0.1.mlmodel": get_model_path("cremma-generic-1.0.1.mlmodel"),
-    "ManuMcFondue.mlmodel": get_model_path("ManuMcFondue.mlmodel"),
-    "catmus-medieval.mlmodel": get_model_path("catmus-medieval.mlmodel"),
-    "blla.mlmodel": get_model_path("blla.mlmodel"),
-}
+    def transcribe_image(image_file, model_name):
+        global baseline_model, last_ocr_model_name, ocr_model, selected_device
+        import time
+        start_time = time.time()
+        model_path = MODEL_PATHS.get(model_name)
+        if not model_path:
+            logger.error(f"Model not found: {model_name}")
+            return "Model not found", 400
 
-logger.info("Loading models...")
-baseline_model_path = MODEL_PATHS.get("blla.mlmodel")
-if not baseline_model_path:
-    raise FileNotFoundError("blla.mlmodel not found in ./models or Application Support/kraken")
-baseline_model = vgsl.TorchVGSLModel.load_model(baseline_model_path).to(device=selected_device)
+        if model_name != last_ocr_model_name:
+            logger.info(f"Loading model: {model_name}")
+            ocr_model = load_any(model_path, device=selected_device)
+            last_ocr_model_name = model_name
 
-last_ocr_model_name = "Tridis_Medieval_EarlyModern.mlmodel"
-ocr_model_path = MODEL_PATHS.get(last_ocr_model_name)
-if not ocr_model_path:
-    raise FileNotFoundError(f"{last_ocr_model_name} not found in ./models or Application Support/kraken")
-ocr_model = load_any(ocr_model_path, device=selected_device)
-logger.info("Loading models...DONE")
+        logger.info("Image processing...")
+        image = PILImage.open(image_file)
+        if image.mode != "L":
+            image = image.convert("L")
 
-# Helper function to serialize Kraken segmentation
-def serialize_segmentation(segmentation):
-    serialized_lines = []
-    for line in segmentation:
-        serialized_lines.append({
-            "id": line.id,
-            "baseline": line.baseline,
-            "boundary": line.boundary,
-            "text": line.text,
-            "base_dir": line.base_dir,
-            "type": line.type,
-            "imagename": line.imagename,
-            "tags": line.tags,
-            "split": line.split,
-            "regions": line.regions,
-        })
-    return serialized_lines
+        logger.info("Baseline segmentation...")
+        seg = blla.segment(image, model=baseline_model, device=selected_device)
+        lines = serialize_segmentation(seg.lines)
 
-def transcribe_image(image_file, model_name):
-    global baseline_model, last_ocr_model_name, ocr_model, selected_device
-    start_time = time.time()
-    model_path = MODEL_PATHS.get(model_name)
-    if not model_path:
-        logger.error(f"Model not found: {model_name}")
-        return "Model not found", 400
+        # black_seg, red_seg = split_seg(seg, image) # Only if split_seg is defined
 
-    if model_name != last_ocr_model_name:
-        logger.info(f"Loading model: {model_name}")
-        ocr_model = load_any(model_path, device=selected_device)
-        last_ocr_model_name = model_name
+        logger.info("LINES:")
+        logger.info(lines)
 
-    logger.info("Image processing...")
-    image = PILImage.open(image_file)
-    if image.mode != "L":
-        image = image.convert("L")
+        logger.info("Recognition...")
+        predictions = rpred.rpred(ocr_model, image, seg)
+        transcribed_text = ""
+        for record in predictions:
+            if len(str(record)) > 2:
+                transcribed_text += str(record) + "\n"
 
-    logger.info("Baseline segmentation...")
-    seg = blla.segment(image, model=baseline_model, device=selected_device)
-    lines = serialize_segmentation(seg.lines)
+        elapsed = time.time() - start_time
+        logger.info(f"Transcription operation took {elapsed:.2f} seconds on device: {selected_device}")
 
-    black_seg, red_seg = split_seg(seg, image)
-
-    logger.info("LINES:")
-    logger.info(lines)
-
-    logger.info("Recognition...")
-    predictions = rpred.rpred(ocr_model, image, seg)
-    transcribed_text = ""
-    for record in predictions:
-        if len(str(record)) > 2:
-            transcribed_text += str(record) + "\n"
-
-    elapsed = time.time() - start_time
-    logger.info(f"Transcription operation took {elapsed:.2f} seconds on device: {selected_device}")
-
-    return {"text": transcribed_text, "lines": lines}
+        return {"text": transcribed_text, "lines": lines}
 
 
 
@@ -851,49 +860,51 @@ def delete_project_content(project_id, content_id):
         logger.error(f"Error in delete_project_content for ID {content_id}: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
 
-# Transcription Routes
-@app.route("/api/transcribe/", methods=["POST"])
-def transcribe():
-    if "croppedImage" not in request.files:
-        logger.error("No image uploaded in transcribe")
-        return jsonify({"status": "error", "text": "No image uploaded"}), 400
-    
-    image_file = request.files["croppedImage"]
-    temp_path = os.path.join(app.config["UPLOAD_FOLDER"], "uploaded.png")
-    image_file.save(temp_path)
-    
-    model_name = request.form.get("modelName", "Tridis_Medieval_EarlyModern.mlmodel")
-    
-    try:
-        transcribed_results = transcribe_image(temp_path, model_name)
-        if isinstance(transcribed_results, tuple):
-            logger.error(f"Error in transcribe: {transcribed_results[0]}")
-            return jsonify({"status": "error", "text": transcribed_results[0]}), transcribed_results[1]
-        logger.info("Transcription successful")
-        return jsonify({"status": "success", "text": transcribed_results["text"], "lines": transcribed_results["lines"]})
-    except Exception as e:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        logger.error(f"Error in transcribe: {str(e)}")
-        return jsonify({"status": "error", "text": str(e)}), 500
 
-@app.route("/api/transcribe/<int:image_id>", methods=["POST"])
-def transcribe_by_id(image_id):
-    model_name = request.form.get("modelName", "Tridis_Medieval_EarlyModern.mlmodel")
-    try:
-        result = transcribe_image_by_id(image_id, model_name)
-        if isinstance(result, tuple):
-            logger.error(f"Error in transcribe_by_id for ID {image_id}: {result[0]}")
-            return jsonify({"status": "error", "message": result[0], "line_count": 0}), result[1]
-        logger.info(f"Transcribed image with ID {image_id}")
-        return jsonify({
-            "status": "success",
-            "message": "Image transcribed and text saved",
-            "line_count": len(result["lines"])
-        })
-    except Exception as e:
-        logger.error(f"Error in transcribe_by_id for ID {image_id}: {str(e)}")
-        return jsonify({"status": "error", "message": str(e), "line_count": 0}), 500
+# Transcription Routes
+if not NO_KRAKEN:
+    @app.route("/api/transcribe/", methods=["POST"])
+    def transcribe():
+        if "croppedImage" not in request.files:
+            logger.error("No image uploaded in transcribe")
+            return jsonify({"status": "error", "text": "No image uploaded"}), 400
+        
+        image_file = request.files["croppedImage"]
+        temp_path = os.path.join(app.config["UPLOAD_FOLDER"], "uploaded.png")
+        image_file.save(temp_path)
+        
+        model_name = request.form.get("modelName", "Tridis_Medieval_EarlyModern.mlmodel")
+        
+        try:
+            transcribed_results = transcribe_image(temp_path, model_name)
+            if isinstance(transcribed_results, tuple):
+                logger.error(f"Error in transcribe: {transcribed_results[0]}")
+                return jsonify({"status": "error", "text": transcribed_results[0]}), transcribed_results[1]
+            logger.info("Transcription successful")
+            return jsonify({"status": "success", "text": transcribed_results["text"], "lines": transcribed_results["lines"]})
+        except Exception as e:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            logger.error(f"Error in transcribe: {str(e)}")
+            return jsonify({"status": "error", "text": str(e)}), 500
+
+    @app.route("/api/transcribe/<int:image_id>", methods=["POST"])
+    def transcribe_by_id(image_id):
+        model_name = request.form.get("modelName", "Tridis_Medieval_EarlyModern.mlmodel")
+        try:
+            result = transcribe_image_by_id(image_id, model_name)
+            if isinstance(result, tuple):
+                logger.error(f"Error in transcribe_by_id for ID {image_id}: {result[0]}")
+                return jsonify({"status": "error", "message": result[0], "line_count": 0}), result[1]
+            logger.info(f"Transcribed image with ID {image_id}")
+            return jsonify({
+                "status": "success",
+                "message": "Image transcribed and text saved",
+                "line_count": len(result["lines"])
+            })
+        except Exception as e:
+            logger.error(f"Error in transcribe_by_id for ID {image_id}: {str(e)}")
+            return jsonify({"status": "error", "message": str(e), "line_count": 0}), 500
 
 # Static File Serving
 @app.route("/project/<path:path>")

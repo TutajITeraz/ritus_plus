@@ -465,6 +465,7 @@ def batch_process_project(project_id, similarity_threshold, phrases_csv="static/
                 result["check_again"] = "1"
 
         # Iterative refinement for rites
+        """
         new_results = []
         changes = len(results)
         passes_cntr = 0
@@ -478,6 +479,7 @@ def batch_process_project(project_id, similarity_threshold, phrases_csv="static/
             passes_cntr += 1
             changes = len(new_results) - len(results)
             results = new_results.copy()
+        """
 
         # Reassign data
         results = reassign_data(results, text_tokens_refined)

@@ -93,3 +93,15 @@ cd ritus-server
     sudo apt install pkg-config
 #### Install pkg-config (Manjaro):
     sudo pamac install pkg-config
+
+
+## For the table only (no transcription ) version run:
+npm run build:tableonly
+npm run preview:tableonly
+
+### And visit:
+http://localhost:4173/index-tableonly.html
+
+### Fast server run, without OCR:
+python krakenServer.py --no-kraken
+
