@@ -1448,7 +1448,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
   }, [selectItems]);
 
   return (
-    <ErrorBoundary>
+    //<ErrorBoundary>
       <VStack width="full" gap="5" alignItems="start">
         <HStack mb={2}>
           <Button onClick={handleSave} colorPalette="gray">
@@ -1767,7 +1767,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             </Dialog.Root>
           )}
         </HStack>
-        <ErrorBoundary>
+        {/*<ErrorBoundary>*/}
           <div
             style={{
               height: "calc(100vh - 220px)",
@@ -1846,7 +1846,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
               aria-label="Data Table"
             />
           </div>
-        </ErrorBoundary>
+        {/*</ErrorBoundary>*/}
         <ActionBar.Root open={selectedRows.size > 0}>
           <Portal>
             <ActionBar.Positioner sx={{ zIndex: 1000 }}>
@@ -1948,7 +1948,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           />
         )}
       </VStack>
-    </ErrorBoundary>
+    //</ErrorBoundary>
   );
 };
 

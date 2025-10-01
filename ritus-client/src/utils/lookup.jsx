@@ -32,7 +32,11 @@ export const parseCSV = (csvText) => {
     const values =
       line
         .match(valueRegex)
-        ?.map((value) => value.replace(/^"(.*)"$/, "$1").trim()) || [];
+        ?.map((value) =>
+          typeof value === "string"
+            ? value.replace(/^"(.*)"$/, "$1").trim()
+            : ""
+        ) || [];
     return headers.reduce((obj, header, index) => {
       obj[header] = values[index] || "";
       return obj;
