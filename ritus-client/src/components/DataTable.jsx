@@ -843,13 +843,34 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             const newRow = { _internalId: getUniqueId() };
             tableStructure.forEach((col) => {
               if (col.type !== "automatic" && !col.computeFunction) {
-                const value =
-                  col.type === "number"
-                    ? (row[col.name] === "" || row[col.name] == null) &&
-                      col.can_be_null
+                let value;
+                if (col.type === "number") {
+                  value =
+                    (row[col.name] === "" || row[col.name] == null) && col.can_be_null
                       ? null
-                      : Number(row[col.name])
-                    : row[col.name];
+                      : Number(row[col.name]);
+                } else if (col.type === "boolean") {
+                  const raw = row[col.name];
+                  if (raw === "" || raw == null) {
+                    value = null;
+                  } else if (
+                    raw === "1" ||
+                    raw === 1 ||
+                    raw.toString().toLowerCase() === "true"
+                  ) {
+                    value = true;
+                  } else if (
+                    raw === "0" ||
+                    raw === 0 ||
+                    raw.toString().toLowerCase() === "false"
+                  ) {
+                    value = false;
+                  } else {
+                    value = null; // fallback jeśli coś dziwnego
+                  }
+                } else {
+                  value = row[col.name];
+                }
                 newRow[col.name] = value ?? col.value ?? "";
               }
             });
@@ -858,6 +879,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             }
             return newRow;
           });
+
 
           const updatedData = hasValidSequence
             ? newData
@@ -1199,7 +1221,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
               }}
               title={cellError || ""}
             >
-              {col.type === "boolean" ? (
+              {col.type === "boolean" && row[col.name] != null && row[col.name] !== "" ? (
                 <input
                   type="checkbox"
                   checked={!!row[col.name]}
