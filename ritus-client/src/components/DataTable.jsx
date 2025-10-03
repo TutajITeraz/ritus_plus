@@ -1151,6 +1151,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             : col.display_element
             ? col.display_element(row[col.name] ?? "")
             : row[col.name] ?? "";
+          /*
           console.log("Cell style applied:", {
             column: col.name,
             isMultiline,
@@ -1162,7 +1163,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             divHeight: "100%",
             spanMaxHeight: "100%",
             spanOverflowY: "auto",
-          });
+          });*/
           return (
             <div
               style={{
@@ -1834,10 +1835,10 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                     args.selectCell(true);
                   }
                   console.log("Selected cell:", {
-                    rowIdx: args.rowIdx,
-                    columnKey: args.column.key,
-                    dataId: args.row.id,
-                    internalId: rowKeyGetter(args.row),
+                    ".rowIdx": args.rowIdx,
+                    ".column.key": args.column.key,
+                    ".row.id": args.row.id,
+                    "rowKeyGetter(.row.id)": rowKeyGetter(args.row),
                   });
                   isClickingCell.current = false;
                 }, 0);

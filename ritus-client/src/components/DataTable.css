@@ -18,7 +18,9 @@
   font-family: "Courier New", monospace !important;
   font-size: 14px !important;
   line-height: 16px !important;
-  overflow: visible !important;
+  /*overflow: visible !important;*/
+  border-bottom: 1px solid #4292ed !important ;
+  border-right: 1px solid #4292ed !important ;
 }
 
 .rdg-text-editor {
@@ -52,4 +54,17 @@
 
 .selected-row {
   background-color: #e6f3ff !important;
+}
+
+.rdg-cell-resizable {
+  /* 2px border on the right for resizing handle */
+  padding-left: 5px !important;
+  font-weight: bold !important;
+  font-family: 'Trebuchet MS', 'Lucida Sans Unicode', 'Lucida Grande', 'Lucida Sans', Arial, sans-serif !important;
+  color: white !important;
+
+  border-bottom: 1px solid #ccc !important ;
+  border-right: 1px solid #4292ed !important ;
+  /* background: linear gradient. On the right side, a 10px wide darker area for the handle */
+  background: linear-gradient(to right, #2563eb 0%, #2563eb calc(100% - 10px), #4292ed calc(100% - 10px), #4292ed 100%) !important;   
 }

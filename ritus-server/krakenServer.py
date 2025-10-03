@@ -972,5 +972,11 @@ if __name__ == "__main__":
             logger.info("Available classes: %s", db.Model.registry._class_registry.values())
         except Exception as e:
             logger.error(f"Error creating database tables: {str(e)}")
-    Timer(22, open_browser).start()
+    
+    if NO_KRAKEN:
+        Timer(2, open_browser).start()
+    else:
+        Timer(22, open_browser).start()
+
+
     app.run(host="127.0.0.1", port="5000", debug=True)

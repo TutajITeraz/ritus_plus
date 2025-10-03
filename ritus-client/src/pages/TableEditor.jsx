@@ -31,6 +31,7 @@ import {
 import { RxTextAlignBottom } from "react-icons/rx";
 import { BsCloudArrowUpFill } from "react-icons/bs";
 import { MdFindInPage } from "react-icons/md";
+import { TiArrowBack } from "react-icons/ti";
 
 const generateEmptyRow = () => {
   const row = { _internalId: Date.now() };
@@ -447,9 +448,11 @@ const TableEditor = () => {
           onClick={() => navigate(`/project/${projectId}`)}
           color="blue.500"
           mb={4}
-          display="block"
+          display="inline-flex"
+          alignItems="center"
+          gap={1} // adds spacing between icon and text
         >
-          ⮨ Back to the Project
+          <TiArrowBack />Back to the Project
         </Link>
       </HStack>
 

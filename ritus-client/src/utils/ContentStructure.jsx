@@ -407,7 +407,7 @@ const ContentStructure = [
   },
   {
     name: "mass_hour",
-    display_name: "Mass Hour",
+    display_name: "Mass/Hour",
     type: "select",
     editable: true,
     can_be_null: true,

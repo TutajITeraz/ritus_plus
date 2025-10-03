@@ -17,6 +17,7 @@ import {
 import { RiFileEditFill } from "react-icons/ri";
 import { LuUpload } from "react-icons/lu";
 import { FaRegTrashAlt, FaDownload } from "react-icons/fa";
+import { TiArrowBack } from "react-icons/ti";
 import { useState, useEffect } from "react";
 import {
   updateProject,
@@ -313,7 +314,7 @@ const Sidebar = ({
       <Image
         src="/logo.svg"
         alt="Logo"
-        width="60%"
+        height="40px"
         mb={4}
         cursor="pointer"
         onClick={() => navigate("/")}
@@ -322,9 +323,11 @@ const Sidebar = ({
         onClick={() => navigate("/")}
         color="blue.500"
         mb={4}
-        display="block"
+        display="inline-flex"
+        alignItems="center"
+        gap={1} // adds spacing between icon and text
       >
-        ⮨ Back to the Projects list
+        <TiArrowBack />Back to the Projects list
       </Link>
       <Accordion.Root collapsible defaultValue={["project-info"]}>
         <Accordion.Item value="project-info">
