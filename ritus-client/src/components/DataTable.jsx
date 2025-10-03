@@ -94,6 +94,7 @@ const updateSequences = (
       if (index !== newRowIndex) {
         let seq = row[sequenceKey];
         if (!isNaN(seq) && Number.isInteger(Number(seq))) {
+          seq = Number(seq);
           if (seq >= targetSequence) {
             row[sequenceKey] = seq + 1;
           }
@@ -1198,19 +1199,28 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
               }}
               title={cellError || ""}
             >
-              <span
-                className="rdg-cell-content"
-                style={{
-                  flex: 1,
-                  display: "block",
-                  maxHeight: "100%",
-                  overflowY: "auto",
-                  overflowX: "hidden",
-                  padding: "2px",
-                }}
-              >
-                {value}
-              </span>
+              {col.type === "boolean" ? (
+                <input
+                  type="checkbox"
+                  checked={!!row[col.name]}
+                  readOnly
+                  style={{ margin: "2px" }}
+                />
+              ) : (
+                <span
+                  className="rdg-cell-content"
+                  style={{
+                    flex: 1,
+                    display: "block",
+                    maxHeight: "100%",
+                    overflowY: "auto",
+                    overflowX: "hidden",
+                    padding: "2px",
+                  }}
+                >
+                  {value}
+                </span>
+              )}
               {col.lookupColumn !== undefined && (
                 <FaSearch
                   onClick={() => {
@@ -1233,6 +1243,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             </div>
           );
         },
+
         renderEditCell:
           col.editable === false
             ? undefined
@@ -1275,6 +1286,27 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                         </option>
                       ))}
                     </select>
+                  );
+                }
+                if (col.type === "boolean") {
+                  return (
+                    <input
+                      type="checkbox"
+                      checked={!!row[col.name]}
+                      onChange={(event) => {
+                        console.log("Checkbox changed:", {
+                          dataId: row.id,
+                          internalId: row._internalId,
+                          field: col.name,
+                          value: event.target.checked,
+                        });
+                        onRowChange(
+                          { ...row, [col.name]: event.target.checked },
+                          true
+                        );
+                      }}
+                      style={{ width: "100%", height: "100%", padding: "2px" }}
+                    />
                   );
                 }
                 const isMultiline =
@@ -1347,6 +1379,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                 );
               },
       })),
+
     ];
   }, [
     tableStructure,

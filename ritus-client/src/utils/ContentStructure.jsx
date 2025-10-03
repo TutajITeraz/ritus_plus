@@ -120,8 +120,8 @@ const ContentStructure = [
     },
   },
   {
-    name: "formula_sequence_in_ms",
-    display_name: "Formula sequence in MS",
+    name: "sequence_in_ms",
+    display_name: "Sequence in MS",
     type: "sequence",
     editable: true,
     can_be_null: false,
@@ -138,14 +138,6 @@ const ContentStructure = [
     value: "",
     can_be_null: true,
     type: "text",
-    validationFunction: (value, row, index) =>
-      value == null || value === ""
-        ? null
-        : isValidFolio(value)
-        ? null
-        : `Invalid folio format at row ${
-            index + 1
-          } (e.g., 164, 164.1, 164.2, 122r, 33v)`,
   },
   {
     name: "where_in_ms_to",
@@ -153,14 +145,6 @@ const ContentStructure = [
     value: "",
     can_be_null: true,
     type: "text",
-    validationFunction: (value, row, index) =>
-      value == null || value === ""
-        ? null
-        : isValidFolio(value)
-        ? null
-        : `Invalid folio format at row ${
-            index + 1
-          } (e.g., 164, 164.1, 164.2, 122r, 33v)`,
   },
   {
     name: "rite_name_from_ms",

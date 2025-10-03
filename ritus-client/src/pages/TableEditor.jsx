@@ -203,6 +203,8 @@ const TableEditor = () => {
       const images = await fetchImages(projectId);
       console.log("Fetched images:", images);
 
+      let sequenceCounter = 1;
+
       const newData = images.reduce((acc, img, index) => {
         const parseText = (text) => {
           const rows = [];
@@ -213,12 +215,18 @@ const TableEditor = () => {
             const hasContent = Object.values(row).some(
               (v) => typeof v === "string" && v.trim() !== ""
             );
-            if (hasContent) rows.push(row);
+            if (hasContent){
+              rows.push(row);
+              return 1;
+            }
+            else return 0;
           };
 
           while (i < text.length) {
             if (text.slice(i, i + 5) === "<red>") {
-              pushIfNotEmpty({
+              sequenceCounter += pushIfNotEmpty({
+                id: sequenceCounter,
+                sequence_in_ms: sequenceCounter,
                 formula_text_from_ms: currentFormulaText,
                 rite_name_from_ms: "",
                 function_id: "",
@@ -229,14 +237,18 @@ const TableEditor = () => {
               const endIndex = text.indexOf("</red>", i);
               if (endIndex === -1) break;
               const redContent = text.slice(i, endIndex).trim();
-              pushIfNotEmpty({
+              sequenceCounter += pushIfNotEmpty({
+                id: sequenceCounter,
+                sequence_in_ms: sequenceCounter,
                 formula_text_from_ms: "",
                 rite_name_from_ms: redContent,
                 function_id: "",
               });
               i = endIndex + 6;
             } else if (text.slice(i, i + 6) === "<func>") {
-              pushIfNotEmpty({
+              sequenceCounter += pushIfNotEmpty({
+                id: sequenceCounter,
+                sequence_in_ms: sequenceCounter,
                 formula_text_from_ms: currentFormulaText,
                 rite_name_from_ms: "",
                 function_id: "",
@@ -247,7 +259,9 @@ const TableEditor = () => {
               const endIndex = text.indexOf("</func>", i);
               if (endIndex === -1) break;
               const funcContent = text.slice(i, endIndex).trim();
-              pushIfNotEmpty({
+              sequenceCounter += pushIfNotEmpty({
+                id: sequenceCounter,
+                sequence_in_ms: sequenceCounter,
                 formula_text_from_ms: "",
                 rite_name_from_ms: "",
                 function_id: funcContent,
@@ -259,7 +273,9 @@ const TableEditor = () => {
             }
           }
 
-          pushIfNotEmpty({
+          sequenceCounter += pushIfNotEmpty({
+            id: sequenceCounter,
+            sequence_in_ms: sequenceCounter,
             formula_text_from_ms: currentFormulaText,
             rite_name_from_ms: "",
             function_id: "",
@@ -279,7 +295,8 @@ const TableEditor = () => {
               formula_text_from_ms: rowData.formula_text_from_ms,
               rite_name_from_ms: rowData.rite_name_from_ms,
               function_id: rowData.function_id,
-              sequence_in_ms: index + 1,
+              sequence_in_ms: rowData.sequence_in_ms,
+              digital_page_number: img.page_number || index + 1,
             };
             ContentStructure.forEach((col) => {
               if (!(col.name in row)) {
