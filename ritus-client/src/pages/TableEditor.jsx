@@ -14,11 +14,14 @@ import {
   Center,
   Image,
   Link,
+  Select,
+  createListCollection,
 } from "@chakra-ui/react";
 import { useParams } from "react-router-dom";
 import { toaster } from "@/components/ui/toaster";
 import DataTable from "../components/DataTable";
 import ContentStructure from "../utils/ContentStructure";
+import UsuariumStructure from "../utils/UsuariumStructure";
 import {
   fetchProjectContent,
   fetchImages,
@@ -33,12 +36,15 @@ import { BsCloudArrowUpFill } from "react-icons/bs";
 import { MdFindInPage } from "react-icons/md";
 import { TiArrowBack } from "react-icons/ti";
 
-const generateEmptyRow = () => {
+const generateEmptyRow = (structure) => {
   const row = { _internalId: Date.now() };
-  ContentStructure.forEach((col) => {
+  structure.forEach((col) => {
     row[col.name] = col.value ?? "";
   });
-  row.sequence_in_ms = 1;
+  const seqCol = structure.find((col) => col.type === "sequence");
+  if (seqCol) {
+    row[seqCol.name] = 1;
+  }
   return row;
 };
 
@@ -56,9 +62,17 @@ const hasMeaningfulData = (data) => {
 
 const TableEditor = () => {
   const { id: projectId } = useParams();
-  const [data, setData] = useState([generateEmptyRow()]);
+  const structures = {
+    content: ContentStructure,
+    usuarium: UsuariumStructure,
+  };
+  const [structureKey, setStructureKey] = useState("content");
+  const [pendingStructureKey, setPendingStructureKey] = useState(null);
+  const currentStructure = structures[structureKey];
+  const [data, setData] = useState([generateEmptyRow(ContentStructure)]);
   const [isLoading, setIsLoading] = useState(!!projectId);
   const [showOverwriteDialog, setShowOverwriteDialog] = useState(false);
+  const [showSwitchDialog, setShowSwitchDialog] = useState(false);
   const [showBatchDialog, setShowBatchDialog] = useState(false);
   const [similarityThreshold, setSimilarityThreshold] = useState(75);
   const [batchStatus, setBatchStatus] = useState({
@@ -68,6 +82,13 @@ const TableEditor = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const pollingRef = useRef(null);
   const batchDialogRef = useRef(null);
+
+  const structureCollection = createListCollection({
+    items: [
+      { label: "Content Structure", value: "content" },
+      { label: "Usuarium Structure", value: "usuarium" },
+    ],
+  });
 
   const navigate = useNavigate();
 
@@ -92,6 +113,30 @@ const TableEditor = () => {
       console.error("Progress.Root is not a valid component:", Progress?.Root);
     }
   }, []);
+
+  const handleStructureChange = (newKey) => {
+    if (newKey === structureKey) return;
+    if (!hasMeaningfulData(data)) {
+      setStructureKey(newKey);
+      setData([generateEmptyRow(structures[newKey])]);
+    } else {
+      setPendingStructureKey(newKey);
+      setShowSwitchDialog(true);
+    }
+  };
+
+  const handleDropAndSwitch = () => {
+    setStructureKey(pendingStructureKey);
+    setData([generateEmptyRow(structures[pendingStructureKey])]);
+    setPendingStructureKey(null);
+    setShowSwitchDialog(false);
+    toaster.create({
+      title: "Structure switched",
+      description: "Current data has been dropped",
+      type: "info",
+      duration: 3000,
+    });
+  };
 
   const checkBatchStatus = async () => {
     if (!projectId) return;
@@ -163,13 +208,29 @@ const TableEditor = () => {
       setIsLoading(true);
       const content = await fetchProjectContent(projectId);
       console.log("Fetched content:", content);
-      const tableData = content.map((row, index) => ({
+      let tableData = content.map((row, index) => ({
         ...row.data,
         id: row.id,
         _internalId: row.id || Date.now() + index,
-        sequence_in_ms: Number(row.data.sequence_in_ms) || index + 1,
       }));
-      const newData = tableData.length > 0 ? tableData : [generateEmptyRow()];
+      tableData.forEach((row) => {
+        currentStructure.forEach((col) => {
+          if (row[col.name] === undefined) {
+            row[col.name] = col.value ?? "";
+          }
+        });
+      });
+      const seqCol = currentStructure.find((col) => col.type === "sequence");
+      if (seqCol) {
+        tableData.forEach((row, index) => {
+          if (row[seqCol.name] == null || row[seqCol.name] === "") {
+            row[seqCol.name] = index + 1;
+          } else {
+            row[seqCol.name] = Number(row[seqCol.name]);
+          }
+        });
+      }
+      const newData = tableData.length > 0 ? tableData : [generateEmptyRow(currentStructure)];
       setData(newData);
       console.log("Set initial data:", newData);
     } catch (error) {
@@ -190,6 +251,15 @@ const TableEditor = () => {
   }, [projectId]);
 
   const handleLoadTranscription = async () => {
+    if (structureKey !== "content") {
+      toaster.create({
+        title: "Error",
+        description: "Load Transcription is only supported for Content Structure",
+        type: "error",
+        duration: 3000,
+      });
+      return;
+    }
     if (hasMeaningfulData(data)) {
       setShowOverwriteDialog(true);
       return;
@@ -298,7 +368,7 @@ const TableEditor = () => {
               sequence_in_ms: rowData.sequence_in_ms,
               digital_page_number: img.page_number || index + 1,
             };
-            ContentStructure.forEach((col) => {
+            currentStructure.forEach((col) => {
               if (!(col.name in row)) {
                 row[col.name] = col.value ?? "";
               }
@@ -309,10 +379,10 @@ const TableEditor = () => {
       }, []);
 
       console.log("Transformed data:", newData);
-      setData(newData.length > 0 ? [...newData] : [generateEmptyRow()]);
+      setData(newData.length > 0 ? [...newData] : [generateEmptyRow(currentStructure)]);
       console.log(
         "Set transcription data:",
-        newData.length > 0 ? newData : [generateEmptyRow()]
+        newData.length > 0 ? newData : [generateEmptyRow(currentStructure)]
       );
       toaster.create({
         title: "Success",
@@ -379,6 +449,15 @@ const TableEditor = () => {
   };
 
   const handleStartBatchProcess = async () => {
+    if (structureKey !== "content") {
+      toaster.create({
+        title: "Error",
+        description: "Batch Process is only supported for Content Structure",
+        type: "error",
+        duration: 3000,
+      });
+      return;
+    }
     if (!projectId) {
       toaster.create({
         title: "Error",
@@ -507,10 +586,42 @@ const TableEditor = () => {
             Full Automatic Lookup and Split
           </Button>
         )}
+        <HStack align="baseline">
+          <Text fontWeight="medium" whiteSpace="nowrap">Table Structure:</Text>
+          <Select.Root
+            collection={structureCollection}
+            value={structureKey}
+            onValueChange={(details) => handleStructureChange(details.value)}
+            size="sm"
+          >
+            <Select.HiddenSelect />
+            <Select.Control>
+              <Select.Trigger>
+                <Select.ValueText placeholder="Select structure" />
+              </Select.Trigger>
+              <Select.IndicatorGroup>
+                <Select.Indicator />
+              </Select.IndicatorGroup>
+            </Select.Control>
+            <Portal>
+              <Select.Positioner>
+                <Select.Content>
+                  {structureCollection.items.map((item) => (
+                    <Select.Item item={item} key={item.value}>
+                      {item.label}
+                      <Select.ItemIndicator />
+                    </Select.Item>
+                  ))}
+                </Select.Content>
+              </Select.Positioner>
+            </Portal>
+          </Select.Root>
+        </HStack>
       </HStack>
 
       <DataTable
-        tableStructure={ContentStructure}
+        key={structureKey}
+        tableStructure={currentStructure}
         data={data}
         setData={setData}
         isLoading={isLoading || isProcessing}
@@ -539,6 +650,44 @@ const TableEditor = () => {
                 </Dialog.ActionTrigger>
                 <Button colorScheme="red" onClick={loadTranscription}>
                   Overwrite
+                </Button>
+              </Dialog.Footer>
+              <Dialog.CloseTrigger asChild>
+                <CloseButton size="sm" />
+              </Dialog.CloseTrigger>
+            </Dialog.Content>
+          </Dialog.Positioner>
+        </Portal>
+      </Dialog.Root>
+      <Dialog.Root
+        open={showSwitchDialog}
+        onOpenChange={(e) => setShowSwitchDialog(e.open)}
+        placement="center"
+        motionPreset="slide-in-bottom"
+        unmountOnExit
+      >
+        <Portal>
+          <Dialog.Backdrop />
+          <Dialog.Positioner>
+            <Dialog.Content>
+              <Dialog.Header>
+                <Dialog.Title>Switch Structure?</Dialog.Title>
+              </Dialog.Header>
+              <Dialog.Body>
+                <Text>
+                  Existing data detected. Switching to{" "}
+                  {pendingStructureKey === "usuarium" ? "Usuarium" : "Content"} Structure.
+                </Text>
+                <Text mt={2}>
+                  Conversion is not yet implemented. Do you want to drop the current data?
+                </Text>
+              </Dialog.Body>
+              <Dialog.Footer>
+                <Dialog.ActionTrigger asChild>
+                  <Button variant="outline">Cancel</Button>
+                </Dialog.ActionTrigger>
+                <Button colorScheme="red" onClick={handleDropAndSwitch}>
+                  Drop Data and Switch
                 </Button>
               </Dialog.Footer>
               <Dialog.CloseTrigger asChild>
@@ -587,23 +736,22 @@ const TableEditor = () => {
                   </NumberInput.Root>
 
                   {isProcessing && (
-                    <Progress.Root value={batchStatus.progress || 0} maxW="sm">
-                      <HStack gap="5">
-                        <Progress.Label>Processing</Progress.Label>
-                        <Progress.Track flex="1">
-                          <Progress.Range />
-                        </Progress.Track>
-                        <Progress.ValueText>
-                          {Math.round(batchStatus.progress * 100) / 100 || 0}%
-                          {/*
-                          `${
-                          batchStatus.processed_rows || 0
-                        }/${
-                          batchStatus.total_rows || 0
-                        } rows`
-                         */}
-                        </Progress.ValueText>
-                      </HStack>
+                    <Progress.Root
+                      value={batchStatus.progress || 0}
+                      maxW="sm"
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "20px",
+                      }}
+                    >
+                      <Progress.Label>Processing</Progress.Label>
+                      <Progress.Track flex="1">
+                        <Progress.Range />
+                      </Progress.Track>
+                      <Progress.ValueText>
+                        {Math.round((batchStatus.progress || 0) * 100)}%
+                      </Progress.ValueText>
                     </Progress.Root>
                   )}
                   {batchStatus.status === "failed" && (
