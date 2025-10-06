@@ -118,7 +118,7 @@ const updateSequences = (
       })
       .map((item) => item.row);
 
-    //Renumbering internalIds
+    // Renumbering internalIds
     sorted.forEach((item, index) => {
       item._internalId = index;
       if ("id" in item) item.id = index;
@@ -168,7 +168,7 @@ const updateSequences = (
     })
     .map((item) => item.row);
 
-  //Also renumbering of the id's and internal id's
+  // Also renumbering of the id's and internal id's
   sorted.forEach((item, index) => {
     item._internalId = index;
     if ("id" in item) item.id = index;
@@ -350,6 +350,13 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
 
   const rowKeyGetter = useCallback((row) => row._internalId, []);
 
+  // Reset visible columns when tableStructure changes
+  useEffect(() => {
+    setVisibleColumns(
+      tableStructure.reduce((acc, col) => ({ ...acc, [col.name]: true }), {})
+    );
+  }, [tableStructure]);
+
   const validateUniqueIds = useCallback((newData) => {
     const idSet = new Set();
     newData.forEach((row) => {
@@ -406,8 +413,8 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           value != null &&
           value !== ""
         ) {
-          const options = dictionaries[col.name] || [];
-          if (!options.includes(value)) {
+          const options = dictionaries[col.name]?.items || [];
+          if (!options.some((opt) => opt.value === value)) {
             errors.push({
               rowId: row._internalId,
               columnName: col.name,
@@ -419,13 +426,31 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           }
         }
         if (
-          col.type === "number" &&
+          col.type === "list" &&
           col.dictionary &&
-          !col.parentColumn && //it is parent, because it does not have parent
           value != null &&
           value !== ""
         ) {
-          const options = dictionaries[col.name] || [];
+          const parts = value.split(/[,;]/).map((p) => p.trim()).filter(Boolean);
+          const validValues = (dictionaries[col.name]?.items || []).map((opt) => opt.value);
+          const invalid = parts.filter((p) => !validValues.includes(p));
+          if (invalid.length > 0) {
+            errors.push({
+              rowId: row._internalId,
+              columnName: col.name,
+              message: `Row ${rowIndex + 1}: ${col.display_name}: Invalid values: ${invalid.join(", ")}`,
+              rowIndex,
+            });
+          }
+        }
+        if (
+          col.type === "number" &&
+          col.dictionary &&
+          !col.parentColumn && // it is parent, because it does not have parent
+          value != null &&
+          value !== ""
+        ) {
+          const options = dictionaries[col.name] || {};
           if (!Object.prototype.hasOwnProperty.call(options, value)) {
             errors.push({
               rowId: row._internalId,
@@ -767,29 +792,33 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
     const headers = visibleCols.map((col) => col.name);
     const csvData = data.map((row, index) => {
       const content = tableStructure.reduce((acc, col) => {
-        if (
-          col.type === "automatic" &&
-          dictionaries[col.name] &&
-          col.parentColumn
-        ) {
-          acc[col.name] =
-            dictionaries[col.name][row[col.parentColumn]] || "N/A";
+        if (col.type === "automatic" && dictionaries[col.name] && col.parentColumn) {
+          acc[col.name] = dictionaries[col.name][row[col.parentColumn]] || "N/A";
         } else if (col.computeFunction) {
           acc[col.name] =
             col.computeFunction({
               ...row,
               ...tableStructure.reduce((computed, c) => {
-                if (
-                  c.type === "automatic" &&
-                  dictionaries[c.name] &&
-                  c.parentColumn
-                ) {
-                  computed[c.name] =
-                    dictionaries[c.name][row[c.parentColumn]] || "N/A";
+                if (c.type === "automatic" && dictionaries[c.name] && c.parentColumn) {
+                  computed[c.name] = dictionaries[c.name][row[c.parentColumn]] || "N/A";
                 }
                 return computed;
               }, {}),
             }) || "N/A";
+        } else if (col.type === "select") {
+          const selected = row[col.name] ?? "";
+          console.log("Exporting select column:", {
+            column: col.name,
+            rowIndex: index,
+            internalId: row._internalId,
+            rawValue: selected,
+            dictionary: col.dictionary,
+            hasDictionary: !!col.dictionary,
+          });
+          acc[col.name] = selected;
+        } else if (col.type === "list") {
+          const selected = row[col.name] ?? "";
+          acc[col.name] = selected;
         } else {
           acc[col.name] = row[col.name] ?? "";
         }
@@ -866,7 +895,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                   ) {
                     value = false;
                   } else {
-                    value = null; // fallback jeśli coś dziwnego
+                    value = null; // fallback if something weird
                   }
                 } else {
                   value = row[col.name];
@@ -879,7 +908,6 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             }
             return newRow;
           });
-
 
           const updatedData = hasValidSequence
             ? newData
@@ -983,10 +1011,6 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
       const csvText = await response.text();
       const entries = parseCSV(csvText);
 
-      /*
-      const nonEmptyRows = data.filter(
-        (row) => row[autoFillColumn.lookupColumn]
-      );*/
       setTotalRows(data.length);
 
       for (let i = 0; i < data.length; i++) {
@@ -1102,7 +1126,6 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
         return updatedData;
       });
       validateTable();
-      //Todo: close dialog
     } catch (error) {
       console.error("Error during autofill:", error);
     } finally {
@@ -1165,7 +1188,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             }
             return acc;
           }, {});
-          const value = col.computeFunction
+          let value = col.computeFunction
             ? col.computeFunction(content) || "N/A"
             : col.type === "automatic" &&
               dictionaries[col.name] &&
@@ -1174,19 +1197,23 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             : col.display_element
             ? col.display_element(row[col.name] ?? "")
             : row[col.name] ?? "";
-          /*
-          console.log("Cell style applied:", {
-            column: col.name,
-            isMultiline,
-            whiteSpace: isMultiline ? "pre-line" : "normal",
-            text: value,
-            fontFamily: '"Courier New", monospace',
-            fontSize: "14px",
-            lineHeight: "22px",
-            divHeight: "100%",
-            spanMaxHeight: "100%",
-            spanOverflowY: "auto",
-          });*/
+          if (col.dictionary && col.type === "select") {
+            const selected = row[col.name];
+            if (selected) {
+              const entry = dictionaries[col.name]?.items.find((o) => o.value === selected);
+              value = entry?.label || selected;
+            } else {
+              value = "";
+            }
+          }
+          if (col.dictionary && col.type === "list") {
+            const parts = (row[col.name] || "").split(/[,;]/).map((p) => p.trim()).filter(Boolean);
+            const labels = parts.map((p) => {
+              const opt = dictionaries[col.name]?.items.find((o) => o.value === p);
+              return opt?.label || p;
+            });
+            value = labels.join(", ");
+          }
           return (
             <div
               style={{
@@ -1271,18 +1298,34 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             ? undefined
             : ({ row, onRowChange }) => {
                 if (col.type === "select") {
-                  const baseOptions = col.dictionary
-                    ? dictionaries[col.name] || []
-                    : col.options || ["", "ORIGINAL", "ADDED"];
-                  const options = col.can_be_null
-                    ? [
-                        { value: "", label: "(null)" },
-                        ...baseOptions.map((opt) => ({
-                          value: opt,
-                          label: opt,
-                        })),
-                      ]
-                    : baseOptions.map((opt) => ({ value: opt, label: opt }));
+                  let options = [];
+                  if (col.dictionary) {
+                    options = dictionaries[col.name]?.items || [];
+                  } else if (col.display_element) {
+                    // Extract options from display_element by calling it with possible values
+                    const testValues = ["", "0", "0.5", "1", "ORIGINAL", "ADDED"];
+                    options = testValues
+                      .map((val) => {
+                        const label = col.display_element(val);
+                        return label ? { value: val, label } : null;
+                      })
+                      .filter(Boolean);
+                    // Ensure unique options
+                    options = Array.from(new Set(options.map(opt => opt.value)))
+                      .map(val => ({
+                        value: val,
+                        label: col.display_element(val),
+                      }));
+                    console.log("Select options derived from display_element:", {
+                      column: col.name,
+                      options,
+                    });
+                  } else {
+                    options = (col.options || ["", "0", "0.5", "1"]).map((opt) => ({
+                      value: opt,
+                      label: opt === "" ? "(null)" : opt,
+                    }));
+                  }
                   return (
                     <select
                       className="rdg-text-editor"
@@ -1294,13 +1337,23 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                           field: col.name,
                           value: event.target.value,
                         });
-                        onRowChange(
-                          { ...row, [col.name]: event.target.value },
-                          true
-                        );
+                        onRowChange({ ...row, [col.name]: event.target.value }, true);
                       }}
-                      autoFocus
-                      style={{ width: "100%", height: "100%", padding: "2px" }}
+                      onBlur={() => {
+                        console.log("Select blurred:", {
+                          dataId: row.id,
+                          internalId: row._internalId,
+                          field: col.name,
+                        });
+                        onRowChange({ ...row }, true);
+                      }}
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        padding: "2px",
+                        fontFamily: '"Courier New", monospace',
+                        fontSize: "14px",
+                      }}
                     >
                       {options.map((opt) => (
                         <option key={opt.value} value={opt.value}>
@@ -1308,6 +1361,50 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                         </option>
                       ))}
                     </select>
+                  );
+                }
+                if (col.type === "list") {
+                  const currentValues = (row[col.name] || "").split(/[,;]/).map((p) => p.trim()).filter(Boolean);
+                  const collection = dictionaries[col.name];
+                  return (
+                    <Select.Root
+                      multiple
+                      collection={collection}
+                      value={currentValues}
+                      onValueChange={(details) => {
+                        const newValue = details.value.join(", ");
+                        console.log("List select changed:", {
+                          dataId: row.id,
+                          internalId: row._internalId,
+                          field: col.name,
+                          value: newValue,
+                        });
+                        onRowChange({ ...row, [col.name]: newValue }, true);
+                      }}
+                      size="sm"
+                    >
+                      <Select.HiddenSelect />
+                      <Select.Control>
+                        <Select.Trigger>
+                          <Select.ValueText placeholder="Select options" />
+                        </Select.Trigger>
+                        <Select.IndicatorGroup>
+                          <Select.Indicator />
+                        </Select.IndicatorGroup>
+                      </Select.Control>
+                      <Portal>
+                        <Select.Positioner>
+                          <Select.Content minW="80">
+                            {collection.items.map((item) => (
+                              <Select.Item item={item} key={item.value}>
+                                {item.label}
+                                <Select.ItemIndicator />
+                              </Select.Item>
+                            ))}
+                          </Select.Content>
+                        </Select.Positioner>
+                      </Portal>
+                    </Select.Root>
                   );
                 }
                 if (col.type === "boolean") {
@@ -1401,7 +1498,6 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                 );
               },
       })),
-
     ];
   }, [
     tableStructure,
@@ -1420,7 +1516,8 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           col.dictionary &&
           (col.type === "automatic" ||
             col.lookupColumn ||
-            col.type === "select") &&
+            col.type === "select" ||
+            col.type === "list") &&
           visibleColumns[col.name]
       );
       for (const col of dictionaryColumns) {
@@ -1431,19 +1528,19 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
         } else {
           const response = await fetch(`/data/${col.dictionary}`);
           const csvText = await response.text();
-          const dict =
-            col.type === "select"
-              ? Papa.parse(csvText, { header: true, skipEmptyLines: true })
-                  .data.filter((row) => row.name)
-                  .map((row) => row.name)
-                  .sort()
-              : Object.fromEntries(
-                  Papa.parse(csvText, { header: true, skipEmptyLines: true })
-                    .data.filter((row) => row.id && row.text)
-                    .map((row) => [row.id, row.text])
-                );
-          dictionaryCache.current.set(col.dictionary, dict);
-          newDictionaries[col.name] = dict;
+          const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true }).data;
+          const keyCol = col.dictionary_key_col || (col.type === "select" || col.type === "list" ? "name" : "id");
+          const displayCol = col.dictionary_display_col || (col.type === "select" || col.type === "list" ? "name" : "text");
+          const items = parsed
+            .filter((row) => row[keyCol] && row[displayCol])
+            .map((row) => ({
+              value: row[keyCol],
+              label: row[displayCol],
+            }))
+            .sort((a, b) => a.label.localeCompare(b.label));
+          const collection = createListCollection({ items });
+          dictionaryCache.current.set(col.dictionary, collection);
+          newDictionaries[col.name] = collection;
         }
       }
       setDictionaries(newDictionaries);
@@ -1504,232 +1601,292 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
   }, [selectItems]);
 
   return (
-    //<ErrorBoundary>
-      <VStack width="full" gap="5" alignItems="start">
-        <HStack mb={2}>
-          <Button onClick={handleSave} colorPalette="gray">
-            <RiSave3Fill />
-            Save JSON
-          </Button>
-          <Button onClick={handleCSVExport} colorPalette="gray">
-            <RiSave3Fill />
-            Export CSV
-          </Button>
-          <Dialog.Root
-            placement="center"
-            motionPreset="slide-in-bottom"
-            unmountOnExit
-            ref={csvDialogRef}
-            onOpenChange={(e) => {
-              if (!e.open) {
-                setLoadingCSV(false);
-                setCsvParseError(null);
-                setIsPostImport(false);
-                validateTable();
-              }
-            }}
-          >
-            <Dialog.Trigger asChild>
-              <Button colorPalette="gray">
-                <MdUploadFile />
-                Import CSV
-              </Button>
-            </Dialog.Trigger>
-            <Portal>
-              <Dialog.Backdrop />
-              <Dialog.Positioner>
-                <Dialog.Content>
-                  <Dialog.Header>
-                    <Dialog.Title>Import CSV</Dialog.Title>
-                  </Dialog.Header>
-                  <Dialog.Body>
-                    {loadingCSV ? (
-                      <VStack colorPalette="teal">
-                        <Spinner color="colorPalette.600" />
-                        <Text color="colorPalette.600">Loading...</Text>
-                      </VStack>
-                    ) : (
-                      <>
-                        <FileUpload.Root
-                          maxW="xl"
-                          alignItems="stretch"
-                          accept={["text/csv"]}
-                        >
-                          <FileUpload.HiddenInput
-                            onChange={(e) => handleCSVImport(e.target.files)}
-                          />
-                          <FileUpload.Dropzone>
-                            <Icon size="md" color="fg.muted">
-                              <LuUpload />
-                            </Icon>
-                            <FileUpload.DropzoneContent>
-                              <div>Drag and drop CSV file here</div>
-                              <div style={{ color: "#718096" }}>
-                                .csv files only
-                              </div>
-                            </FileUpload.DropzoneContent>
-                          </FileUpload.Dropzone>
-                        </FileUpload.Root>
-                        {csvParseError && (
-                          <div style={{ marginTop: "16px", color: "red" }}>
-                            <strong>Error:</strong> {csvParseError}
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </Dialog.Body>
-                  {!loadingCSV && (
-                    <Dialog.Footer>
-                      <Dialog.ActionTrigger asChild>
-                        <Button variant="outline">Cancel</Button>
-                      </Dialog.ActionTrigger>
-                    </Dialog.Footer>
-                  )}
-                  <Dialog.CloseTrigger asChild>
-                    <CloseButton size="sm" />
-                  </Dialog.CloseTrigger>
-                </Dialog.Content>
-              </Dialog.Positioner>
-            </Portal>
-          </Dialog.Root>
-          <Dialog.Root
-            placement="center"
-            motionPreset="slide-in-bottom"
-            unmountOnExit
-            onOpenChange={(e) => {
-              if (e.open) {
-                setAutoFillColumn(null);
-                setReplaceExisting(false);
-                setSimilarityThreshold(50);
-                setUpdatedRows(0);
-                setTotalRows(0);
-                setAutoFillLoading(false);
-              }
-            }}
-            ref={autoFillDialogRef}
-          >
-            <Dialog.Trigger asChild>
-              <Button colorPalette="blue">
-                <TbBadgesFilled />
-                Automatic Fill
-              </Button>
-            </Dialog.Trigger>
-            <Portal>
-              <Dialog.Backdrop />
-              <Dialog.Positioner>
-                <Dialog.Content ref={autoFillContentRef}>
-                  <Dialog.Header>
-                    <Dialog.Title>Automatic Fill</Dialog.Title>
-                  </Dialog.Header>
-                  <Dialog.Body>
-                    <VStack spacing={4} align="stretch">
-                      <Text>Column to autofill:</Text>
-                      <Select.Root
-                        collection={selectCollection}
-                        value={
-                          autoFillColumn?.name ? [autoFillColumn.name] : []
-                        }
-                        onValueChange={(details) => {
-                          const col = tableStructure.find(
-                            (c) => c.name === details.value[0]
-                          );
-                          setAutoFillColumn(col || null);
-                        }}
-                      >
-                        <Select.HiddenSelect />
-                        <Select.Control>
-                          <Select.Trigger>
-                            <Select.ValueText placeholder="Select column" />
-                          </Select.Trigger>
-                          <Select.IndicatorGroup>
-                            <Select.Indicator />
-                          </Select.IndicatorGroup>
-                        </Select.Control>
-                        <Portal container={autoFillContentRef}>
-                          <Select.Positioner>
-                            <Select.Content>
-                              {selectItems.map((item) => (
-                                <Select.Item item={item} key={item.value}>
-                                  {item.label}
-                                </Select.Item>
-                              ))}
-                            </Select.Content>
-                          </Select.Positioner>
-                        </Portal>
-                      </Select.Root>
-                      <Checkbox.Root
-                        checked={replaceExisting}
-                        onCheckedChange={(e) => setReplaceExisting(e.checked)}
-                      >
-                        <Checkbox.HiddenInput />
-                        <Checkbox.Control />
-                        <Checkbox.Label>Replace existing</Checkbox.Label>
-                      </Checkbox.Root>
-                      <NumberInput.Root
-                        defaultValue={50}
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        formatOptions={{ style: "percent" }}
-                        onValueChange={(details) =>
-                          setSimilarityThreshold(details.valueAsNumber)
-                        }
-                      >
-                        <NumberInput.Label>
-                          Similarity threshold
-                        </NumberInput.Label>
-                        <NumberInput.Control />
-                        <NumberInput.Input />
-                      </NumberInput.Root>
-                      {(autoFillLoading || updatedRows != 0) && (
-                        <Progress.Root
-                          value={
-                            autoFillLoading
-                              ? (updatedRows / totalRows) * 100 || 0
-                              : 100
-                          }
-                          maxW="sm"
-                        >
-                          <HStack gap="5">
-                            <Progress.Label>Processing</Progress.Label>
-                            <Progress.Track flex="1">
-                              <Progress.Range />
-                            </Progress.Track>
-                            <Progress.ValueText>{`${updatedRows}/${totalRows} - ${changedRows} rows updated`}</Progress.ValueText>
-                          </HStack>
-                        </Progress.Root>
-                      )}
+    <VStack width="full" gap="5" alignItems="start">
+      <HStack mb={2}>
+        <Button onClick={handleSave} colorPalette="gray">
+          <RiSave3Fill />
+          Save JSON
+        </Button>
+        <Button onClick={handleCSVExport} colorPalette="gray">
+          <RiSave3Fill />
+          Export CSV
+        </Button>
+        <Dialog.Root
+          placement="center"
+          motionPreset="slide-in-bottom"
+          unmountOnExit
+          ref={csvDialogRef}
+          onOpenChange={(e) => {
+            if (!e.open) {
+              setLoadingCSV(false);
+              setCsvParseError(null);
+              setIsPostImport(false);
+              validateTable();
+            }
+          }}
+        >
+          <Dialog.Trigger asChild>
+            <Button colorPalette="gray">
+              <MdUploadFile />
+              Import CSV
+            </Button>
+          </Dialog.Trigger>
+          <Portal>
+            <Dialog.Backdrop />
+            <Dialog.Positioner>
+              <Dialog.Content>
+                <Dialog.Header>
+                  <Dialog.Title>Import CSV</Dialog.Title>
+                </Dialog.Header>
+                <Dialog.Body>
+                  {loadingCSV ? (
+                    <VStack colorPalette="teal">
+                      <Spinner color="colorPalette.600" />
+                      <Text color="colorPalette.600">Loading...</Text>
                     </VStack>
-                  </Dialog.Body>
+                  ) : (
+                    <>
+                      <FileUpload.Root
+                        maxW="xl"
+                        alignItems="stretch"
+                        accept={["text/csv"]}
+                      >
+                        <FileUpload.HiddenInput
+                          onChange={(e) => handleCSVImport(e.target.files)}
+                        />
+                        <FileUpload.Dropzone>
+                          <Icon size="md" color="fg.muted">
+                            <LuUpload />
+                          </Icon>
+                          <FileUpload.DropzoneContent>
+                            <div>Drag and drop CSV file here</div>
+                            <div style={{ color: "#718096" }}>
+                              .csv files only
+                            </div>
+                          </FileUpload.DropzoneContent>
+                        </FileUpload.Dropzone>
+                      </FileUpload.Root>
+                      {csvParseError && (
+                        <div style={{ marginTop: "16px", color: "red" }}>
+                          <strong>Error:</strong> {csvParseError}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </Dialog.Body>
+                {!loadingCSV && (
                   <Dialog.Footer>
                     <Dialog.ActionTrigger asChild>
-                      <Button variant="outline" disabled={autoFillLoading}>
-                        Cancel
-                      </Button>
+                      <Button variant="outline">Cancel</Button>
                     </Dialog.ActionTrigger>
-                    <Button
-                      onClick={handleAutoFill}
-                      disabled={!autoFillColumn || autoFillLoading}
-                    >
-                      Lookup All
-                    </Button>
                   </Dialog.Footer>
-                  <Dialog.CloseTrigger asChild disabled={autoFillLoading}>
-                    <CloseButton size="sm" />
-                  </Dialog.CloseTrigger>
-                </Dialog.Content>
-              </Dialog.Positioner>
-            </Portal>
-          </Dialog.Root>
+                )}
+                <Dialog.CloseTrigger asChild>
+                  <CloseButton size="sm" />
+                </Dialog.CloseTrigger>
+              </Dialog.Content>
+            </Dialog.Positioner>
+          </Portal>
+        </Dialog.Root>
+        <Dialog.Root
+          placement="center"
+          motionPreset="slide-in-bottom"
+          unmountOnExit
+          onOpenChange={(e) => {
+            if (e.open) {
+              setAutoFillColumn(null);
+              setReplaceExisting(false);
+              setSimilarityThreshold(50);
+              setUpdatedRows(0);
+              setTotalRows(0);
+              setAutoFillLoading(false);
+            }
+          }}
+          ref={autoFillDialogRef}
+        >
+          <Dialog.Trigger asChild>
+            <Button colorPalette="blue">
+              <TbBadgesFilled />
+              Automatic Fill
+            </Button>
+          </Dialog.Trigger>
+          <Portal>
+            <Dialog.Backdrop />
+            <Dialog.Positioner>
+              <Dialog.Content ref={autoFillContentRef}>
+                <Dialog.Header>
+                  <Dialog.Title>Automatic Fill</Dialog.Title>
+                </Dialog.Header>
+                <Dialog.Body>
+                  <VStack spacing={4} align="stretch">
+                    <Text>Column to autofill:</Text>
+                    <Select.Root
+                      collection={selectCollection}
+                      value={
+                        autoFillColumn?.name ? [autoFillColumn.name] : ["Content Structure"]
+                      }
+                      onValueChange={(details) => {
+                        const col = tableStructure.find(
+                          (c) => c.name === details.value[0]
+                        );
+                        setAutoFillColumn(col || null);
+                        console.log("Structure select changed:", {
+                          selectedValue: details.value[0],
+                          previousValue: autoFillColumn?.name,
+                          columnDetails: col,
+                        });
+                      }}
+                    >
+                      <Select.HiddenSelect />
+                      <Select.Control>
+                        <Select.Trigger>
+                          <Select.ValueText placeholder="Content Structure" />
+                        </Select.Trigger>
+                        <Select.IndicatorGroup>
+                          <Select.Indicator />
+                        </Select.IndicatorGroup>
+                      </Select.Control>
+                      <Portal container={autoFillContentRef}>
+                        <Select.Positioner>
+                          <Select.Content>
+                            {selectItems.map((item) => (
+                              <Select.Item item={item} key={item.value}>
+                                {item.label}
+                                <Select.ItemIndicator />
+                              </Select.Item>
+                            ))}
+                          </Select.Content>
+                        </Select.Positioner>
+                      </Portal>
+                    </Select.Root>
+                    <Checkbox.Root
+                      checked={replaceExisting}
+                      onCheckedChange={(e) => setReplaceExisting(e.checked)}
+                    >
+                      <Checkbox.HiddenInput />
+                      <Checkbox.Control />
+                      <Checkbox.Label>Replace existing</Checkbox.Label>
+                    </Checkbox.Root>
+                    <NumberInput.Root
+                      defaultValue={50}
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      formatOptions={{ style: "percent" }}
+                      onValueChange={(details) =>
+                        setSimilarityThreshold(details.valueAsNumber)
+                      }
+                    >
+                      <NumberInput.Label>
+                        Similarity threshold
+                      </NumberInput.Label>
+                      <NumberInput.Control />
+                      <NumberInput.Input />
+                    </NumberInput.Root>
+                    {(autoFillLoading || updatedRows != 0) && (
+                      <Progress.Root
+                        value={
+                          autoFillLoading
+                            ? (updatedRows / totalRows) * 100 || 0
+                            : 100
+                        }
+                        maxW="sm"
+                      >
+                        <HStack gap="5">
+                          <Progress.Label>Processing</Progress.Label>
+                          <Progress.Track flex="1">
+                            <Progress.Range />
+                          </Progress.Track>
+                          <Progress.ValueText>{`${updatedRows}/${totalRows} - ${changedRows} rows updated`}</Progress.ValueText>
+                        </HStack>
+                      </Progress.Root>
+                    )}
+                  </VStack>
+                </Dialog.Body>
+                <Dialog.Footer>
+                  <Dialog.ActionTrigger asChild>
+                    <Button variant="outline" disabled={autoFillLoading}>
+                      Cancel
+                    </Button>
+                  </Dialog.ActionTrigger>
+                  <Button
+                    onClick={handleAutoFill}
+                    disabled={!autoFillColumn || autoFillLoading}
+                  >
+                    Lookup All
+                  </Button>
+                </Dialog.Footer>
+                <Dialog.CloseTrigger asChild disabled={autoFillLoading}>
+                  <CloseButton size="sm" />
+                </Dialog.CloseTrigger>
+              </Dialog.Content>
+            </Dialog.Positioner>
+          </Portal>
+        </Dialog.Root>
+        <Dialog.Root
+          placement="center"
+          motionPreset="slide-in-bottom"
+          unmountOnExit
+        >
+          <Dialog.Trigger asChild>
+            <Button variant="outline">
+              <MdVisibility />
+              Show/Hide Columns
+            </Button>
+          </Dialog.Trigger>
+          <Portal>
+            <Dialog.Backdrop />
+            <Dialog.Positioner>
+              <Dialog.Content>
+                <Dialog.Header>
+                  <Dialog.Title>Show/Hide Columns</Dialog.Title>
+                </Dialog.Header>
+                <Dialog.Body>
+                  <VStack align="start">
+                    {tableStructure.map((col) => (
+                      <label
+                        key={col.name}
+                        style={{ display: "flex", alignItems: "center" }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={visibleColumns[col.name]}
+                          onChange={() => toggleColumnVisibility(col.name)}
+                          style={{ marginRight: "8px" }}
+                        />
+                        {col.display_name}
+                      </label>
+                    ))}
+                  </VStack>
+                </Dialog.Body>
+                <Dialog.Footer>
+                  <Dialog.ActionTrigger asChild>
+                    <Button variant="outline">Close</Button>
+                  </Dialog.ActionTrigger>
+                </Dialog.Footer>
+                <Dialog.CloseTrigger asChild>
+                  <CloseButton size="sm" />
+                </Dialog.CloseTrigger>
+              </Dialog.Content>
+            </Dialog.Positioner>
+          </Portal>
+        </Dialog.Root>
+
+        <Button onClick={validateTable} colorPalette="yellow">
+          <GrValidate />
+          Validate
+        </Button>
+        {validationErrors.length > 0 && (
           <Dialog.Root
             placement="center"
             motionPreset="slide-in-bottom"
             unmountOnExit
+            ref={errorDialogRef}
           >
             <Dialog.Trigger asChild>
-              <Button variant="outline">
-                <MdVisibility />
-                Show/Hide Columns
+              <Button colorPalette="red">
+                <BiSolidError />
+                {validationErrors.length} Errors
               </Button>
             </Dialog.Trigger>
             <Portal>
@@ -1737,25 +1894,22 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
               <Dialog.Positioner>
                 <Dialog.Content>
                   <Dialog.Header>
-                    <Dialog.Title>Show/Hide Columns</Dialog.Title>
+                    <Dialog.Title>Validation Errors</Dialog.Title>
                   </Dialog.Header>
                   <Dialog.Body>
-                    <VStack align="start">
-                      {tableStructure.map((col) => (
-                        <label
-                          key={col.name}
-                          style={{ display: "flex", alignItems: "center" }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={visibleColumns[col.name]}
-                            onChange={() => toggleColumnVisibility(col.name)}
-                            style={{ marginRight: "8px" }}
-                          />
-                          {col.display_name}
-                        </label>
-                      ))}
-                    </VStack>
+                    <div style={{ maxHeight: "200px", overflowY: "auto" }}>
+                      <ul>
+                        {validationErrors.map((error, index) => (
+                          <li
+                            key={index}
+                            style={{ cursor: "pointer" }}
+                            onClick={() => scrollToError(error)}
+                          >
+                            {error.message}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   </Dialog.Body>
                   <Dialog.Footer>
                     <Dialog.ActionTrigger asChild>
@@ -1769,242 +1923,187 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
               </Dialog.Positioner>
             </Portal>
           </Dialog.Root>
-
-          <Button onClick={validateTable} colorPalette="yellow">
-            <GrValidate />
-            Validate
-          </Button>
-          {validationErrors.length > 0 && (
-            <Dialog.Root
-              placement="center"
-              motionPreset="slide-in-bottom"
-              unmountOnExit
-              ref={errorDialogRef}
-            >
-              <Dialog.Trigger asChild>
-                <Button colorPalette="red">
-                  <BiSolidError />
-                  {validationErrors.length} Errors
-                </Button>
-              </Dialog.Trigger>
-              <Portal>
-                <Dialog.Backdrop />
-                <Dialog.Positioner>
-                  <Dialog.Content>
-                    <Dialog.Header>
-                      <Dialog.Title>Validation Errors</Dialog.Title>
-                    </Dialog.Header>
-                    <Dialog.Body>
-                      <div style={{ maxHeight: "200px", overflowY: "auto" }}>
-                        <ul>
-                          {validationErrors.map((error, index) => (
-                            <li
-                              key={index}
-                              style={{ cursor: "pointer" }}
-                              onClick={() => scrollToError(error)}
-                            >
-                              {error.message}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    </Dialog.Body>
-                    <Dialog.Footer>
-                      <Dialog.ActionTrigger asChild>
-                        <Button variant="outline">Close</Button>
-                      </Dialog.ActionTrigger>
-                    </Dialog.Footer>
-                    <Dialog.CloseTrigger asChild>
-                      <CloseButton size="sm" />
-                    </Dialog.CloseTrigger>
-                  </Dialog.Content>
-                </Dialog.Positioner>
-              </Portal>
-            </Dialog.Root>
-          )}
-        </HStack>
-        {/*<ErrorBoundary>*/}
-          <div
-            style={{
-              height: "calc(100vh - 220px)",
-              width: "100%",
-              overflow: "auto",
-            }}
-          >
-            <DataGrid
-              ref={gridRef}
-              columns={columns}
-              rows={data}
-              rowKeyGetter={rowKeyGetter}
-              onRowsChange={onRowsChange}
-              onFill={handleFill}
-              selectedRows={selectedRows}
-              onSelectedRowsChange={setSelectedRows}
-              rowHeight={(row) =>
-                getRowHeight(row, tableStructure, dictionaries)
-              }
-              headerRowHeight={40}
-              className="fill-grid rdg-light"
-              rowClass={(row) =>
-                selectedRows.has(row._internalId) ? "selected-row" : ""
-              }
-              onCellClick={(args, event) => {
-                event.stopPropagation();
-                isClickingCell.current = true;
-                console.log("Cell clicked:", {
-                  dataId: args.row.id,
-                  internalId: rowKeyGetter(args.row),
-                  column: args.column.key,
+        )}
+      </HStack>
+      <div
+        style={{
+          height: "calc(100vh - 220px)",
+          width: "100%",
+          overflow: "auto",
+        }}
+      >
+        <DataGrid
+          ref={gridRef}
+          columns={columns}
+          rows={data}
+          rowKeyGetter={rowKeyGetter}
+          onRowsChange={onRowsChange}
+          onFill={handleFill}
+          selectedRows={selectedRows}
+          onSelectedRowsChange={setSelectedRows}
+          rowHeight={(row) =>
+            getRowHeight(row, tableStructure, dictionaries)
+          }
+          headerRowHeight={40}
+          className="fill-grid rdg-light"
+          rowClass={(row) =>
+            selectedRows.has(row._internalId) ? "selected-row" : ""
+          }
+          onCellClick={(args, event) => {
+            event.stopPropagation();
+            isClickingCell.current = true;
+            console.log("Cell clicked:", {
+              dataId: args.row.id,
+              internalId: rowKeyGetter(args.row),
+              column: args.column.key,
+              rowIdx: args.rowIdx,
+            });
+            setTimeout(() => {
+              if (gridRef.current) {
+                gridRef.current.selectCell({
                   rowIdx: args.rowIdx,
+                  idx: args.column.idx,
                 });
-                setTimeout(() => {
-                  if (gridRef.current) {
-                    gridRef.current.selectCell({
-                      rowIdx: args.rowIdx,
-                      idx: args.column.idx,
-                    });
-                    gridRef.current.scrollToCell({
-                      rowIdx: args.rowIdx,
-                      idx: args.column.idx,
-                    });
-                    const cellElement = document.querySelector(
-                      `.rdg-cell[row-idx="${args.rowIdx}"][column-idx="${args.column.idx}"]`
-                    );
-                    if (cellElement) {
-                      cellElement.focus();
-                      console.log("Focused cell element:", {
-                        rowIdx: args.rowIdx,
-                        colIdx: args.column.idx,
-                      });
-                    }
-                  }
-                  setSelectedCell({
+                gridRef.current.scrollToCell({
+                  rowIdx: args.rowIdx,
+                  idx: args.column.idx,
+                });
+                const cellElement = document.querySelector(
+                  `.rdg-cell[row-idx="${args.rowIdx}"][column-idx="${args.column.idx}"]`
+                );
+                if (cellElement) {
+                  cellElement.focus();
+                  console.log("Focused cell element:", {
                     rowIdx: args.rowIdx,
-                    columnKey: args.column.key,
+                    colIdx: args.column.idx,
                   });
-                  if (
-                    args.column.editable &&
-                    args.column.key !== SelectColumn.key
-                  ) {
-                    event.preventGridDefault();
-                    args.selectCell(true);
-                  }
-                  console.log("Selected cell:", {
-                    ".rowIdx": args.rowIdx,
-                    ".column.key": args.column.key,
-                    ".row.id": args.row.id,
-                    "rowKeyGetter(.row.id)": rowKeyGetter(args.row),
-                  });
-                  isClickingCell.current = false;
-                }, 0);
-              }}
-              style={{ height: "100%" }}
-              aria-label="Data Table"
-            />
-          </div>
-        {/*</ErrorBoundary>*/}
-        <ActionBar.Root open={selectedRows.size > 0}>
-          <Portal>
-            <ActionBar.Positioner sx={{ zIndex: 1000 }}>
-              <ActionBar.Content>
-                <div style={{ marginRight: "16px" }}>
-                  {selectedRows.size} selected
-                </div>
-                <Button
-                  onClick={handleInsertAbove}
-                  disabled={selectedRows.size !== 1}
-                  mr={2}
-                >
-                  Insert new row above
-                </Button>
-                <Button
-                  onClick={handleInsertBelow}
-                  disabled={selectedRows.size !== 1}
-                  mr={2}
-                >
-                  Insert new row below
-                </Button>
-                <Button
-                  onClick={handleMerge}
-                  disabled={selectedRows.size < 2}
-                  mr={2}
-                >
-                  Merge <Kbd>M</Kbd>
-                </Button>
-                <Button onClick={handleDelete} mr={2} colorScheme="red">
-                  Delete <Kbd>Del</Kbd>
-                </Button>
-                <Button onClick={() => setSelectedRows(new Set())}>
-                  Deselect <Kbd>D</Kbd>
-                </Button>
-              </ActionBar.Content>
-            </ActionBar.Positioner>
-          </Portal>
-        </ActionBar.Root>
-        <ActionBar.Root open={!!selection?.text?.trim()}>
-          <Portal>
-            <ActionBar.Positioner sx={{ zIndex: 1000 }}>
-              <ActionBar.Content>
-                <Button onClick={handleSplit} data-testid="split-button">
-                  Split selection
-                </Button>
-              </ActionBar.Content>
-            </ActionBar.Positioner>
-          </Portal>
-        </ActionBar.Root>
-        {lookupConfig && (
-          <DictionaryLookup
-            isOpen={!!lookupConfig}
-            onClose={closeLookup}
-            row={lookupConfig.row}
-            column={lookupConfig.column}
-            updateCell={(rowId, columnName, value) => {
-              const rowIndex = data.findIndex((r) => r._internalId === rowId);
-              console.log("DictionaryLookup updating cell:", {
-                dataId: data[rowIndex]?.id,
-                internalId: rowId,
-                rowIndex,
-                columnName,
-                value,
-              });
-              if (rowIndex === -1) {
-                console.warn("Row not found for updateCell:", {
-                  rowId,
-                  columnName,
-                });
-                return;
+                }
               }
-              const newData = [...data];
-              newData[rowIndex] = {
-                ...newData[rowIndex],
-                [columnName]: value,
-              };
-              setData(newData);
-              const rowErrors = validateRow(newData[rowIndex], rowIndex);
-              const newCellErrors = new Map(cellErrors);
-              tableStructure.forEach((col) => {
-                const key = `${rowId}-${col.name}`;
-                newCellErrors.delete(key);
+              setSelectedCell({
+                rowIdx: args.rowIdx,
+                columnKey: args.column.key,
               });
-              rowErrors.forEach((error) => {
-                const key = `${error.rowId}-${error.columnName}`;
-                newCellErrors.set(key, error.message);
+              if (
+                args.column.editable &&
+                args.column.key !== SelectColumn.key
+              ) {
+                event.preventGridDefault();
+                args.selectCell(true);
+              }
+              console.log("Selected cell:", {
+                ".rowIdx": args.rowIdx,
+                ".column.key": args.column.key,
+                ".row.id": args.row.id,
+                "rowKeyGetter(.row.id)": rowKeyGetter(args.row),
               });
-              setCellErrors(newCellErrors);
-              setValidationErrors((prev) =>
-                prev.filter((e) => e.rowId !== rowId).concat(rowErrors)
-              );
-              console.log("Cell updated, validation run:", {
+              isClickingCell.current = false;
+            }, 0);
+          }}
+          style={{ height: "100%" }}
+          aria-label="Data Table"
+        />
+      </div>
+      <ActionBar.Root open={selectedRows.size > 0}>
+        <Portal>
+          <ActionBar.Positioner sx={{ zIndex: 1000 }}>
+            <ActionBar.Content>
+              <div style={{ marginRight: "16px" }}>
+                {selectedRows.size} selected
+              </div>
+              <Button
+                onClick={handleInsertAbove}
+                disabled={selectedRows.size !== 1}
+                mr={2}
+              >
+                Insert new row above
+              </Button>
+              <Button
+                onClick={handleInsertBelow}
+                disabled={selectedRows.size !== 1}
+                mr={2}
+              >
+                Insert new row below
+              </Button>
+              <Button
+                onClick={handleMerge}
+                disabled={selectedRows.size < 2}
+                mr={2}
+              >
+                Merge <Kbd>M</Kbd>
+              </Button>
+              <Button onClick={handleDelete} mr={2} colorScheme="red">
+                Delete <Kbd>Del</Kbd>
+              </Button>
+              <Button onClick={() => setSelectedRows(new Set())}>
+                Deselect <Kbd>D</Kbd>
+              </Button>
+            </ActionBar.Content>
+          </ActionBar.Positioner>
+        </Portal>
+      </ActionBar.Root>
+      <ActionBar.Root open={!!selection?.text?.trim()}>
+        <Portal>
+          <ActionBar.Positioner sx={{ zIndex: 1000 }}>
+            <ActionBar.Content>
+              <Button onClick={handleSplit} data-testid="split-button">
+                Split selection
+              </Button>
+            </ActionBar.Content>
+          </ActionBar.Positioner>
+        </Portal>
+      </ActionBar.Root>
+      {lookupConfig && (
+        <DictionaryLookup
+          isOpen={!!lookupConfig}
+          onClose={closeLookup}
+          row={lookupConfig.row}
+          column={lookupConfig.column}
+          updateCell={(rowId, columnName, value) => {
+            const rowIndex = data.findIndex((r) => r._internalId === rowId);
+            console.log("DictionaryLookup updating cell:", {
+              dataId: data[rowIndex]?.id,
+              internalId: rowId,
+              rowIndex,
+              columnName,
+              value,
+            });
+            if (rowIndex === -1) {
+              console.warn("Row not found for updateCell:", {
                 rowId,
                 columnName,
-                newErrors: rowErrors.length,
-                cellErrors: Array.from(newCellErrors.entries()),
               });
-            }}
-          />
-        )}
-      </VStack>
-    //</ErrorBoundary>
+              return;
+            }
+            const newData = [...data];
+            newData[rowIndex] = {
+              ...newData[rowIndex],
+              [columnName]: value,
+            };
+            setData(newData);
+            const rowErrors = validateRow(newData[rowIndex], rowIndex);
+            const newCellErrors = new Map(cellErrors);
+            tableStructure.forEach((col) => {
+              const key = `${rowId}-${col.name}`;
+              newCellErrors.delete(key);
+            });
+            rowErrors.forEach((error) => {
+              const key = `${error.rowId}-${error.columnName}`;
+              newCellErrors.set(key, error.message);
+            });
+            setCellErrors(newCellErrors);
+            setValidationErrors((prev) =>
+              prev.filter((e) => e.rowId !== rowId).concat(rowErrors)
+            );
+            console.log("Cell updated, validation run:", {
+              rowId,
+              columnName,
+              newErrors: rowErrors.length,
+              cellErrors: Array.from(newCellErrors.entries()),
+            });
+          }}
+        />
+      )}
+    </VStack>
   );
 };
 

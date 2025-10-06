@@ -593,6 +593,7 @@ const TableEditor = () => {
             value={structureKey}
             onValueChange={(details) => handleStructureChange(details.value)}
             size="sm"
+            w="200px"
           >
             <Select.HiddenSelect />
             <Select.Control>
