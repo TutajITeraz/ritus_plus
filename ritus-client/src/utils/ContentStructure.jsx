@@ -434,6 +434,14 @@ const ContentStructure = [
     value: "",
     dictionary: "day.tsv",
   },
+  {
+    name: 'text_standarization__usu_id',
+    display_name: 'USU id',
+    type: 'text',
+    editable: true,
+    can_be_null: true
+  }
+
 ];
 
 export default ContentStructure;

@@ -20,6 +20,7 @@ import {
 import { useParams } from "react-router-dom";
 import { toaster } from "@/components/ui/toaster";
 import DataTable from "../components/DataTable";
+import Converter from "../components/Converter";
 import ContentStructure from "../utils/ContentStructure";
 import UsuariumStructure from "../utils/UsuariumStructure";
 import {
@@ -73,6 +74,7 @@ const TableEditor = () => {
   const [isLoading, setIsLoading] = useState(!!projectId);
   const [showOverwriteDialog, setShowOverwriteDialog] = useState(false);
   const [showSwitchDialog, setShowSwitchDialog] = useState(false);
+  const [showConverterDialog, setShowConverterDialog] = useState(false);
   const [showBatchDialog, setShowBatchDialog] = useState(false);
   const [similarityThreshold, setSimilarityThreshold] = useState(75);
   const [batchStatus, setBatchStatus] = useState({
@@ -80,6 +82,7 @@ const TableEditor = () => {
     progress: 0,
   });
   const [isProcessing, setIsProcessing] = useState(false);
+  const [shouldLoadContent, setShouldLoadContent] = useState(!!projectId);
   const pollingRef = useRef(null);
   const batchDialogRef = useRef(null);
 
@@ -96,6 +99,7 @@ const TableEditor = () => {
   useEffect(() => {
     console.log("Debug Component Types:");
     console.log("DataTable:", DataTable);
+    console.log("Converter:", Converter);
     console.log("Dialog:", Dialog);
     console.log("Dialog.Root:", Dialog?.Root);
     console.log("NumberInput:", NumberInput);
@@ -103,8 +107,12 @@ const TableEditor = () => {
     console.log("Progress:", Progress);
     console.log("Progress.Root:", Progress?.Root);
     console.log("ContentStructure:", ContentStructure);
+    console.log("UsuariumStructure:", UsuariumStructure);
     if (typeof DataTable !== "function") {
       console.error("DataTable is not a valid component:", DataTable);
+    }
+    if (typeof Converter !== "function") {
+      console.error("Converter is not a valid component:", Converter);
     }
     if (typeof Dialog?.Root !== "function") {
       console.error("Dialog.Root is not a valid component:", Dialog?.Root);
@@ -116,12 +124,24 @@ const TableEditor = () => {
 
   const handleStructureChange = (newKey) => {
     if (newKey === structureKey) return;
+    console.log("Structure change requested:", {
+      from: structureKey,
+      to: newKey,
+      hasData: hasMeaningfulData(data),
+    });
     if (!hasMeaningfulData(data)) {
       setStructureKey(newKey);
       setData([generateEmptyRow(structures[newKey])]);
+      setShouldLoadContent(false);
+      console.log("Structure changed without data:", {
+        newStructure: newKey,
+        newData: [generateEmptyRow(structures[newKey])],
+      });
     } else {
       setPendingStructureKey(newKey);
       setShowSwitchDialog(true);
+      setShouldLoadContent(false);
+      console.log("Showing switch dialog:", { pendingStructure: newKey });
     }
   };
 
@@ -130,11 +150,26 @@ const TableEditor = () => {
     setData([generateEmptyRow(structures[pendingStructureKey])]);
     setPendingStructureKey(null);
     setShowSwitchDialog(false);
+    setShouldLoadContent(false);
     toaster.create({
       title: "Structure switched",
       description: "Current data has been dropped",
       type: "info",
       duration: 3000,
+    });
+    console.log("Dropped data and switched structure:", {
+      newStructure: pendingStructureKey,
+      newData: [generateEmptyRow(structures[pendingStructureKey])],
+    });
+  };
+
+  const handleConvertAndSwitch = () => {
+    setShowSwitchDialog(false);
+    setShowConverterDialog(true);
+    setShouldLoadContent(false);
+    console.log("Opening converter dialog:", {
+      from: structureKey,
+      to: pendingStructureKey,
     });
   };
 
@@ -151,6 +186,7 @@ const TableEditor = () => {
         setIsProcessing(false);
         setShowBatchDialog(false);
         stopPolling();
+        setShouldLoadContent(true); // Trigger content load after batch completion
         await loadProjectContent();
         toaster.create({
           title: "Success",
@@ -203,7 +239,10 @@ const TableEditor = () => {
   }, [projectId]);
 
   const loadProjectContent = async () => {
-    if (!projectId) return;
+    if (!projectId || !shouldLoadContent) {
+      console.log("Skipping loadProjectContent:", { projectId, shouldLoadContent });
+      return;
+    }
     try {
       setIsLoading(true);
       const content = await fetchProjectContent(projectId);
@@ -243,6 +282,7 @@ const TableEditor = () => {
       });
     } finally {
       setIsLoading(false);
+      setShouldLoadContent(false);
     }
   };
 
@@ -266,6 +306,7 @@ const TableEditor = () => {
     }
     await loadTranscription();
   };
+
   const loadTranscription = async () => {
     if (!projectId) return;
     try {
@@ -285,11 +326,10 @@ const TableEditor = () => {
             const hasContent = Object.values(row).some(
               (v) => typeof v === "string" && v.trim() !== ""
             );
-            if (hasContent){
+            if (hasContent) {
               rows.push(row);
               return 1;
-            }
-            else return 0;
+            } else return 0;
           };
 
           while (i < text.length) {
@@ -519,7 +559,11 @@ const TableEditor = () => {
   };
 
   // Fallback if DataTable or Dialog is invalid
-  if (typeof DataTable !== "function" || typeof Dialog?.Root !== "function") {
+  if (
+    typeof DataTable !== "function" ||
+    typeof Converter !== "function" ||
+    typeof Dialog?.Root !== "function"
+  ) {
     return (
       <Box p={4}>
         <Text color="red.500">
@@ -546,7 +590,7 @@ const TableEditor = () => {
           mb={4}
           display="inline-flex"
           alignItems="center"
-          gap={1} // adds spacing between icon and text
+          gap={1}
         >
           <TiArrowBack />Back to the Project
         </Link>
@@ -590,15 +634,21 @@ const TableEditor = () => {
           <Text fontWeight="medium" whiteSpace="nowrap">Table Structure:</Text>
           <Select.Root
             collection={structureCollection}
-            value={structureKey}
-            onValueChange={(details) => handleStructureChange(details.value)}
+            value={[structureKey]}
+            onValueChange={(details) => handleStructureChange(details.value[0])}
             size="sm"
             w="200px"
           >
             <Select.HiddenSelect />
             <Select.Control>
               <Select.Trigger>
-                <Select.ValueText placeholder="Select structure" />
+                <Select.ValueText
+                  placeholder={
+                    structureKey === "content"
+                      ? "Content Structure"
+                      : "Usuarium Structure"
+                  }
+                />
               </Select.Trigger>
               <Select.IndicatorGroup>
                 <Select.Indicator />
@@ -680,13 +730,16 @@ const TableEditor = () => {
                   {pendingStructureKey === "usuarium" ? "Usuarium" : "Content"} Structure.
                 </Text>
                 <Text mt={2}>
-                  Conversion is not yet implemented. Do you want to drop the current data?
+                  You can convert the current data or drop it and start fresh.
                 </Text>
               </Dialog.Body>
               <Dialog.Footer>
                 <Dialog.ActionTrigger asChild>
                   <Button variant="outline">Cancel</Button>
                 </Dialog.ActionTrigger>
+                <Button colorScheme="blue" onClick={handleConvertAndSwitch}>
+                  Convert and Switch
+                </Button>
                 <Button colorScheme="red" onClick={handleDropAndSwitch}>
                   Drop Data and Switch
                 </Button>
@@ -698,6 +751,17 @@ const TableEditor = () => {
           </Dialog.Positioner>
         </Portal>
       </Dialog.Root>
+      <Converter
+        open={showConverterDialog}
+        onClose={() => setShowConverterDialog(false)}
+        sourceStructure={currentStructure}
+        targetStructure={structures[pendingStructureKey]}
+        sourceData={data}
+        setData={setData}
+        sourceStructureKey={structureKey}
+        targetStructureKey={pendingStructureKey}
+        setStructureKey={setStructureKey}
+      />
       <Dialog.Root
         open={showBatchDialog}
         onOpenChange={(e) => {
@@ -735,7 +799,6 @@ const TableEditor = () => {
                     <NumberInput.Control />
                     <NumberInput.Input />
                   </NumberInput.Root>
-
                   {isProcessing && (
                     <Progress.Root
                       value={batchStatus.progress || 0}
