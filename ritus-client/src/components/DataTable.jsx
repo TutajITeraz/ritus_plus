@@ -451,7 +451,14 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           value !== ""
         ) {
           const options = dictionaries[col.name] || {};
-          if (!Object.prototype.hasOwnProperty.call(options, value)) {
+          const strValue = String(value);
+          let isValid = false;
+          if (options.items) {
+            isValid = options.items.some((opt) => opt.value === strValue);
+          } else {
+            isValid = Object.prototype.hasOwnProperty.call(options, strValue);
+          }
+          if (!isValid) {
             errors.push({
               rowId: row._internalId,
               columnName: col.name,
@@ -1214,6 +1221,9 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             });
             value = labels.join(", ");
           }
+          if (col.type === "boolean") {
+            value = value === true ? "Yes" : value === false ? "No" : "";
+          }
           return (
             <div
               style={{
@@ -1248,28 +1258,19 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
               }}
               title={cellError || ""}
             >
-              {col.type === "boolean" && row[col.name] != null && row[col.name] !== "" ? (
-                <input
-                  type="checkbox"
-                  checked={!!row[col.name]}
-                  readOnly
-                  style={{ margin: "2px" }}
-                />
-              ) : (
-                <span
-                  className="rdg-cell-content"
-                  style={{
-                    flex: 1,
-                    display: "block",
-                    maxHeight: "100%",
-                    overflowY: "auto",
-                    overflowX: "hidden",
-                    padding: "2px",
-                  }}
-                >
-                  {value}
-                </span>
-              )}
+              <span
+                className="rdg-cell-content"
+                style={{
+                  flex: 1,
+                  display: "block",
+                  maxHeight: "100%",
+                  overflowY: "auto",
+                  overflowX: "hidden",
+                  padding: "2px",
+                }}
+              >
+                {value}
+              </span>
               {col.lookupColumn !== undefined && (
                 <FaSearch
                   onClick={() => {
@@ -1297,39 +1298,63 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           col.editable === false
             ? undefined
             : ({ row, onRowChange }) => {
-                if (col.type === "select") {
-                  let options = [];
-                  if (col.dictionary) {
-                    options = dictionaries[col.name]?.items || [];
-                  } else if (col.display_element) {
-                    // Extract options from display_element by calling it with possible values
-                    const testValues = ["", "0", "0.5", "1", "ORIGINAL", "ADDED"];
-                    options = testValues
-                      .map((val) => {
-                        const label = col.display_element(val);
-                        return label ? { value: val, label } : null;
-                      })
-                      .filter(Boolean);
-                    // Ensure unique options
-                    options = Array.from(new Set(options.map(opt => opt.value)))
-                      .map(val => ({
-                        value: val,
-                        label: col.display_element(val),
-                      }));
-                    console.log("Select options derived from display_element:", {
-                      column: col.name,
-                      options,
-                    });
-                  } else {
-                    options = (col.options || ["", "0", "0.5", "1"]).map((opt) => ({
-                      value: opt,
-                      label: opt === "" ? "(null)" : opt,
-                    }));
-                  }
+                if (col.dictionary) {
+                  const options = (dictionaries[col.name]?.items || []).map((item) => ({
+                    value: String(item.value),
+                    label: item.label,
+                  }));
                   return (
                     <select
                       className="rdg-text-editor"
-                      value={row[col.name] ?? ""}
+                      value={String(row[col.name] ?? "")}
+                      onChange={(event) => {
+                        console.log("Select changed:", {
+                          dataId: row.id,
+                          internalId: row._internalId,
+                          field: col.name,
+                          value: event.target.value,
+                        });
+                        const newValue = event.target.value === "" ? null : event.target.value;
+                        onRowChange({ ...row, [col.name]: newValue }, true);
+                      }}
+                      onBlur={() => {
+                        console.log("Select blurred:", {
+                          dataId: row.id,
+                          internalId: row._internalId,
+                          field: col.name,
+                        });
+                        onRowChange({ ...row }, true);
+                      }}
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        padding: "2px",
+                        fontFamily: '"Courier New", monospace',
+                        fontSize: "14px",
+                      }}
+                    >
+                      <option value="">- none -</option>
+                      {options.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  );
+                }
+                if (col.type === "select") {
+                  let defaultOpts = ["", "0", "0.5", "1"];
+                  if (col.name === "original_or_added") {
+                    defaultOpts = ["", "ORIGINAL", "ADDED"];
+                  }
+                  const options = (col.options || defaultOpts).map((opt) => ({
+                    value: opt,
+                    label: opt === "" ? "- unknown -" : opt,
+                  }));
+                  return (
+                    <select
+                      className="rdg-text-editor"
+                      value={String(row[col.name] ?? "")}
                       onChange={(event) => {
                         console.log("Select changed:", {
                           dataId: row.id,
@@ -1408,24 +1433,42 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                   );
                 }
                 if (col.type === "boolean") {
+                  const boolValue = row[col.name];
+                  const selectValue = boolValue === true ? "true" : boolValue === false ? "false" : "";
                   return (
-                    <input
-                      type="checkbox"
-                      checked={!!row[col.name]}
+                    <select
+                      className="rdg-text-editor"
+                      value={selectValue}
                       onChange={(event) => {
-                        console.log("Checkbox changed:", {
+                        const newBool = event.target.value === "true" ? true : event.target.value === "false" ? false : null;
+                        console.log("Boolean select changed:", {
                           dataId: row.id,
                           internalId: row._internalId,
                           field: col.name,
-                          value: event.target.checked,
+                          value: newBool,
                         });
-                        onRowChange(
-                          { ...row, [col.name]: event.target.checked },
-                          true
-                        );
+                        onRowChange({ ...row, [col.name]: newBool }, true);
                       }}
-                      style={{ width: "100%", height: "100%", padding: "2px" }}
-                    />
+                      onBlur={() => {
+                        console.log("Boolean select blurred:", {
+                          dataId: row.id,
+                          internalId: row._internalId,
+                          field: col.name,
+                        });
+                        onRowChange({ ...row }, true);
+                      }}
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        padding: "2px",
+                        fontFamily: '"Courier New", monospace',
+                        fontSize: "14px",
+                      }}
+                    >
+                      <option value="">- unknown -</option>
+                      <option value="true">Yes</option>
+                      <option value="false">No</option>
+                    </select>
                   );
                 }
                 const isMultiline =

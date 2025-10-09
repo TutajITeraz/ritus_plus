@@ -49,6 +49,11 @@ const ContentStructure = [
     type: "number",
     editable: true,
     can_be_null: true,
+    
+    dictionary_key_col: "id",
+    dictionary_display_col: "id",
+    dictionary_export_col: "id",
+
     validationFunction: (value) =>
       value == null || value === ""
         ? null
@@ -281,26 +286,32 @@ const ContentStructure = [
     display_name: "Liturgical Genre ID",
     value: "",
     can_be_null: true,
-    type: "number",
-    validationFunction: (value, row, index) =>
-      value == null || value === ""
-        ? null
-        : isInteger(value)
-        ? null
-        : `Invalid integer at row ${index + 1}`,
-  },
+    type: "select",
+    dictionary: "liturgical_genres.tsv",
+    dictionary_key_col: "id",
+    dictionary_display_col: "name",
+    dictionary_export_col: "id",
+    validationFunction: (value, row, index) => {
+      if (value == null || value === "") return null;
+      // Validation is handled in validateRow using dictionaries
+      return null;
+    }
+    },
   {
     name: "music_notation_id",
     display_name: "Music Notation ID",
     value: "",
     can_be_null: true,
-    type: "number",
-    validationFunction: (value, row, index) =>
-      value == null || value === ""
-        ? null
-        : isInteger(value)
-        ? null
-        : `Invalid integer at row ${index + 1}`,
+    type: "select",
+    dictionary: "music_notation.tsv",
+    dictionary_key_col: "id",
+    dictionary_display_col: "name",
+    dictionary_export_col: "id",
+    validationFunction: (value, row, index) => {
+      if (value == null || value === "") return null;
+      // Validation is handled in validateRow using dictionaries
+      return null;
+    }
   },
   {
     name: "quire_id",
@@ -320,26 +331,32 @@ const ContentStructure = [
     display_name: "Section ID",
     value: "",
     can_be_null: true,
-    type: "number",
-    validationFunction: (value, row, index) =>
-      value == null || value === ""
-        ? null
-        : isInteger(value)
-        ? null
-        : `Invalid integer at row ${index + 1}`,
+    type: "select",
+    dictionary: "sections.tsv",
+    dictionary_key_col: "id",
+    dictionary_display_col: "name",
+    dictionary_export_col: "id",
+    validationFunction: (value, row, index) => {
+      if (value == null || value === "") return null;
+      // Validation is handled in validateRow using dictionaries
+      return null;
+    }
   },
   {
     name: "subsection_id",
     display_name: "Subsection ID",
     value: "",
     can_be_null: true,
-    type: "number",
-    validationFunction: (value, row, index) =>
-      value == null || value === ""
-        ? null
-        : isInteger(value)
-        ? null
-        : `Invalid integer at row ${index + 1}`,
+    type: "select",
+    dictionary: "sections.tsv",
+    dictionary_key_col: "id",
+    dictionary_display_col: "name",
+    dictionary_export_col: "id",
+    validationFunction: (value, row, index) => {
+      if (value == null || value === "") return null;
+      // Validation is handled in validateRow using dictionaries
+      return null;
+    }
   },
   {
     name: "contributor_id",
