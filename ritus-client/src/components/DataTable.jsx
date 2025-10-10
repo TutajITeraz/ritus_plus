@@ -260,6 +260,63 @@ const EditableTextarea = ({ value, onChange, onBlur, rowId, setSelection }) => {
   );
 };
 
+// Function to get cell content for a column
+const getCellContent = (row, col, dictionaries, tableStructure) => {
+  if (col.computeFunction) {
+    const content = tableStructure.reduce((acc, c) => {
+      if (c.type === "automatic" && dictionaries[c.name] && c.parentColumn) {
+        const entry = dictionaries[c.name]?.items.find((o) => String(o.value) === String(row[c.parentColumn]));
+        acc[c.name] = entry?.label || "N/A";
+      } else {
+        acc[c.name] = row[c.name] ?? "";
+      }
+      return acc;
+    }, {});
+    return col.computeFunction(content) || "N/A";
+  } else if (col.type === "automatic" && dictionaries[col.name] && col.parentColumn) {
+    const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(row[col.parentColumn]));
+    return entry?.label || "N/A";
+  } else if (col.display_element) {
+    return col.display_element(row[col.name] ?? "");
+  } else {
+    return row[col.name] ?? "";
+  }
+};
+
+// Function to get display value for rendering
+const getDisplayValue = (row, col, dictionaries, tableStructure) => {
+  let value = getCellContent(row, col, dictionaries, tableStructure);
+  if (col.dictionary && col.type === "select") {
+    const selected = row[col.name];
+    if (selected) {
+      const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(selected));
+      value = entry?.label || selected;
+    } else {
+      value = "";
+    }
+  } else if (col.dictionary && !col.parentColumn) {
+    const selected = row[col.name];
+    if (selected) {
+      const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(selected));
+      value = entry?.label || selected;
+    } else {
+      value = "";
+    }
+  }
+  if (col.dictionary && col.type === "list") {
+    const parts = (row[col.name] || "").split(/[,;]/).map((p) => p.trim()).filter(Boolean);
+    const labels = parts.map((p) => {
+      const opt = dictionaries[col.name]?.items.find((o) => String(o.value) === String(p));
+      return opt?.label || p;
+    });
+    value = labels.join(", ");
+  }
+  if (col.type === "boolean") {
+    value = value === true ? "Yes" : value === false ? "No" : "";
+  }
+  return value;
+};
+
 // Estimate row height based on text content
 const getRowHeight = (row, tableStructure, dictionaries) => {
   const lineHeight = 22;
@@ -278,26 +335,7 @@ const getRowHeight = (row, tableStructure, dictionaries) => {
       col.style?.overflowWrap === "break-word";
     if (!isMultiline) return;
 
-    let text = "";
-    if (
-      col.type === "automatic" &&
-      dictionaries[col.name] &&
-      col.parentColumn
-    ) {
-      text = String(dictionaries[col.name][row[col.parentColumn]] || "");
-    } else if (col.computeFunction) {
-      const content = tableStructure.reduce((acc, c) => {
-        if (c.type === "automatic" && dictionaries[c.name] && c.parentColumn) {
-          acc[c.name] = dictionaries[c.name][row[c.parentColumn]] || "";
-        } else {
-          acc[c.name] = row[c.name] ?? "";
-        }
-        return acc;
-      }, {});
-      text = String(col.computeFunction(content) || "");
-    } else {
-      text = String(row[col.name] ?? "");
-    }
+    let text = getDisplayValue(row, col, dictionaries, tableStructure);
     if (!text) return;
 
     const width = col.width || defaultWidth;
@@ -340,7 +378,6 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
   const autoFillContentRef = useRef(null);
   const gridRef = useRef(null);
   const [selectedCell, setSelectedCell] = useState(null);
-  const dictionaryCache = useRef(new Map());
   const levenshteinCache = useRef(new Map());
   const isClickingCell = useRef(false);
 
@@ -454,7 +491,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           const strValue = String(value);
           let isValid = false;
           if (options.items) {
-            isValid = options.items.some((opt) => opt.value === strValue);
+            isValid = options.items.some((opt) => String(opt.value) === strValue);
           } else {
             isValid = Object.prototype.hasOwnProperty.call(options, strValue);
           }
@@ -800,14 +837,16 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
     const csvData = data.map((row, index) => {
       const content = tableStructure.reduce((acc, col) => {
         if (col.type === "automatic" && dictionaries[col.name] && col.parentColumn) {
-          acc[col.name] = dictionaries[col.name][row[col.parentColumn]] || "N/A";
+          const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(row[col.parentColumn]));
+          acc[col.name] = entry?.label || "N/A";
         } else if (col.computeFunction) {
           acc[col.name] =
             col.computeFunction({
               ...row,
               ...tableStructure.reduce((computed, c) => {
                 if (c.type === "automatic" && dictionaries[c.name] && c.parentColumn) {
-                  computed[c.name] = dictionaries[c.name][row[c.parentColumn]] || "N/A";
+                  const entry = dictionaries[c.name]?.items.find((o) => String(o.value) === String(row[c.parentColumn]));
+                  computed[c.name] = entry?.label || "N/A";
                 }
                 return computed;
               }, {}),
@@ -1183,56 +1222,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           const isMultiline =
             col.style?.wordWrap === "break-word" ||
             col.style?.overflowWrap === "break-word";
-          const content = tableStructure.reduce((acc, c) => {
-            if (
-              c.type === "automatic" &&
-              dictionaries[c.name] &&
-              c.parentColumn
-            ) {
-              const entry = dictionaries[c.name]?.items.find((o) => String(o.value) === String(row[c.parentColumn]));
-              acc[c.name] = entry?.label || "N/A";
-            } else {
-              acc[c.name] = row[c.name] ?? "";
-            }
-            return acc;
-          }, {});
-          let value = col.computeFunction
-            ? col.computeFunction(content) || "N/A"
-            : col.type === "automatic" &&
-              dictionaries[col.name] &&
-              col.parentColumn
-            ? dictionaries[col.name].items.find((o) => String(o.value) === String(row[col.parentColumn]))?.label || "N/A"
-            : col.display_element
-            ? col.display_element(row[col.name] ?? "")
-            : row[col.name] ?? "";
-          if (col.dictionary && col.type === "select") {
-            const selected = row[col.name];
-            if (selected) {
-              const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(selected));
-              value = entry?.label || selected;
-            } else {
-              value = "";
-            }
-          } else if (col.dictionary && !col.parentColumn) {
-            const selected = row[col.name];
-            if (selected) {
-              const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(selected));
-              value = entry?.label || selected;
-            } else {
-              value = "";
-            }
-          }
-          if (col.dictionary && col.type === "list") {
-            const parts = (row[col.name] || "").split(/[,;]/).map((p) => p.trim()).filter(Boolean);
-            const labels = parts.map((p) => {
-              const opt = dictionaries[col.name]?.items.find((o) => String(o.value) === String(p));
-              return opt?.label || p;
-            });
-            value = labels.join(", ");
-          }
-          if (col.type === "boolean") {
-            value = value === true ? "Yes" : value === false ? "No" : "";
-          }
+          const value = getDisplayValue(row, col, dictionaries, tableStructure);
           return (
             <div
               style={{
@@ -1586,7 +1576,6 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           }))
           .sort((a, b) => a.label.localeCompare(b.label));
         const collection = createListCollection({ items });
-        dictionaryCache.current.set(col.dictionary, collection);
         newDictionaries[col.name] = collection;
       }
       setDictionaries(newDictionaries);
