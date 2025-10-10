@@ -294,14 +294,6 @@ const getDisplayValue = (row, col, dictionaries, tableStructure) => {
     } else {
       value = "";
     }
-  } else if (col.dictionary && !col.parentColumn) {
-    const selected = row[col.name];
-    if (selected) {
-      const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(selected));
-      value = entry?.label || selected;
-    } else {
-      value = "";
-    }
   }
   if (col.dictionary && col.type === "list") {
     const parts = (row[col.name] || "").split(/[,;]/).map((p) => p.trim()).filter(Boolean);
@@ -313,6 +305,38 @@ const getDisplayValue = (row, col, dictionaries, tableStructure) => {
   }
   if (col.type === "boolean") {
     value = value === true ? "Yes" : value === false ? "No" : "";
+  }
+  return value;
+};
+
+// Function to get export value
+const getExportValue = (row, col, dictionaries, tableStructure) => {
+  let value = getCellContent(row, col, dictionaries, tableStructure);
+  if (col.dictionary) {
+    if (col.type === "select" || (col.type === "number" && !col.parentColumn)) {
+      const selected = row[col.name];
+      if (selected) {
+        const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(selected));
+        value = entry?.exportValue || selected;
+      } else {
+        value = "";
+      }
+    } else if (col.type === "automatic") {
+      const selected = row[col.parentColumn];
+      if (selected) {
+        const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(selected));
+        value = entry?.exportValue || entry?.label || "N/A";
+      } else {
+        value = "N/A";
+      }
+    } else if (col.type === "list") {
+      const parts = (row[col.name] || "").split(/[,;]/).map((p) => p.trim()).filter(Boolean);
+      const exports = parts.map((p) => {
+        const opt = dictionaries[col.name]?.items.find((o) => String(o.value) === String(p));
+        return opt?.exportValue || p;
+      });
+      value = exports.join(", ");
+    }
   }
   return value;
 };
@@ -834,44 +858,9 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
       (col) => visibleColumns[col.name]
     );
     const headers = visibleCols.map((col) => col.name);
-    const csvData = data.map((row, index) => {
-      const content = tableStructure.reduce((acc, col) => {
-        if (col.type === "automatic" && dictionaries[col.name] && col.parentColumn) {
-          const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(row[col.parentColumn]));
-          acc[col.name] = entry?.label || "N/A";
-        } else if (col.computeFunction) {
-          acc[col.name] =
-            col.computeFunction({
-              ...row,
-              ...tableStructure.reduce((computed, c) => {
-                if (c.type === "automatic" && dictionaries[c.name] && c.parentColumn) {
-                  const entry = dictionaries[c.name]?.items.find((o) => String(o.value) === String(row[c.parentColumn]));
-                  computed[c.name] = entry?.label || "N/A";
-                }
-                return computed;
-              }, {}),
-            }) || "N/A";
-        } else if (col.type === "select") {
-          const selected = row[col.name] ?? "";
-          console.log("Exporting select column:", {
-            column: col.name,
-            rowIndex: index,
-            internalId: row._internalId,
-            rawValue: selected,
-            dictionary: col.dictionary,
-            hasDictionary: !!col.dictionary,
-          });
-          acc[col.name] = selected;
-        } else if (col.type === "list") {
-          const selected = row[col.name] ?? "";
-          acc[col.name] = selected;
-        } else {
-          acc[col.name] = row[col.name] ?? "";
-        }
-        return acc;
-      }, {});
-      return visibleCols.map((col) => content[col.name]);
-    });
+    const csvData = data.map((row) => 
+      visibleCols.map((col) => getExportValue(row, col, dictionaries, tableStructure))
+    );
     const csv = Papa.unparse({
       fields: headers,
       data: csvData,
@@ -1568,11 +1557,13 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
         const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true }).data;
         const keyCol = col.dictionary_key_col || (col.type === "select" || col.type === "list" ? "name" : "id");
         const displayCol = col.dictionary_display_col || (col.type === "select" || col.type === "list" ? "name" : "text");
+        const exportCol = col.dictionary_export_col || (col.type === "automatic" ? displayCol : keyCol);
         const items = parsed
           .filter((row) => row[keyCol] && row[displayCol])
           .map((row) => ({
             value: row[keyCol],
             label: row[displayCol],
+            exportValue: row[exportCol],
           }))
           .sort((a, b) => a.label.localeCompare(b.label));
         const collection = createListCollection({ items });
