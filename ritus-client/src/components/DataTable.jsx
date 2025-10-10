@@ -1189,7 +1189,8 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
               dictionaries[c.name] &&
               c.parentColumn
             ) {
-              acc[c.name] = dictionaries[c.name][row[c.parentColumn]] || "N/A";
+              const entry = dictionaries[c.name]?.items.find((o) => String(o.value) === String(row[c.parentColumn]));
+              acc[c.name] = entry?.label || "N/A";
             } else {
               acc[c.name] = row[c.name] ?? "";
             }
@@ -1200,14 +1201,22 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             : col.type === "automatic" &&
               dictionaries[col.name] &&
               col.parentColumn
-            ? dictionaries[col.name][row[col.parentColumn]] || "N/A"
+            ? dictionaries[col.name].items.find((o) => String(o.value) === String(row[col.parentColumn]))?.label || "N/A"
             : col.display_element
             ? col.display_element(row[col.name] ?? "")
             : row[col.name] ?? "";
           if (col.dictionary && col.type === "select") {
             const selected = row[col.name];
             if (selected) {
-              const entry = dictionaries[col.name]?.items.find((o) => o.value === selected);
+              const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(selected));
+              value = entry?.label || selected;
+            } else {
+              value = "";
+            }
+          } else if (col.dictionary && !col.parentColumn) {
+            const selected = row[col.name];
+            if (selected) {
+              const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(selected));
               value = entry?.label || selected;
             } else {
               value = "";
@@ -1216,7 +1225,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           if (col.dictionary && col.type === "list") {
             const parts = (row[col.name] || "").split(/[,;]/).map((p) => p.trim()).filter(Boolean);
             const labels = parts.map((p) => {
-              const opt = dictionaries[col.name]?.items.find((o) => o.value === p);
+              const opt = dictionaries[col.name]?.items.find((o) => String(o.value) === String(p));
               return opt?.label || p;
             });
             value = labels.join(", ");
@@ -1298,7 +1307,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           col.editable === false
             ? undefined
             : ({ row, onRowChange }) => {
-                if (col.dictionary) {
+                if (col.dictionary && col.type === "select") {
                   const options = (dictionaries[col.name]?.items || []).map((item) => ({
                     value: String(item.value),
                     label: item.label,
@@ -1564,27 +1573,21 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           visibleColumns[col.name]
       );
       for (const col of dictionaryColumns) {
-        if (dictionaryCache.current.has(col.dictionary)) {
-          newDictionaries[col.name] = dictionaryCache.current.get(
-            col.dictionary
-          );
-        } else {
-          const response = await fetch(`/data/${col.dictionary}`);
-          const csvText = await response.text();
-          const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true }).data;
-          const keyCol = col.dictionary_key_col || (col.type === "select" || col.type === "list" ? "name" : "id");
-          const displayCol = col.dictionary_display_col || (col.type === "select" || col.type === "list" ? "name" : "text");
-          const items = parsed
-            .filter((row) => row[keyCol] && row[displayCol])
-            .map((row) => ({
-              value: row[keyCol],
-              label: row[displayCol],
-            }))
-            .sort((a, b) => a.label.localeCompare(b.label));
-          const collection = createListCollection({ items });
-          dictionaryCache.current.set(col.dictionary, collection);
-          newDictionaries[col.name] = collection;
-        }
+        const response = await fetch(`/data/${col.dictionary}`);
+        const csvText = await response.text();
+        const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true }).data;
+        const keyCol = col.dictionary_key_col || (col.type === "select" || col.type === "list" ? "name" : "id");
+        const displayCol = col.dictionary_display_col || (col.type === "select" || col.type === "list" ? "name" : "text");
+        const items = parsed
+          .filter((row) => row[keyCol] && row[displayCol])
+          .map((row) => ({
+            value: row[keyCol],
+            label: row[displayCol],
+          }))
+          .sort((a, b) => a.label.localeCompare(b.label));
+        const collection = createListCollection({ items });
+        dictionaryCache.current.set(col.dictionary, collection);
+        newDictionaries[col.name] = collection;
       }
       setDictionaries(newDictionaries);
     };

@@ -83,6 +83,9 @@ const ContentStructure = [
     can_be_null: true,
     parentColumn: "formula_id",
     dictionary: "formulas.csv",
+    dictionary_key_col: "id",
+    dictionary_display_col: "text",
+    dictionary_export_col: "text",
     width: 300,
     style: {
       whiteSpace: "normal",
@@ -180,6 +183,9 @@ const ContentStructure = [
         : null,
     dictionary: "rite_names.csv",
     lookupColumn: "rite_name_from_ms",
+    dictionary_key_col: "id",
+    dictionary_display_col: "id",
+    dictionary_export_col: "id",
   },
   {
     name: "rite_name_standarized",
@@ -189,6 +195,9 @@ const ContentStructure = [
     can_be_null: true,
     parentColumn: "rite_id",
     dictionary: "rite_names.csv",
+    dictionary_key_col: "id",
+    dictionary_display_col: "text",
+    dictionary_export_col: "text",
     validationFunction: (value, row, index) =>
       value == null || value === ""
         ? null
