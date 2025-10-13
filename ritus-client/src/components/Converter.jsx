@@ -86,7 +86,7 @@ const Converter = ({
               : [mapping[targetStructureName]];
             const value = sourceRow[sourceField];
 
-            console.log(`Mapping ${sourceField} to ${targetField.join(", ")}:`, { value });
+            console.log(`Processing ${sourceField} to ${targetField.join(", ")}:`, { value });
 
             if (mapping.mappingFunction) {
               const result = mapping.mappingFunction(sourceRow);
@@ -94,34 +94,54 @@ const Converter = ({
               if (typeof result === "object") {
                 Object.entries(result).forEach(([key, val]) => {
                   newRow[key] = val;
-                  console.log(`Set ${key} = ${val}`);
+                  console.log(`Set ${key} = ${val} from ${sourceField}`);
                 });
               } else {
                 targetField.forEach((field) => {
                   newRow[field] = result;
-                  console.log(`Set ${field} = ${result}`);
+                  console.log(`Set ${field} = ${result} from ${sourceField}`);
                 });
               }
             } else if (mapping.mappingFile) {
               if (typeof mapping.mappingFile === "object") {
-                for (const [field, filePath] of Object.entries(mapping.mappingFile)) {
-                  const map = await fetchMappingFile(filePath);
-                  const mappedValue = map.get(value) || "";
-                  newRow[field] = mappedValue;
-                  console.log(`Mapped ${sourceField} to ${field} using file ${filePath}: ${mappedValue}`);
-                }
+                // Handle multi-field mapping with selective mapping files
+                const promises = targetField.map(async (field) => {
+                  const filePath = mapping.mappingFile[field];
+                  if (filePath) {
+                    // Field has a mapping file, apply mapping
+                    const map = await fetchMappingFile(filePath);
+                    const mappedValue = map.get(value) || "";
+                    if (mappedValue && !newRow[field]) {
+                      newRow[field] = mappedValue;
+                      console.log(`Mapped ${sourceField} to ${field} using file ${filePath}: ${mappedValue}`);
+                    }
+                  } else {
+                    // No mapping file for this field, use direct mapping if not already set
+                    if (value && !newRow[field]) {
+                      newRow[field] = value;
+                      console.log(`Direct mapping ${sourceField} to ${field}: ${value}`);
+                    }
+                  }
+                });
+                await Promise.all(promises);
               } else {
+                // Single mapping file for all target fields
                 const map = await fetchMappingFile(mapping.mappingFile);
                 targetField.forEach((field) => {
                   const mappedValue = map.get(value) || "";
-                  newRow[field] = mappedValue;
-                  console.log(`Mapped ${sourceField} to ${field} using file: ${mappedValue}`);
+                  if (mappedValue && !newRow[field]) {
+                    newRow[field] = mappedValue;
+                    console.log(`Mapped ${sourceField} to ${field} using file ${mapping.mappingFile}: ${mappedValue}`);
+                  }
                 });
               }
             } else if (mapping[targetStructureName]) {
               console.log(`Direct mapping ${sourceField} to ${targetField.join(", ")}: ${value ?? ""}`);
               targetField.forEach((field) => {
-                newRow[field] = value ?? "";
+                if (value && !newRow[field]) {
+                  newRow[field] = value;
+                  console.log(`Set ${field} = ${value} from ${sourceField}`);
+                }
               });
             } else {
               console.log(`No action for mapping ${sourceField}`);

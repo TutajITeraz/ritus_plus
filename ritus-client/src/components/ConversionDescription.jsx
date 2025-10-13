@@ -168,7 +168,6 @@ export const UsuariumStructure_conv = {
   GENRE: {
     ContentStructure: ["genre", "function_id", "subfunction_id"],
     mappingFile: {
-      genre: "data/mapping/genre_to_genre.tsv",
       function_id: "data/mapping/function_id_to_genre.tsv",
       subfunction_id: "data/mapping/subfunction_id_to_genre.tsv",
     },

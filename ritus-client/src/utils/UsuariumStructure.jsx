@@ -224,6 +224,14 @@ const UsuariumStructure = [
     validationFunction: validateNonEmptyText,
   },
   {
+    name: "STANDARD ITEM",
+    display_name: "STANDARD ITEM",
+    type: "text",
+    editable: true,
+    can_be_null: true,
+    validationFunction: validateNonEmptyText,
+  },
+  {
     name: "EXPLICIT",
     display_name: "EXPLICIT",
     type: "text",
