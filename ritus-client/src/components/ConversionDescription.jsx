@@ -140,7 +140,7 @@ export const UsuariumStructure_conv = {
     mappingFunction: (row) => {
       const value = row["PAGE NUMBER (ORIGINAL)"];
       if (!value) return { where_in_ms_from: "", where_in_ms_to: "" };
-      const [from, to] = value.split(" - ").map((s) => s.trim());
+      const [from, to] = value.split("-").map((s) => s.trim());
       return { where_in_ms_from: from || "", where_in_ms_to: to || "" };
     },
     reverseMappingFunction: (row) => {

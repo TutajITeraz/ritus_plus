@@ -1,3 +1,5 @@
+cp -r ../ritus-client/dist/* ./static
+
 zip -r ../ritus_plus.zip \
   ai_tools.py \
   batch_analysis.py \

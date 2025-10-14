@@ -97,17 +97,17 @@ const TableEditor = () => {
 
   // Debug component types
   useEffect(() => {
-    console.log("Debug Component Types:");
-    console.log("DataTable:", DataTable);
-    console.log("Converter:", Converter);
-    console.log("Dialog:", Dialog);
-    console.log("Dialog.Root:", Dialog?.Root);
-    console.log("NumberInput:", NumberInput);
-    console.log("NumberInput.Root:", NumberInput?.Root);
-    console.log("Progress:", Progress);
-    console.log("Progress.Root:", Progress?.Root);
-    console.log("ContentStructure:", ContentStructure);
-    console.log("UsuariumStructure:", UsuariumStructure);
+    //console.log("Debug Component Types:");
+    //console.log("DataTable:", DataTable);
+    //console.log("Converter:", Converter);
+    //console.log("Dialog:", Dialog);
+    //console.log("Dialog.Root:", Dialog?.Root);
+    //console.log("NumberInput:", NumberInput);
+    //console.log("NumberInput.Root:", NumberInput?.Root);
+    //console.log("Progress:", Progress);
+    //console.log("Progress.Root:", Progress?.Root);
+    //console.log("ContentStructure:", ContentStructure);
+    //console.log("UsuariumStructure:", UsuariumStructure);
     if (typeof DataTable !== "function") {
       console.error("DataTable is not a valid component:", DataTable);
     }

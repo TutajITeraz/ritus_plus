@@ -303,9 +303,6 @@ const ContentStructure = [
     can_be_null: true,
     type: "select",
     dictionary: "liturgical_genres.tsv",
-    dictionary_key_col: "id",
-    dictionary_display_col: "name",
-    dictionary_export_col: "id",
     validationFunction: (value, row, index) => {
       if (value == null || value === "") return null;
       // Validation is handled in validateRow using dictionaries
@@ -319,9 +316,6 @@ const ContentStructure = [
     can_be_null: true,
     type: "select",
     dictionary: "music_notation.tsv",
-    dictionary_key_col: "id",
-    dictionary_display_col: "name",
-    dictionary_export_col: "id",
     validationFunction: (value, row, index) => {
       if (value == null || value === "") return null;
       // Validation is handled in validateRow using dictionaries
@@ -348,9 +342,6 @@ const ContentStructure = [
     can_be_null: true,
     type: "select",
     dictionary: "sections.tsv",
-    dictionary_key_col: "id",
-    dictionary_display_col: "name",
-    dictionary_export_col: "id",
     validationFunction: (value, row, index) => {
       if (value == null || value === "") return null;
       // Validation is handled in validateRow using dictionaries
@@ -364,9 +355,6 @@ const ContentStructure = [
     can_be_null: true,
     type: "select",
     dictionary: "sections.tsv",
-    dictionary_key_col: "id",
-    dictionary_display_col: "name",
-    dictionary_export_col: "id",
     validationFunction: (value, row, index) => {
       if (value == null || value === "") return null;
       // Validation is handled in validateRow using dictionaries
@@ -378,13 +366,7 @@ const ContentStructure = [
     display_name: "Contributor ID",
     value: "",
     can_be_null: true,
-    type: "number",
-    validationFunction: (value, row, index) =>
-      value == null || value === ""
-        ? null
-        : isInteger(value)
-        ? null
-        : `Invalid integer at row ${index + 1}`,
+    type: "text",
   },
   {
     name: "entry_date",

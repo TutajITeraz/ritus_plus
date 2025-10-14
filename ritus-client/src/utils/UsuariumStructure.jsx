@@ -122,7 +122,7 @@ const UsuariumStructure = [
     dictionary: "topic.tsv",
     dictionary_key_col: "name",
     dictionary_display_col: "name",
-    dictionary_export_col: "id",
+    dictionary_export_col: "name",
     editable: true,
     can_be_null: true,
     validationFunction: validateSelectOrList,
@@ -229,7 +229,6 @@ const UsuariumStructure = [
     type: "text",
     editable: true,
     can_be_null: true,
-    validationFunction: validateNonEmptyText,
   },
   {
     name: "EXPLICIT",
@@ -257,10 +256,9 @@ const UsuariumStructure = [
   {
     name: "PAGE LINK",
     display_name: "PAGE LINK",
-    type: "number",
+    type: "text",
     editable: true,
     can_be_null: true,
-    validationFunction: validateNumber,
   },
   {
     name: "REMARK",
