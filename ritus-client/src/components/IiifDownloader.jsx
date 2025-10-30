@@ -56,7 +56,6 @@ const IiifDownloader = ({
     };
     fetchManifest();
   }, [iiifUrl]);
-
   const downloadIIIFManifest = async (url) => {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -65,66 +64,132 @@ const IiifDownloader = ({
 
   const getLabelsAndUrls = (manifest) => {
     const labelsUrls = {};
-    if (manifest.items) { // IIIF v3
+
+    // Helper to extract language-tagged string
+    const getLabel = (labelObj) => {
+      if (!labelObj) return "Untitled";
+      if (typeof labelObj === "string") return labelObj;
+      if (Array.isArray(labelObj)) return labelObj[0] || "Untitled";
+
+      // Language map: { "pl": ["..."], "en": ["..."] }
+      const langs = Object.keys(labelObj);
+      if (langs.length === 0) return "Untitled";
+      // Prefer 'pl', then 'en', then first available
+      if (labelObj.pl && Array.isArray(labelObj.pl)) return labelObj.pl[0] || "Untitled";
+      if (labelObj.en && Array.isArray(labelObj.en)) return labelObj.en[0] || "Untitled";
+      const firstLang = langs[0];
+      return Array.isArray(labelObj[firstLang]) ? labelObj[firstLang][0] || "Untitled" : "Untitled";
+    };
+
+    // === IIIF Presentation API 3 ===
+    if (manifest.items && Array.isArray(manifest.items)) {
       for (const item of manifest.items) {
-        if (item.type === "Canvas") {
-          const label = item.label?.none?.[0] || "Untitled";
+        if (item.type !== "Canvas") continue;
+
+        const label = getLabel(item.label);
+        let thumbnailUrl = null;
+        let fullImageUrl = null;
+
+        // Extract thumbnail
+        if (item.thumbnail) {
+          if (Array.isArray(item.thumbnail)) {
+            thumbnailUrl = item.thumbnail[0]?.id || null;
+          } else if (item.thumbnail.id) {
+            thumbnailUrl = item.thumbnail.id;
+          }
+        }
+
+        // Traverse items → AnnotationPage → items → Annotation → body
+        if (item.items && Array.isArray(item.items)) {
+          for (const annPage of item.items) {
+            if (annPage.type !== "AnnotationPage" || !annPage.items) continue;
+            for (const ann of annPage.items) {
+              if (ann.type !== "Annotation" || ann.motivation !== "painting" || !ann.body) continue;
+
+              const body = ann.body;
+              if (body.type === "Image" && body.id) {
+                fullImageUrl = body.id;
+                // Fallback to body.id if no thumbnail
+                if (!thumbnailUrl) thumbnailUrl = body.id;
+                break; // Only one painting annotation per canvas
+              }
+            }
+            if (fullImageUrl) break;
+          }
+        }
+
+        if (fullImageUrl) {
+          labelsUrls[label] = { thumbnail: thumbnailUrl, full: fullImageUrl };
+        }
+      }
+    }
+    // === IIIF Presentation API 2 ===
+    else if (manifest.sequences && Array.isArray(manifest.sequences)) {
+      for (const sequence of manifest.sequences) {
+        if (!sequence.canvases || !Array.isArray(sequence.canvases)) continue;
+        for (const canvas of sequence.canvases) {
+          const label = canvas.label || "Untitled";
           let thumbnailUrl = null;
           let fullImageUrl = null;
 
-          if (item.thumbnail) {
-            thumbnailUrl = Array.isArray(item.thumbnail) ? item.thumbnail[0].id : item.thumbnail.id;
+          if (canvas.thumbnail) {
+            thumbnailUrl = canvas.thumbnail["@id"] || canvas.thumbnail;
           }
 
-          if (item.items) {
-            for (const annotationPage of item.items) {
-              if (annotationPage.type === "AnnotationPage" && annotationPage.items) {
-                for (const annotation of annotationPage.items) {
-                  if (annotation.type === "Annotation" && annotation.body) {
-                    const body = annotation.body;
-                    if (body.type === "Image" && body.id) {
-                      fullImageUrl = body.id;
-                      if (!thumbnailUrl) thumbnailUrl = body.id;
-                    }
-                  }
-                }
+          if (canvas.images && Array.isArray(canvas.images)) {
+            for (const img of canvas.images) {
+              if (img.resource && img.resource["@id"]) {
+                fullImageUrl = img.resource["@id"];
+                if (!thumbnailUrl) thumbnailUrl = fullImageUrl;
+                break;
               }
             }
           }
 
-          if (thumbnailUrl && fullImageUrl) {
+          if (fullImageUrl) {
             labelsUrls[label] = { thumbnail: thumbnailUrl, full: fullImageUrl };
           }
         }
       }
-    } else if (manifest.sequences) { // IIIF v2
-      for (const sequence of manifest.sequences) {
-        if (sequence.canvases) {
-          for (const canvas of sequence.canvases) {
-            const label = canvas.label || "Untitled";
-            let thumbnailUrl = null;
-            let fullImageUrl = null;
+    }
+    // === Legacy or non-standard (fallback): look for @context with presentation/3 ===
+    else if (
+      manifest["@context"] &&
+      (manifest["@context"].includes("presentation/3/context.json") ||
+      manifest["@context"].includes("presentation/2/context.json"))
+    ) {
+      // Try to treat as v3 even if structure is slightly off
+      const items = manifest.items || manifest.canvases || [];
+      for (const item of items) {
+        if (item.type !== "Canvas") continue;
 
-            if (canvas.thumbnail) {
-              thumbnailUrl = canvas.thumbnail["@id"] || canvas.thumbnail;
-            }
+        const label = getLabel(item.label);
+        let thumbnailUrl = null;
+        let fullImageUrl = null;
 
-            if (canvas.images) {
-              for (const image of canvas.images) {
-                if (image.resource && image.resource["@id"]) {
-                  fullImageUrl = image.resource["@id"];
-                  if (!thumbnailUrl) thumbnailUrl = fullImageUrl;
-                }
-              }
-            }
+        if (item.thumbnail) {
+          thumbnailUrl = Array.isArray(item.thumbnail) ? item.thumbnail[0]?.id : item.thumbnail.id;
+        }
 
-            if (thumbnailUrl && fullImageUrl) {
-              labelsUrls[label] = { thumbnail: thumbnailUrl, full: fullImageUrl };
+        const annPages = item.items || [];
+        for (const annPage of annPages) {
+          if (annPage.type !== "AnnotationPage" || !annPage.items) continue;
+          for (const ann of annPage.items) {
+            if (ann.type === "Annotation" && ann.body && ann.body.id) {
+              fullImageUrl = ann.body.id;
+              if (!thumbnailUrl) thumbnailUrl = fullImageUrl;
+              break;
             }
           }
+          if (fullImageUrl) break;
+        }
+
+        if (fullImageUrl) {
+          labelsUrls[label] = { thumbnail: thumbnailUrl, full: fullImageUrl };
         }
       }
     }
+
     return labelsUrls;
   };
 
