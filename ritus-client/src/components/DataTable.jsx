@@ -1749,7 +1749,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                     <Select.Root
                       collection={selectCollection}
                       value={
-                        autoFillColumn?.name ? [autoFillColumn.name] : ["Content Structure"]
+                        autoFillColumn?.name ? [autoFillColumn.name] : ""
                       }
                       onValueChange={(details) => {
                         const col = tableStructure.find(
@@ -1766,7 +1766,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                       <Select.HiddenSelect />
                       <Select.Control>
                         <Select.Trigger>
-                          <Select.ValueText placeholder="Content Structure" />
+                          <Select.ValueText />
                         </Select.Trigger>
                         <Select.IndicatorGroup>
                           <Select.Indicator />
@@ -1793,6 +1793,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                       <Checkbox.Control />
                       <Checkbox.Label>Replace existing</Checkbox.Label>
                     </Checkbox.Root>
+                    <Text>Similarity treshold:</Text>
                     <NumberInput.Root
                       defaultValue={50}
                       min={0}
@@ -1803,9 +1804,6 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                         setSimilarityThreshold(details.valueAsNumber)
                       }
                     >
-                      <NumberInput.Label>
-                        Similarity threshold
-                      </NumberInput.Label>
                       <NumberInput.Control />
                       <NumberInput.Input />
                     </NumberInput.Root>
