@@ -1037,6 +1037,8 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
     setChangedRows(0);
     setTotalRows(0);
 
+    console.log("Starting autofill for column:", autoFillColumn.name, "with threshold:", similarityThreshold) ;
+
     try {
       const response = await fetch(`/data/${autoFillColumn.dictionary}`);
       if (!response.ok) {
@@ -1092,6 +1094,8 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             ? ((maxLength - distance) / maxLength) * 100
             : 100;
           if (similarity >= similarityThreshold) {
+            console.log("Similarity:", similarity, ">= Threshold:", similarityThreshold);
+
             console.log("Before update:", {
               rowIndex: i,
               internalId: row._internalId,
@@ -1801,7 +1805,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                       step={0.05}
                       formatOptions={{ style: "percent" }}
                       onValueChange={(details) =>
-                        setSimilarityThreshold(details.valueAsNumber)
+                        setSimilarityThreshold(details.valueAsNumber*100)
                       }
                     >
                       <NumberInput.Control />
