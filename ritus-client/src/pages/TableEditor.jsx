@@ -489,6 +489,9 @@ const TableEditor = () => {
   };
 
   const handleStartBatchProcess = async () => {
+    batchStatus.progress = 0; // Reset progress
+    setBatchStatus(batchStatus)
+
     if (structureKey !== "content") {
       toaster.create({
         title: "Error",
@@ -814,7 +817,7 @@ const TableEditor = () => {
                         <Progress.Range />
                       </Progress.Track>
                       <Progress.ValueText>
-                        {Math.round((batchStatus.progress || 0) * 100)}%
+                        {Math.round((batchStatus.progress || 0))}%
                       </Progress.ValueText>
                     </Progress.Root>
                   )}
