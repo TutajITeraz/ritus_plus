@@ -27,7 +27,7 @@ const Converter = ({
   targetStructureKey,
   setStructureKey,
 }) => {
-  const [similarityThreshold, setSimilarityThreshold] = useState(75);
+  //const [similarityThreshold, setSimilarityThreshold] = useState(75);
   const [isConverting, setIsConverting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [mappingCache, setMappingCache] = useState(new Map());
@@ -44,7 +44,7 @@ const Converter = ({
       return mappingCache.get(filePath);
     }
     try {
-      const response = await fetch(`/${filePath}`);
+      const response = await fetch(`${filePath}`);
       if (!response.ok) {
         throw new Error(`Failed to fetch mapping file: ${filePath}`);
       }
@@ -71,7 +71,7 @@ const Converter = ({
     try {
       const newData = await Promise.all(
         sourceData.map(async (sourceRow, index) => {
-          console.log(`Converting row ${index + 1}:`, sourceRow);
+          //console.log(`Converting row ${index + 1}:`, sourceRow);
           const newRow = { _internalId: sourceRow._internalId || Date.now() + index };
           
           // Initialize target row with default values
@@ -86,20 +86,20 @@ const Converter = ({
               : [mapping[targetStructureName]];
             const value = sourceRow[sourceField];
 
-            console.log(`Processing ${sourceField} to ${targetField.join(", ")}:`, { value });
+            //console.log(`Processing ${sourceField} to ${targetField.join(", ")}:`, { value });
 
             if (mapping.mappingFunction) {
               const result = mapping.mappingFunction(sourceRow);
-              console.log(`Applied mapping function for ${sourceField}:`, result);
+              //console.log(`Applied mapping function for ${sourceField}:`, result);
               if (typeof result === "object") {
                 Object.entries(result).forEach(([key, val]) => {
                   newRow[key] = val;
-                  console.log(`Set ${key} = ${val} from ${sourceField}`);
+                  //console.log(`Set ${key} = ${val} from ${sourceField}`);
                 });
               } else {
                 targetField.forEach((field) => {
                   newRow[field] = result;
-                  console.log(`Set ${field} = ${result} from ${sourceField}`);
+                  //console.log(`Set ${field} = ${result} from ${sourceField}`);
                 });
               }
             } else if (mapping.mappingFile) {
@@ -113,13 +113,13 @@ const Converter = ({
                     const mappedValue = map.get(value) || "";
                     if (mappedValue && !newRow[field]) {
                       newRow[field] = mappedValue;
-                      console.log(`Mapped ${sourceField} to ${field} using file ${filePath}: ${mappedValue}`);
+                      //console.log(`Mapped ${sourceField} to ${field} using file ${filePath}: ${mappedValue}`);
                     }
                   } else {
                     // No mapping file for this field, use direct mapping if not already set
                     if (value && !newRow[field]) {
                       newRow[field] = value;
-                      console.log(`Direct mapping ${sourceField} to ${field}: ${value}`);
+                      //console.log(`Direct mapping ${sourceField} to ${field}: ${value}`);
                     }
                   }
                 });
@@ -131,20 +131,20 @@ const Converter = ({
                   const mappedValue = map.get(value) || "";
                   if (mappedValue && !newRow[field]) {
                     newRow[field] = mappedValue;
-                    console.log(`Mapped ${sourceField} to ${field} using file ${mapping.mappingFile}: ${mappedValue}`);
+                    //console.log(`Mapped ${sourceField} to ${field} using file ${mapping.mappingFile}: ${mappedValue}`);
                   }
                 });
               }
             } else if (mapping[targetStructureName]) {
-              console.log(`Direct mapping ${sourceField} to ${targetField.join(", ")}: ${value ?? ""}`);
+              //console.log(`Direct mapping ${sourceField} to ${targetField.join(", ")}: ${value ?? ""}`);
               targetField.forEach((field) => {
                 if (value && !newRow[field]) {
                   newRow[field] = value;
-                  console.log(`Set ${field} = ${value} from ${sourceField}`);
+                  //console.log(`Set ${field} = ${value} from ${sourceField}`);
                 }
               });
             } else {
-              console.log(`No action for mapping ${sourceField}`);
+              //console.log(`No action for mapping ${sourceField}`);
             }
           }
 
@@ -152,11 +152,11 @@ const Converter = ({
           const seqCol = targetStructure.find((col) => col.type === "sequence");
           if (seqCol) {
             newRow[seqCol.name] = sourceRow.sequence_in_ms || index + 1;
-            console.log(`Set sequence column ${seqCol.name} = ${newRow[seqCol.name]}`);
+            //console.log(`Set sequence column ${seqCol.name} = ${newRow[seqCol.name]}`);
           }
 
           setProgress(((index + 1) / sourceData.length) * 100);
-          console.log(`Converted row ${index + 1}:`, newRow);
+          //console.log(`Converted row ${index + 1}:`, newRow);
           return newRow;
         })
       );
@@ -220,6 +220,7 @@ const Converter = ({
             </Dialog.Header>
             <Dialog.Body>
               <VStack spacing={4} align="stretch">
+                {/*
                 <Text>Similarity Threshold for mappings (if applicable)</Text>
                 <NumberInput.Root
                   defaultValue={75}
@@ -237,6 +238,7 @@ const Converter = ({
                   <NumberInput.Control />
                   <NumberInput.Input />
                 </NumberInput.Root>
+                */}
                 {isConverting && (
                   <Progress.Root
                     value={progress}

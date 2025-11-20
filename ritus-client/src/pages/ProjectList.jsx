@@ -60,6 +60,9 @@ const ProjectList = () => {
   return (
     <Box p={4}>
       <Image src="/logo.svg" alt="Ritus Logo" height="40px" mx="auto" />
+      <Box position="absolute" top={4} right={4} fontSize="sm" color="gray.500">
+      v. 1.6
+      </Box>
       <HStack mb={4}>
         <Text fontSize="2xl" fontWeight="bold">
           Projects

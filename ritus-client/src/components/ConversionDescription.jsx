@@ -57,7 +57,7 @@ export const ContentStructure_conv = {
   },
   rite_id: {
     UsuariumStructure: "CEREMONY",
-    mappingFile: "data/mapping/rite_id_to_ceremony.tsv",
+    mappingFile: "/data/mapping/rite_id_to_ceremony.tsv",
   },
   comments: {
     UsuariumStructure: "REMARK",
@@ -73,15 +73,15 @@ export const ContentStructure_conv = {
   },
   function_id: {
     UsuariumStructure: "GENRE",
-    mappingFile: "data/mapping/function_id_to_genre.tsv",
+    mappingFile: "/data/mapping/function_id_to_genre.tsv",
   },
   subfunction_id: {
     UsuariumStructure: "GENRE",
-    mappingFile: "data/mapping/subfunction_id_to_genre.tsv",
+    mappingFile: "/data/mapping/subfunction_id_to_genre.tsv",
   },
   section_id: {
     UsuariumStructure: "PART",
-    mappingFile: "data/mapping/section_id_to_part.tsv",
+    mappingFile: "/data/mapping/section_id_to_part.tsv",
   },
   season_month: {
     UsuariumStructure: "SEASON/MONTH",
@@ -154,7 +154,7 @@ export const UsuariumStructure_conv = {
   },
   CEREMONY: {
     ContentStructure: "rite_id",
-    mappingFile: "data/mapping/rite_id_to_ceremony.tsv",
+    mappingFile: "/data/mapping/rite_id_to_ceremony.tsv",
   },
   REMARK: {
     ContentStructure: "comments",
@@ -168,13 +168,14 @@ export const UsuariumStructure_conv = {
   GENRE: {
     ContentStructure: ["genre", "function_id", "subfunction_id"],
     mappingFile: {
-      function_id: "data/mapping/function_id_to_genre.tsv",
-      subfunction_id: "data/mapping/subfunction_id_to_genre.tsv",
+      genre: "/data/mapping/genre_to_genre.tsv",
+      function_id: "/data/mapping/genre_to_function_id.tsv",
+      subfunction_id: "/data/mapping/genre_to_subfunction_id.tsv",
     },
   },
   PART: {
     ContentStructure: "section_id",
-    mappingFile: "data/mapping/section_id_to_part.tsv",
+    mappingFile: "/data/mapping/section_id_to_part.tsv",
   },
   "SEASON/MONTH": {
     ContentStructure: "season_month",

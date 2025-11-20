@@ -162,7 +162,7 @@ const ContentStructure = [
   },
   {
     name: "rite_name_from_ms",
-    display_name: "Rite Name from MS",
+    display_name: "Rubric Name from MS",
     value: "",
     can_be_null: true,
     type: "text",
@@ -170,7 +170,7 @@ const ContentStructure = [
   },
   {
     name: "subrite_name_from_ms",
-    display_name: "Subrite Name from MS",
+    display_name: "Subrubric Name from MS",
     value: "",
     can_be_null: true,
     type: "text",

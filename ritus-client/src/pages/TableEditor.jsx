@@ -512,6 +512,7 @@ const TableEditor = () => {
     }
     try {
       setIsLoading(true);
+      console.log("Starting batch process with threshold:", similarityThreshold);
       await startBatchProcess(projectId, similarityThreshold);
       setIsProcessing(true);
       startPolling();

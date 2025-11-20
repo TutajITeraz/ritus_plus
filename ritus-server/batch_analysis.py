@@ -399,6 +399,9 @@ def research_unfound_phrases(results, phrases, similarity_threshold=50, batch_pr
 # --- Main Processing Function ---
 
 def batch_process_project(project_id, similarity_threshold, phrases_csv="static/data/formulas.csv", phrases2_csv="static/data/rite_names.csv"):
+
+    logger.info(f"STARTING Full Automatic Lookup and Split : Bath Process with similarity_threshold: {similarity_threshold}")
+
     batch_process = db.session.query(BatchProcessing).filter_by(project_id=project_id).first()
     if not batch_process or batch_process.status != "running":
         return None
