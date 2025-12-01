@@ -177,7 +177,7 @@ const ContentStructure = [
   },
   {
     name: "rite_id",
-    display_name: "Rite ID",
+    display_name: "Rubric ID",
     type: "number",
     editable: true,
     can_be_null: true,
@@ -195,7 +195,7 @@ const ContentStructure = [
   },
   {
     name: "rite_name_standarized",
-    display_name: "Rite Name Standarized",
+    display_name: "Rubric Name Standarized",
     type: "automatic",
     editable: false,
     can_be_null: true,
@@ -213,7 +213,7 @@ const ContentStructure = [
   },
   {
     name: "rite_sequence_in_the_MS",
-    display_name: "Rite Sequence in MS",
+    display_name: "Rubric Sequence in MS",
     value: "",
     can_be_null: true,
     type: "number",

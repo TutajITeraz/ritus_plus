@@ -625,7 +625,7 @@ const TableEditor = () => {
         )}
         {projectId && (
           <Button
-            onClick={() => setShowBatchDialog(true)}
+            onClick={() => {handleSaveToServer();setShowBatchDialog(true)}}
             isLoading={isLoading}
             colorPalette="blue"
             disabled={isProcessing}
