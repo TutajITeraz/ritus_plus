@@ -52,22 +52,6 @@ export const ContentStructure_conv = {
   where_in_ms_to: {
     // Handled by where_in_ms_from mapping
   },
-  rite_name_from_ms: {
-    UsuariumStructure: "RUBRICS",
-  },
-  rite_id: {
-    UsuariumStructure: "CEREMONY",
-    mappingFile: "/data/mapping/rite_id_to_ceremony.tsv",
-  },
-  comments: {
-    UsuariumStructure: "REMARK",
-  },
-  layer: {
-    UsuariumStructure: "LAYER",
-  },
-  mass_hour: {
-    UsuariumStructure: "MASS/HOUR",
-  },
   genre: {
     UsuariumStructure: "GENRE",
   },
@@ -78,22 +62,6 @@ export const ContentStructure_conv = {
   subfunction_id: {
     UsuariumStructure: "GENRE",
     mappingFile: "/data/mapping/subfunction_id_to_genre.tsv",
-  },
-  section_id: {
-    UsuariumStructure: "PART",
-    mappingFile: "/data/mapping/section_id_to_part.tsv",
-  },
-  season_month: {
-    UsuariumStructure: "SEASON/MONTH",
-  },
-  week: {
-    UsuariumStructure: "WEEK",
-  },
-  day: {
-    UsuariumStructure: "DAY",
-  },
-  contributor_id: {
-    UsuariumStructure: "MADE BY",
   },
 };
 
@@ -149,21 +117,11 @@ export const UsuariumStructure_conv = {
         : row.where_in_ms_from || "";
     },
   },
-  RUBRICS: {
-    ContentStructure: "rite_name_from_ms",
-  },
-  CEREMONY: {
-    ContentStructure: "rite_id",
-    mappingFile: "/data/mapping/rite_id_to_ceremony.tsv",
-  },
   REMARK: {
     ContentStructure: "comments",
   },
   LAYER: {
     ContentStructure: "layer",
-  },
-  "MASS/HOUR": {
-    ContentStructure: "mass_hour",
   },
   GENRE: {
     ContentStructure: ["genre", "function_id", "subfunction_id"],
@@ -172,21 +130,5 @@ export const UsuariumStructure_conv = {
       function_id: "/data/mapping/genre_to_function_id.tsv",
       subfunction_id: "/data/mapping/genre_to_subfunction_id.tsv",
     },
-  },
-  PART: {
-    ContentStructure: "section_id",
-    mappingFile: "/data/mapping/section_id_to_part.tsv",
-  },
-  "SEASON/MONTH": {
-    ContentStructure: "season_month",
-  },
-  WEEK: {
-    ContentStructure: "week",
-  },
-  DAY: {
-    ContentStructure: "day",
-  },
-  "MADE BY": {
-    ContentStructure: "contributor_id",
   },
 };
