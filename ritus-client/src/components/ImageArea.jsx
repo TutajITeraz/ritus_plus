@@ -59,10 +59,9 @@ const ImageArea = ({ images, setImages, mainImage, setMainImage, projectId }) =>
                   size="sm"
                   m={1}
                   variant="subtle"
-                  leftIcon={<FaDownload />}
                   onClick={() => window.open(mainImage)}
                 >
-                  Download
+                  <FaDownload /> Download
                 </Button>
               </HStack>
             </Box>

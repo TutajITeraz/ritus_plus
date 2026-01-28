@@ -492,11 +492,10 @@ const Sidebar = ({
                     <Button
                       size="sm"
                       variant="subtle"
-                      leftIcon={<RiFileEditFill />}
                       disabled={!selectedImage}
                       onClick={() => setIsAIAutoFixOpen(true)}
                     >
-                      AI Auto Fix
+                      <RiFileEditFill /> AI Auto Fix
                     </Button>
                   </Popover.Trigger>
                   <AIAutoFixModal

@@ -1,15 +1,41 @@
 from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
 
 # Initialize SQLAlchemy (will be bound to app in krakenServer.py)
 db = SQLAlchemy()
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(128), nullable=False)
+    is_admin = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Relationships
+    owned_projects = db.relationship('Project', backref='owner', lazy=True)
+    shared_projects = db.relationship('Project', secondary='project_sharing', backref='shared_users', lazy=True)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
 
 class Project(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     type = db.Column(db.String(50))
     iiif_url = db.Column(db.String(200))
+    owner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     contents = db.relationship('Content', backref='project', cascade='all, delete-orphan')
     batch_processes = db.relationship('BatchProcessing', backref='project', cascade='all, delete-orphan')
+
+class ProjectSharing(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    shared_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class Image(db.Model):
     id = db.Column(db.Integer, primary_key=True)

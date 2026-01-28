@@ -1,9 +1,76 @@
 import { SERVER_URL } from "./config";
 import { toaster } from "@/components/ui/toaster";
 
+// Authentication utilities
+export const getAuthToken = () => localStorage.getItem('authToken');
+export const setAuthToken = (token) => localStorage.setItem('authToken', token);
+export const removeAuthToken = () => localStorage.removeItem('authToken');
+export const getCurrentUser = () => {
+  const userStr = localStorage.getItem('currentUser');
+  return userStr ? JSON.parse(userStr) : null;
+};
+export const setCurrentUser = (user) => localStorage.setItem('currentUser', JSON.stringify(user));
+export const removeCurrentUser = () => localStorage.removeItem('currentUser');
+
+const getAuthHeaders = () => {
+  const token = getAuthToken();
+  console.log('Auth token retrieved:', token ? token.substring(0, 50) + '...' : 'null');
+  return token ? { 'Authorization': `Bearer ${token}` } : {};
+};
+
+const apiRequest = async (url, options = {}) => {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...getAuthHeaders(),
+    ...options.headers,
+  };
+
+  const response = await fetch(url, {
+    ...options,
+    headers,
+  });
+
+  if (response.status === 401) {
+    // Token expired or invalid
+    removeAuthToken();
+    removeCurrentUser();
+    window.location.href = '/login';
+    throw new Error('Authentication required');
+  }
+
+  return response;
+};
+
+export const login = async (username, password) => {
+  try {
+    const response = await fetch(`${SERVER_URL}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!response.ok) throw new Error("Invalid credentials");
+    const data = await response.json();
+    // Note: Token and user storage is now handled by AuthContext
+    return data;
+  } catch (error) {
+    toaster.create({
+      title: "Login Failed",
+      description: error.message || "Invalid credentials",
+      type: "error",
+      duration: 3000,
+    });
+    throw error;
+  }
+};
+
+export const logout = () => {
+  // Note: Token and user removal is now handled by AuthContext
+  window.location.href = '/login';
+};
+
 export const fetchProjects = async () => {
   try {
-    const response = await fetch(`${SERVER_URL}/api/projects`);
+    const response = await apiRequest(`${SERVER_URL}/api/projects`);
     if (!response.ok) throw new Error("Failed to fetch projects");
     return await response.json();
   } catch (error) {
@@ -19,9 +86,8 @@ export const fetchProjects = async () => {
 
 export const createProject = async (projectData) => {
   try {
-    const response = await fetch(`${SERVER_URL}/api/projects`, {
+    const response = await apiRequest(`${SERVER_URL}/api/projects`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(projectData),
     });
     if (!response.ok) throw new Error("Failed to create project");
@@ -39,7 +105,7 @@ export const createProject = async (projectData) => {
 
 export const deleteProject = async (id) => {
   try {
-    const response = await fetch(`${SERVER_URL}/api/projects/${id}`, {
+    const response = await apiRequest(`${SERVER_URL}/api/projects/${id}`, {
       method: "DELETE",
     });
     if (!response.ok) throw new Error("Failed to delete project");
@@ -57,7 +123,7 @@ export const deleteProject = async (id) => {
 
 export const fetchProject = async (id) => {
   try {
-    const response = await fetch(`${SERVER_URL}/api/projects/${id}`);
+    const response = await apiRequest(`${SERVER_URL}/api/projects/${id}`);
     if (!response.ok) throw new Error("Failed to fetch project");
     return await response.json();
   } catch (error) {
@@ -73,9 +139,8 @@ export const fetchProject = async (id) => {
 
 export const updateProject = async (id, data) => {
   try {
-    const response = await fetch(`${SERVER_URL}/api/projects/${id}`, {
+    const response = await apiRequest(`${SERVER_URL}/api/projects/${id}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     });
     if (!response.ok) throw new Error("Failed to update project");
@@ -93,7 +158,7 @@ export const updateProject = async (id, data) => {
 
 export const fetchImages = async (projectId) => {
   try {
-    const response = await fetch(
+    const response = await apiRequest(
       `${SERVER_URL}/api/projects/${projectId}/images`
     );
     if (!response.ok) throw new Error("Failed to fetch images");
@@ -111,13 +176,21 @@ export const fetchImages = async (projectId) => {
 
 export const uploadImages = async (projectId, formData) => {
   try {
+    const headers = getAuthHeaders(); // Don't set Content-Type for FormData
     const response = await fetch(
       `${SERVER_URL}/api/projects/${projectId}/upload`,
       {
         method: "POST",
+        headers,
         body: formData,
       }
     );
+    if (response.status === 401) {
+      removeAuthToken();
+      removeCurrentUser();
+      window.location.href = '/login';
+      throw new Error('Authentication required');
+    }
     if (!response.ok) {
       const errorData = await response.json();
       throw new Error(errorData.message || "Upload failed");
@@ -136,9 +209,17 @@ export const uploadImages = async (projectId, formData) => {
 
 export const deleteImage = async (imageId) => {
   try {
+    const headers = getAuthHeaders();
     const response = await fetch(`${SERVER_URL}/api/images/${imageId}`, {
       method: "DELETE",
+      headers,
     });
+    if (response.status === 401) {
+      removeAuthToken();
+      removeCurrentUser();
+      window.location.href = '/login';
+      throw new Error('Authentication required');
+    }
     if (!response.ok) throw new Error("Failed to delete image");
     return await response.json();
   } catch (error) {
@@ -154,11 +235,21 @@ export const deleteImage = async (imageId) => {
 
 export const updateImage = async (imageId, data) => {
   try {
+    const headers = {
+      "Content-Type": "application/json",
+      ...getAuthHeaders(),
+    };
     const response = await fetch(`${SERVER_URL}/api/images/${imageId}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(data),
     });
+    if (response.status === 401) {
+      removeAuthToken();
+      removeCurrentUser();
+      window.location.href = '/login';
+      throw new Error('Authentication required');
+    }
     if (!response.ok)
       throw new Error(`Failed to update image: ${response.status}`);
     return await response.json();
@@ -175,12 +266,20 @@ export const updateImage = async (imageId, data) => {
 
 export const transcribeImage = async (imageId, modelName) => {
   try {
+    const headers = getAuthHeaders();
     const formData = new FormData();
     formData.append("modelName", modelName);
     const response = await fetch(`${SERVER_URL}/api/transcribe/${imageId}`, {
       method: "POST",
+      headers,
       body: formData,
     });
+    if (response.status === 401) {
+      removeAuthToken();
+      removeCurrentUser();
+      window.location.href = '/login';
+      throw new Error('Authentication required');
+    }
     if (!response.ok) {
       const errorData = await response.json();
       throw new Error(errorData.message || "Transcription failed");
@@ -436,6 +535,134 @@ export const aiAutoFix = async (question) => {
       description: error.message || "Failed to process AI auto fix",
       type: "error",
       duration: 5000,
+    });
+    throw error;
+  }
+};
+
+// User management functions
+export const fetchUsers = async () => {
+  try {
+    const response = await apiRequest(`${SERVER_URL}/api/users`);
+    if (!response.ok) throw new Error("Failed to fetch users");
+    return await response.json();
+  } catch (error) {
+    toaster.create({
+      title: "Error",
+      description: error.message || "Failed to fetch users",
+      type: "error",
+      duration: 3000,
+    });
+    throw error;
+  }
+};
+
+export const createUser = async (userData) => {
+  try {
+    const response = await apiRequest(`${SERVER_URL}/api/users`, {
+      method: "POST",
+      body: JSON.stringify(userData),
+    });
+    if (!response.ok) throw new Error("Failed to create user");
+    return await response.json();
+  } catch (error) {
+    toaster.create({
+      title: "Error",
+      description: error.message || "Failed to create user",
+      type: "error",
+      duration: 3000,
+    });
+    throw error;
+  }
+};
+
+export const updateUser = async (userId, userData) => {
+  try {
+    const response = await apiRequest(`${SERVER_URL}/api/users/${userId}`, {
+      method: "PUT",
+      body: JSON.stringify(userData),
+    });
+    if (!response.ok) throw new Error("Failed to update user");
+    return await response.json();
+  } catch (error) {
+    toaster.create({
+      title: "Error",
+      description: error.message || "Failed to update user",
+      type: "error",
+      duration: 3000,
+    });
+    throw error;
+  }
+};
+
+export const deleteUser = async (userId) => {
+  try {
+    const response = await apiRequest(`${SERVER_URL}/api/users/${userId}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) throw new Error("Failed to delete user");
+    return await response.json();
+  } catch (error) {
+    toaster.create({
+      title: "Error",
+      description: error.message || "Failed to delete user",
+      type: "error",
+      duration: 3000,
+    });
+    throw error;
+  }
+};
+
+export const shareProject = async (userId, projectId) => {
+  try {
+    const response = await apiRequest(`${SERVER_URL}/api/users/${userId}/projects/${projectId}/share`, {
+      method: "POST",
+    });
+    if (!response.ok) throw new Error("Failed to share project");
+    return await response.json();
+  } catch (error) {
+    toaster.create({
+      title: "Error",
+      description: error.message || "Failed to share project",
+      type: "error",
+      duration: 3000,
+    });
+    throw error;
+  }
+};
+
+export const unshareProject = async (userId, projectId) => {
+  try {
+    const response = await apiRequest(`${SERVER_URL}/api/users/${userId}/projects/${projectId}/unshare`, {
+      method: "DELETE",
+    });
+    if (!response.ok) throw new Error("Failed to unshare project");
+    return await response.json();
+  } catch (error) {
+    toaster.create({
+      title: "Error",
+      description: error.message || "Failed to unshare project",
+      type: "error",
+      duration: 3000,
+    });
+    throw error;
+  }
+};
+
+export const updateProjectShares = async (projectId, userIds) => {
+  try {
+    const response = await apiRequest(`${SERVER_URL}/api/projects/${projectId}/shares`, {
+      method: "POST",
+      body: JSON.stringify({ user_ids: userIds }),
+    });
+    if (!response.ok) throw new Error("Failed to update project shares");
+    return await response.json();
+  } catch (error) {
+    toaster.create({
+      title: "Error",
+      description: error.message || "Failed to update project shares",
+      type: "error",
+      duration: 3000,
     });
     throw error;
   }

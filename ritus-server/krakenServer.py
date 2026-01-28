@@ -1,109 +1,111 @@
-
 import sys
 import argparse
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
 import os
-from PIL import Image as PILImage
-from PIL import ImageFile
-import webbrowser
-from threading import Timer, Thread
 import logging
 import json
-from models import db, Project, Image, Content, BatchProcessing
+import re
+import cv2
+import torch
+import webbrowser
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
+from PIL import Image as PILImage
+from PIL import ImageFile
+from threading import Timer, Thread
+from flask_caching import Cache
+from config import SERVER_URL, ADMIN_USERNAME, ADMIN_PASSWORD, SECRET_KEY
+
+# Importy lokalne
+from models import db, User, Project, ProjectSharing, Image, Content, BatchProcessing
 from batch_analysis import batch_process_project
 from image_processing import split_line_boundary_by_color
 from ai_tools import gpt_autofix
 from secret_user_api_key import user_api_key
-import cv2
-import re
-from flask_caching import Cache
 from cache_config import cache, init_cache
-import getpass
 
-# Parse --no-kraken option
+# --- KONFIGURACJA LOGOWANIA ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# --- PARSOWANIE ARGUMENTÓW ---
 parser = argparse.ArgumentParser()
-parser.add_argument('--no-kraken', action='store_true', help='Disable kraken OCR and related routes')
+parser.add_argument('--no-kraken', action='store_true', help='Disable kraken OCR')
 args, unknown = parser.parse_known_args()
 NO_KRAKEN = args.no_kraken
 
 if not NO_KRAKEN:
-    import torch
     from kraken import binarization, rpred, pageseg, blla
     from kraken.lib import vgsl
     from kraken.lib.models import load_any
-    #import numpy as np
-    #import matplotlib.pyplot as plt
-
 
 def get_model_path(model_name):
-    """
-    Returns the path to the model file.
-    Tries local ./models/ directory first, then Application Support/kraken.
-    """
     local_path = os.path.join("models", model_name)
-    if os.path.exists(local_path):
-        return local_path
-
-    # Try Application Support/kraken for current user
+    if os.path.exists(local_path): return local_path
     user_home = os.path.expanduser("~")
-    app_support_path = os.path.join(
-        user_home, "Library", "Application Support", "kraken", model_name
-    )
-    if os.path.exists(app_support_path):
-        return app_support_path
+    app_support_path = os.path.join(user_home, "Library", "Application Support", "kraken", model_name)
+    return app_support_path if os.path.exists(app_support_path) else None
 
-    # Not found
-    return None
-
-### Color separation: #######################################################
-
-################################### START OF SERVER:############################
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Allow truncated images
-ImageFile.LOAD_TRUNCATED_IMAGES = True
-
+# --- INICJALIZACJA FLASK ---
 app = Flask(__name__, static_folder="static", static_url_path="/")
-CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}})
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",
+        "allow_headers": ["Content-Type", "Authorization"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    }
+})
 
-#Cache initialization
-logger.info("Initializing cache...")
-cache = init_cache(app)
-logger.info("Initializing cache...DONE")
-print(cache)
-print("-------------")
+# JWT Configuration
+app.config["JWT_SECRET_KEY"] = SECRET_KEY
+jwt = JWTManager(app)
 
-# Configuration
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///projects.db"
-app.config["UPLOAD_FOLDER"] = "uploads" #lowercase uploads!
-app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1024MB max upload size
-SERVER_URL = "http://127.0.0.1:5000"
+# Konfiguracja Gunicorn Logging
+if __name__ != '__main__':
+    gunicorn_logger = logging.getLogger('gunicorn.error')
+    app.logger.handlers = gunicorn_logger.handlers
+    app.logger.setLevel(gunicorn_logger.level)
 
-# Initialize db with app
+# --- KONFIGURACJA BAZY I CACHE ---
+# Dodajemy timeout=20 dla SQLite, aby uniknąć blokad
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///projects.db?timeout=20"
+app.config["UPLOAD_FOLDER"] = "uploads"
+app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024 
+
 db.init_app(app)
+init_cache(app)
 
+# Create database tables and admin user
+with app.app_context():
+    db.create_all()
+    # Create admin user if not exists
+    admin_user = User.query.filter_by(username=ADMIN_USERNAME).first()
+    if not admin_user:
+        admin_user = User(username=ADMIN_USERNAME, is_admin=True)
+        admin_user.set_password(ADMIN_PASSWORD)
+        db.session.add(admin_user)
+        db.session.commit()
+        logger.info("Admin user created")
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 if not os.path.exists(app.config["UPLOAD_FOLDER"]):
     os.makedirs(app.config["UPLOAD_FOLDER"])
 
-import torch
+# --- OPTYMALIZACJA SQLITE (Tryb WAL) ---
+def enable_wal(app):
+    with app.app_context():
+        with db.engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+            connection.exec_driver_sql("PRAGMA synchronous=NORMAL")
 
-
+# --- MODELE KRAKEN (Globalne ładowanie) ---
+selected_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+baseline_model = None
+ocr_model = None
+last_ocr_model_name = "Tridis_Medieval_EarlyModern.mlmodel"
+MODEL_PATHS = {}
 
 if not NO_KRAKEN:
-    # Kraken configuration
-    if torch.cuda.is_available():
-        selected_device = "cuda:0"
-        logger.info("CUDA is available. Using GPU for Kraken models.")
-    else:
-        selected_device = "cpu"
-        logger.info("Using CPU for Kraken models (MPS/autocast not supported).")
-
-    logger.info(f"Selected device: {selected_device}")
-
     MODEL_PATHS = {
         "Tridis_Medieval_EarlyModern.mlmodel": get_model_path("Tridis_Medieval_EarlyModern.mlmodel"),
         "cremma-generic-1.0.1.mlmodel": get_model_path("cremma-generic-1.0.1.mlmodel"),
@@ -111,20 +113,15 @@ if not NO_KRAKEN:
         "catmus-medieval.mlmodel": get_model_path("catmus-medieval.mlmodel"),
         "blla.mlmodel": get_model_path("blla.mlmodel"),
     }
-
-    logger.info("Loading models...")
+    # Uwaga: Ładowanie ciężkich modeli lepiej robić wewnątrz pierwszej prośby 
+    # lub użyć preload_app w Gunicorn, aby nie dublować RAM-u
     baseline_model_path = MODEL_PATHS.get("blla.mlmodel")
-    if not baseline_model_path:
-        raise FileNotFoundError("blla.mlmodel not found in ./models or Application Support/kraken")
-    baseline_model = vgsl.TorchVGSLModel.load_model(baseline_model_path).to(device=selected_device)
+    if baseline_model_path:
+        baseline_model = vgsl.TorchVGSLModel.load_model(baseline_model_path).to(device=selected_device)
 
-    last_ocr_model_name = "Tridis_Medieval_EarlyModern.mlmodel"
-    ocr_model_path = MODEL_PATHS.get(last_ocr_model_name)
-    if not ocr_model_path:
-        raise FileNotFoundError(f"{last_ocr_model_name} not found in ./models or Application Support/kraken")
-    ocr_model = load_any(ocr_model_path, device=selected_device)
-    logger.info("Loading models...DONE")
+### Color separation: #######################################################
 
+################################### START OF SERVER:############################
 
 # Only define kraken-dependent functions if not NO_KRAKEN
 if not NO_KRAKEN:
@@ -413,6 +410,215 @@ def transcribe_image_by_id(image_id, model_name):
     return {"text": transcribed_text, "lines": new_lines}
 
 
+# Authentication middleware
+def get_current_user():
+    current_user_id = get_jwt_identity()
+    # Handle admin user (not in database)
+    if current_user_id == "admin":
+        return type('AdminUser', (), {
+            'id': 'admin',
+            'username': 'admin',
+            'is_admin': True
+        })()
+    # Handle regular users
+    current_user = User.query.get(int(current_user_id))
+    return current_user
+
+def check_project_access(project_id, user=None):
+    """Check if user has access to the project (owner or shared)"""
+    if user is None:
+        user = get_current_user()
+        if not user:
+            return False
+    project = Project.query.get_or_404(project_id)
+    if project.owner_id == user.id:
+        return True
+    sharing = ProjectSharing.query.filter_by(project_id=project_id, user_id=user.id).first()
+    return sharing is not None
+
+# Authentication routes
+@app.route("/api/login", methods=["POST"])
+def login():
+    data = request.get_json()
+    username = data.get("username")
+    password = data.get("password")
+
+    if not username or not password:
+        return jsonify({"error": "Username and password required"}), 400
+
+    # Check admin credentials and get admin user from database
+    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+        admin_user = User.query.filter_by(username=ADMIN_USERNAME).first()
+        if admin_user:
+            access_token = create_access_token(identity=str(admin_user.id))
+            return jsonify({"access_token": access_token, "user": {"id": admin_user.id, "username": admin_user.username, "is_admin": admin_user.is_admin}})
+
+    # Check regular user
+    user = User.query.filter_by(username=username).first()
+    if user and user.check_password(password):
+        access_token = create_access_token(identity=str(user.id))
+        return jsonify({"access_token": access_token, "user": {"id": user.id, "username": user.username, "is_admin": user.is_admin}})
+
+    return jsonify({"error": "Invalid credentials"}), 401
+
+@app.route("/api/users", methods=["GET"])
+@jwt_required()
+def get_users():
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    users = User.query.all()
+    result = [{"id": u.id, "username": u.username} for u in users if u.id != current_user.id]
+    return jsonify(result)
+
+@app.route("/api/users", methods=["POST"])
+@jwt_required()
+def create_user():
+    current_user = get_current_user()
+    if not current_user or not current_user.is_admin:
+        return jsonify({"error": "Admin access required"}), 403
+
+    data = request.get_json()
+    username = data.get("username")
+    password = data.get("password")
+    is_admin = data.get("is_admin", False)
+
+    if not username or not password:
+        return jsonify({"error": "Username and password required"}), 400
+
+    if User.query.filter_by(username=username).first():
+        return jsonify({"error": "Username already exists"}), 400
+
+    user = User(username=username, is_admin=is_admin)
+    user.set_password(password)
+    db.session.add(user)
+    db.session.commit()
+
+    return jsonify({"id": user.id, "username": user.username, "is_admin": user.is_admin}), 201
+
+@app.route("/api/users/<int:user_id>", methods=["PUT"])
+@jwt_required()
+def update_user(user_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    if not current_user.is_admin and current_user.id != user_id:
+        return jsonify({"error": "Access denied"}), 403
+
+    user = User.query.get_or_404(user_id)
+    data = request.get_json()
+
+    if "password" in data:
+        user.set_password(data["password"])
+
+    if current_user.is_admin and "is_admin" in data:
+        user.is_admin = data["is_admin"]
+
+    db.session.commit()
+    return jsonify({"id": user.id, "username": user.username, "is_admin": user.is_admin})
+
+@app.route("/api/users/<int:user_id>", methods=["DELETE"])
+@jwt_required()
+def delete_user(user_id):
+    current_user = get_current_user()
+    if not current_user or not current_user.is_admin:
+        return jsonify({"error": "Admin access required"}), 403
+
+    user = User.query.get_or_404(user_id)
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({"message": "User deleted"})
+
+@app.route("/api/users/<int:user_id>/projects/<int:project_id>/share", methods=["POST"])
+@jwt_required()
+def share_project(user_id, project_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    project = Project.query.get_or_404(project_id)
+    if project.owner_id != current_user.id:
+        return jsonify({"error": "Only project owner can share"}), 403
+
+    user = User.query.get_or_404(user_id)
+
+    # Check if already shared
+    existing = ProjectSharing.query.filter_by(project_id=project_id, user_id=user_id).first()
+    if existing:
+        return jsonify({"error": "Project already shared with this user"}), 400
+
+    sharing = ProjectSharing(project_id=project_id, user_id=user_id)
+    db.session.add(sharing)
+    db.session.commit()
+
+    return jsonify({"message": "Project shared successfully"})
+
+@app.route("/api/projects/<int:project_id>/shared_users", methods=["GET"])
+@jwt_required()
+def get_shared_users(project_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    project = Project.query.get_or_404(project_id)
+    if project.owner_id != current_user.id:
+        return jsonify({"error": "Only project owner can view shares"}), 403
+
+    try:
+        shared_users = User.query.join(ProjectSharing).filter(ProjectSharing.project_id == project_id).all()
+        result = [{"id": u.id, "username": u.username} for u in shared_users]
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error in get_shared_users for project ID {project_id}: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route("/api/projects/<int:project_id>/shares", methods=["POST"])
+@jwt_required()
+def update_project_shares(project_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    project = Project.query.get_or_404(project_id)
+    if project.owner_id != current_user.id:
+        return jsonify({"error": "Only project owner can update shares"}), 403
+
+    data = request.get_json()
+    new_user_ids = set(data.get("user_ids", []))
+
+    try:
+        # Get current shared user IDs
+        current_sharings = ProjectSharing.query.filter_by(project_id=project_id).all()
+        current_user_ids = set(s.user_id for s in current_sharings)
+
+        # Users to add
+        to_add = new_user_ids - current_user_ids
+        # Users to remove
+        to_remove = current_user_ids - new_user_ids
+
+        # Remove old shares
+        for user_id in to_remove:
+            sharing = ProjectSharing.query.filter_by(project_id=project_id, user_id=user_id).first()
+            if sharing:
+                db.session.delete(sharing)
+
+        # Add new shares
+        for user_id in to_add:
+            user = User.query.get(user_id)
+            if user and user.id != current_user.id:  # Don't share with self
+                sharing = ProjectSharing(project_id=project_id, user_id=user_id)
+                db.session.add(sharing)
+
+        db.session.commit()
+        return jsonify({"message": "Project shares updated"})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error in update_project_shares for project ID {project_id}: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
 # Debug route
 @app.route("/api/debug/batch-processing")
 def debug_batch_processing():
@@ -515,38 +721,68 @@ def cancel_batch_process(project_id):
 
 # Project Routes
 @app.route("/api/projects", methods=["GET"])
+@jwt_required()
 def get_projects():
     try:
-        projects = Project.query.all()
-        result = []
-        for p in projects:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+
+        # Get owned projects
+        owned_projects = Project.query.filter_by(owner_id=current_user.id).all()
+
+        # Get shared projects
+        shared_project_ids = [ps.project_id for ps in ProjectSharing.query.filter_by(user_id=current_user.id).all()]
+        shared_projects = Project.query.filter(Project.id.in_(shared_project_ids)).all() if shared_project_ids else []
+
+        def format_project(p):
             first_image = Image.query.filter_by(project_id=p.id).order_by(Image.id.asc()).first()
             thumbnail_url = (
                 f"{SERVER_URL}/{app.config['UPLOAD_FOLDER']}/project_{p.id}/{first_image.name}_{first_image.id}_thumbnail.jpg"
                 if first_image
                 else None
             )
-            result.append({
+            result = {
                 "id": p.id,
                 "name": p.name,
                 "type": p.type,
                 "iiif_url": p.iiif_url,
-                "first_thumbnail": thumbnail_url
-            })
-        logger.info(f"Retrieved {len(projects)} projects")
-        return jsonify(result)
+                "first_thumbnail": thumbnail_url,
+                "owner_id": p.owner_id,
+                "is_owner": p.owner_id == current_user.id
+            }
+            if p.owner_id == current_user.id:
+                shared_user_ids = [s.user_id for s in ProjectSharing.query.filter_by(project_id=p.id).all()]
+                result["shared_users"] = shared_user_ids
+            return result
+
+        owned_result = [format_project(p) for p in owned_projects]
+        shared_result = [format_project(p) for p in shared_projects]
+
+        logger.info(f"Retrieved {len(owned_projects)} owned and {len(shared_projects)} shared projects for user {current_user.username}")
+        return jsonify({"owned": owned_result, "shared": shared_result})
     except Exception as e:
         logger.error(f"Error in get_projects: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/api/projects", methods=["POST"])
+@jwt_required()
 def create_project():
     try:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+
         data = request.json
-        project = Project(**data)
+        project = Project(
+            name=data["name"],
+            type=data.get("type"),
+            iiif_url=data.get("iiif_url"),
+            owner_id=current_user.id
+        )
         db.session.add(project)
         db.session.commit()
-        logger.info(f"Created project with ID {project.id}")
+        logger.info(f"Created project with ID {project.id} for user {current_user.username}")
         return jsonify({"message": "Project created", "id": project.id})
     except Exception as e:
         logger.error(f"Error in create_project: {str(e)}")
@@ -569,30 +805,47 @@ def get_project(id):
         return jsonify({"error": f"Failed to retrieve project: {str(e)}"}), 500
 
 @app.route("/api/projects/<int:id>", methods=["DELETE"])
+@jwt_required()
 def delete_project(id):
     try:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+
         project = Project.query.get_or_404(id)
+        if project.owner_id != current_user.id:
+            return jsonify({"error": "Only project owner can delete"}), 403
+
         project_folder = os.path.join(app.config["UPLOAD_FOLDER"], f"project_{id}")
         if os.path.exists(project_folder):
             import shutil
             shutil.rmtree(project_folder)
         db.session.delete(project)
         db.session.commit()
-        logger.info(f"Deleted project with ID {id}")
+        logger.info(f"Deleted project with ID {id} by user {current_user.username}")
         return jsonify({"message": "Project deleted"})
     except Exception as e:
         logger.error(f"Error in delete_project for ID {id}: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/api/projects/<int:id>", methods=["PUT"])
+@jwt_required()
 def update_project(id):
     try:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+
         project = Project.query.get_or_404(id)
+        if project.owner_id != current_user.id:
+            return jsonify({"error": "Only project owner can update"}), 403
+
         data = request.json
         for key, value in data.items():
-            setattr(project, key, value)
+            if key != 'owner_id':  # Prevent changing ownership
+                setattr(project, key, value)
         db.session.commit()
-        logger.info(f"Updated project with ID {id}")
+        logger.info(f"Updated project with ID {id} by user {current_user.username}")
         return jsonify({"message": "Project updated"})
     except Exception as e:
         logger.error(f"Error in update_project for ID {id}: {str(e)}")
@@ -600,7 +853,15 @@ def update_project(id):
 
 # Image Routes
 @app.route("/api/projects/<int:project_id>/images", methods=["GET"])
+@jwt_required()
 def get_project_images(project_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
     try:
         images = Image.query.filter_by(project_id=project_id).all()
         result = [{
@@ -611,14 +872,21 @@ def get_project_images(project_id):
             "transcribed_text": img.transcribed_text,
             "line_count": len(img.transcribed_text.split("\n")) if img.transcribed_text else 0
         } for img in images]
-        logger.info(f"Retrieved {len(images)} images for project ID {project_id}")
+        logger.info(f"Retrieved {len(images)} images for project ID {project_id} by user {current_user.username}")
         return jsonify(result)
     except Exception as e:
         logger.error(f"Error in get_project_images for project ID {project_id}: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/api/projects/<int:project_id>/upload", methods=["POST"])
+@jwt_required()
 def upload_images(project_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
     if "images" not in request.files:
         logger.error("No files uploaded in upload_images")
         return jsonify({"message": "No files uploaded"}), 400
@@ -698,37 +966,53 @@ def upload_images(project_id):
         return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/api/images/<int:image_id>", methods=["DELETE"])
+@jwt_required()
 def delete_image(image_id):
     try:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+
         image = Image.query.get_or_404(image_id)
+        if not check_project_access(image.project_id, current_user):
+            return jsonify({"error": "Access denied"}), 403
+
         project_id = image.project_id
         name_without_ext = image.name
-        
+
         original_path = image.original
         thumbnail_path = os.path.join(app.config["UPLOAD_FOLDER"], f"project_{project_id}", f"{name_without_ext}_{image_id}_thumbnail.jpg")
-        
+
         if os.path.exists(original_path):
             os.remove(original_path)
         if os.path.exists(thumbnail_path):
             os.remove(thumbnail_path)
-            
+
         db.session.delete(image)
         db.session.commit()
-        logger.info(f"Deleted image with ID {image_id}")
+        logger.info(f"Deleted image with ID {image_id} by user {current_user.username}")
         return jsonify({"message": "Image deleted"})
     except Exception as e:
         logger.error(f"Error in delete_image for ID {image_id}: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/api/images/<int:image_id>", methods=["PUT"])
+@jwt_required()
 def update_image(image_id):
     try:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+
         image = Image.query.get_or_404(image_id)
+        if not check_project_access(image.project_id, current_user):
+            return jsonify({"error": "Access denied"}), 403
+
         data = request.json
         transcribed_text = data.get("transcribed_text", image.transcribed_text)
         image.transcribed_text = transcribed_text
         db.session.commit()
-        logger.info(f"Updated image with ID {image_id}")
+        logger.info(f"Updated image with ID {image_id} by user {current_user.username}")
         return jsonify({
             "message": "Image updated",
             "image": {
@@ -747,7 +1031,15 @@ def update_image(image_id):
 # Content Routes
 
 @app.route("/api/projects/<int:project_id>/content", methods=["GET"])
+@jwt_required()
 def get_project_content(project_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
     try:
         contents = Content.query.filter_by(project_id=project_id).all()
         result = [{
@@ -755,14 +1047,21 @@ def get_project_content(project_id):
             "project_id": content.project_id,
             "data": json.loads(content.data)
         } for content in contents]
-        logger.info(f"Retrieved {len(contents)} content rows for project ID {project_id}")
+        logger.info(f"Retrieved {len(contents)} content rows for project ID {project_id} by user {current_user.username}")
         return jsonify(result)
     except Exception as e:
         logger.error(f"Error in get_project_content for project ID {project_id}: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/api/projects/<int:project_id>/content/bulk", methods=["GET","POST"])
+@jwt_required()
 def bulk_project_content(project_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
     try:
         data = request.json
         created_ids = []
@@ -809,7 +1108,15 @@ def bulk_project_content(project_id):
         return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/api/projects/<int:project_id>/content", methods=["POST"])
+@jwt_required()
 def create_project_content(project_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
     try:
         data = request.json
         content_data = data.get("data", {})
@@ -827,7 +1134,15 @@ def create_project_content(project_id):
         return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/api/projects/<int:project_id>/content/<int:content_id>", methods=["PUT"])
+@jwt_required()
 def update_project_content(project_id, content_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
     try:
         content = Content.query.get_or_404(content_id)
         if content.project_id != project_id:
@@ -836,7 +1151,7 @@ def update_project_content(project_id, content_id):
         content_data = data.get("data", {})
         content.data = json.dumps(content_data)
         db.session.commit()
-        logger.info(f"Updated content ID {content_id} for project ID {project_id}")
+        logger.info(f"Updated content ID {content_id} for project ID {project_id} by user {current_user.username}")
         return jsonify({
             "message": "Content updated",
             "id": content.id,
@@ -847,14 +1162,22 @@ def update_project_content(project_id, content_id):
         return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/api/projects/<int:project_id>/content/<int:content_id>", methods=["DELETE"])
+@jwt_required()
 def delete_project_content(project_id, content_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
     try:
         content = Content.query.get_or_404(content_id)
         if content.project_id != project_id:
             return jsonify({"error": "Content does not belong to project"}), 400
         db.session.delete(content)
         db.session.commit()
-        logger.info(f"Deleted content ID {content_id} for project ID {project_id}")
+        logger.info(f"Deleted content ID {content_id} for project ID {project_id} by user {current_user.username}")
         return jsonify({"message": "Content deleted"})
     except Exception as e:
         logger.error(f"Error in delete_project_content for ID {content_id}: {str(e)}")
@@ -864,17 +1187,22 @@ def delete_project_content(project_id, content_id):
 # Transcription Routes
 if not NO_KRAKEN:
     @app.route("/api/transcribe/", methods=["POST"])
+    @jwt_required()
     def transcribe():
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+
         if "croppedImage" not in request.files:
             logger.error("No image uploaded in transcribe")
             return jsonify({"status": "error", "text": "No image uploaded"}), 400
-        
+
         image_file = request.files["croppedImage"]
         temp_path = os.path.join(app.config["UPLOAD_FOLDER"], "uploaded.png")
         image_file.save(temp_path)
-        
+
         model_name = request.form.get("modelName", "Tridis_Medieval_EarlyModern.mlmodel")
-        
+
         try:
             transcribed_results = transcribe_image(temp_path, model_name)
             if isinstance(transcribed_results, tuple):
@@ -888,23 +1216,36 @@ if not NO_KRAKEN:
             logger.error(f"Error in transcribe: {str(e)}")
             return jsonify({"status": "error", "text": str(e)}), 500
 
-    @app.route("/api/transcribe/<int:image_id>", methods=["POST"])
-    def transcribe_by_id(image_id):
-        model_name = request.form.get("modelName", "Tridis_Medieval_EarlyModern.mlmodel")
-        try:
-            result = transcribe_image_by_id(image_id, model_name)
-            if isinstance(result, tuple):
-                logger.error(f"Error in transcribe_by_id for ID {image_id}: {result[0]}")
-                return jsonify({"status": "error", "message": result[0], "line_count": 0}), result[1]
-            logger.info(f"Transcribed image with ID {image_id}")
-            return jsonify({
-                "status": "success",
-                "message": "Image transcribed and text saved",
-                "line_count": len(result["lines"])
-            })
-        except Exception as e:
-            logger.error(f"Error in transcribe_by_id for ID {image_id}: {str(e)}")
-            return jsonify({"status": "error", "message": str(e), "line_count": 0}), 500
+# Transcribe by image ID route (always available, even without kraken)
+@app.route("/api/transcribe/<int:image_id>", methods=["POST"])
+@jwt_required()
+def transcribe_by_id(image_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    image = Image.query.get_or_404(image_id)
+    if not check_project_access(image.project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
+    if NO_KRAKEN:
+        return jsonify({"status": "error", "message": "Transcription service is not available (Kraken OCR is disabled)"}), 503
+
+    model_name = request.form.get("modelName", "Tridis_Medieval_EarlyModern.mlmodel")
+    try:
+        result = transcribe_image_by_id(image_id, model_name)
+        if isinstance(result, tuple):
+            logger.error(f"Error in transcribe_by_id for ID {image_id}: {result[0]}")
+            return jsonify({"status": "error", "message": result[0], "line_count": 0}), result[1]
+        logger.info(f"Transcribed image with ID {image_id} by user {current_user.username}")
+        return jsonify({
+            "status": "success",
+            "message": "Image transcribed and text saved",
+            "line_count": len(result["lines"])
+        })
+    except Exception as e:
+        logger.error(f"Error in transcribe_by_id for ID {image_id}: {str(e)}")
+        return jsonify({"status": "error", "message": str(e), "line_count": 0}), 500
 
 # Static File Serving
 @app.route("/project/<path:path>")
@@ -965,18 +1306,9 @@ def open_browser():
 
 if __name__ == "__main__":
     with app.app_context():
-        from models import Project, Image, Content, BatchProcessing
-        try:
-            db.create_all()
-            logger.info("Database")
-            logger.info("Available classes: %s", db.Model.registry._class_registry.values())
-        except Exception as e:
-            logger.error(f"Error creating database tables: {str(e)}")
-    
-    if NO_KRAKEN:
-        Timer(2, open_browser).start()
-    else:
-        Timer(22, open_browser).start()
-
-
-    app.run(host="127.0.0.1", port="5000", debug=True)
+        db.create_all()
+    enable_wal(app)
+    app.run(host="127.0.0.1", port=5000, debug=True)
+else:
+    # Uruchomienie przez Gunicorna
+    enable_wal(app)

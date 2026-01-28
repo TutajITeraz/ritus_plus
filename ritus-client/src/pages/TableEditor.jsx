@@ -16,6 +16,7 @@ import {
   Link,
   Select,
   createListCollection,
+  Table,
 } from "@chakra-ui/react";
 import { useParams } from "react-router-dom";
 import { toaster } from "@/components/ui/toaster";
@@ -694,22 +695,20 @@ const TableEditor = () => {
             <Dialog.Content>
               <Dialog.Header>
                 <Dialog.Title>Overwrite Existing Data?</Dialog.Title>
+                <Dialog.CloseTrigger asChild>
+                  <CloseButton size="sm" />
+                </Dialog.CloseTrigger>
               </Dialog.Header>
               <Dialog.Body>
                 Loading transcriptions will overwrite existing table data. Do
                 you want to proceed?
               </Dialog.Body>
               <Dialog.Footer>
-                <Dialog.ActionTrigger asChild>
-                  <Button variant="outline">Cancel</Button>
-                </Dialog.ActionTrigger>
+                <Button variant="outline" onClick={() => setShowOverwriteDialog(false)}>Cancel</Button>
                 <Button colorScheme="red" onClick={loadTranscription}>
                   Overwrite
                 </Button>
               </Dialog.Footer>
-              <Dialog.CloseTrigger asChild>
-                <CloseButton size="sm" />
-              </Dialog.CloseTrigger>
             </Dialog.Content>
           </Dialog.Positioner>
         </Portal>
@@ -727,6 +726,9 @@ const TableEditor = () => {
             <Dialog.Content>
               <Dialog.Header>
                 <Dialog.Title>Switch Structure?</Dialog.Title>
+                <Dialog.CloseTrigger asChild>
+                  <CloseButton size="sm" />
+                </Dialog.CloseTrigger>
               </Dialog.Header>
               <Dialog.Body>
                 <Text>
@@ -738,9 +740,7 @@ const TableEditor = () => {
                 </Text>
               </Dialog.Body>
               <Dialog.Footer>
-                <Dialog.ActionTrigger asChild>
-                  <Button variant="outline">Cancel</Button>
-                </Dialog.ActionTrigger>
+                <Button variant="outline" onClick={() => setShowSwitchDialog(false)}>Cancel</Button>
                 <Button colorScheme="blue" onClick={handleConvertAndSwitch}>
                   Convert and Switch
                 </Button>
@@ -748,9 +748,6 @@ const TableEditor = () => {
                   Drop Data and Switch
                 </Button>
               </Dialog.Footer>
-              <Dialog.CloseTrigger asChild>
-                <CloseButton size="sm" />
-              </Dialog.CloseTrigger>
             </Dialog.Content>
           </Dialog.Positioner>
         </Portal>
@@ -783,6 +780,9 @@ const TableEditor = () => {
             <Dialog.Content>
               <Dialog.Header>
                 <Dialog.Title>Full Automatic Lookup and Split</Dialog.Title>
+                <Dialog.CloseTrigger asChild>
+                  <CloseButton size="sm" />
+                </Dialog.CloseTrigger>
               </Dialog.Header>
               <Dialog.Body>
                 <VStack spacing={4} align="stretch">
@@ -828,15 +828,13 @@ const TableEditor = () => {
                 </VStack>
               </Dialog.Body>
               <Dialog.Footer>
-                <Dialog.ActionTrigger asChild>
-                  <Button
-                    variant="outline"
-                    onClick={handleCancelBatchProcess}
-                    disabled={!isProcessing}
-                  >
-                    Cancel Process
-                  </Button>
-                </Dialog.ActionTrigger>
+                <Button
+                  variant="outline"
+                  onClick={handleCancelBatchProcess}
+                  disabled={!isProcessing}
+                >
+                  Cancel Process
+                </Button>
                 <Button
                   colorScheme="purple"
                   onClick={handleStartBatchProcess}
@@ -845,9 +843,6 @@ const TableEditor = () => {
                   Execute
                 </Button>
               </Dialog.Footer>
-              <Dialog.CloseTrigger asChild>
-                <CloseButton size="sm" />
-              </Dialog.CloseTrigger>
             </Dialog.Content>
           </Dialog.Positioner>
         </Portal>

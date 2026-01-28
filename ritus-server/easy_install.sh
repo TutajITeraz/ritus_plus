@@ -26,6 +26,10 @@ print_and_log "Installation script started."
 print_and_log "Ensuring Python package manager is installed..."
 run_cmd "python -m ensurepip --upgrade"
 
+# 2. Install a Python 3.11 compatible NumPy version (1.26.4 is highly recommended)
+print_and_log "Installing numpy..."
+run_cmd "pip install numpy==1.26.4"
+
 print_and_log "Installing sqllite..."
 run_cmd "pip install flask_sqlalchemy"
 
@@ -34,7 +38,7 @@ run_cmd "pip install backports.tarfile==1.2"
 
 # Install Kraken and its required dependencies
 print_and_log "Installing Kraken version 5.2.7..."
-run_cmd "pip install kraken==5.2.7"
+run_cmd "pip install kraken==5.2.7 --no-deps"
 
 # Install server libraries
 print_and_log "Installing Flask..."
@@ -53,10 +57,13 @@ print_and_log "Installing rapidfuzz..."
 run_cmd "pip install rapidfuzz"
 
 print_and_log "Installing opencv-python..."
-run_cmd "pip install opencv-python"
+run_cmd "pip install opencv-python==4.11.0.86"
 
 print_and_log "Installing matplotlib..."
 run_cmd "pip install matplotlib"
+
+print_and_log "Installing pandas..."
+run_cmd "pip install pandas"
 
 print_and_log "Installing openai and httpx..."
 run_cmd "pip install openai==1.55.3 httpx==0.27.2 --force-reinstall --quiet"
