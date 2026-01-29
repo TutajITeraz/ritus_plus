@@ -163,13 +163,11 @@ const ProjectList = () => {
                       <Text fontWeight="bold" mb={2}>
                         Type
                       </Text>
-
-                      {/*
                       <Select.Root
                         collection={typeCollection}
                         value={[newProject.type]}
-                        onValueChange={(e) =>
-                          setNewProject({ ...newProject, type: e.value[0] })
+                        onValueChange={(details) =>
+                          setNewProject({ ...newProject, type: details.value[0] })
                         }
                       >
                         <Select.HiddenSelect />
@@ -194,7 +192,6 @@ const ProjectList = () => {
                           </Select.Positioner>
                         </Portal>
                       </Select.Root>
-                      */}
                     </Box>
                     {newProject.type === "iiif" && (
                       <Box>

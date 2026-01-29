@@ -13,8 +13,8 @@ class User(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     # Relationships
-    owned_projects = db.relationship('Project', backref='owner', lazy=True)
-    shared_projects = db.relationship('Project', secondary='project_sharing', backref='shared_users', lazy=True)
+    owned_projects = db.relationship('Project', backref='owner', cascade='all, delete-orphan', lazy=True)
+    shared_projects = db.relationship('Project', secondary='project_sharing', backref='shared_users', lazy=True, cascade='all, delete')
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -30,28 +30,29 @@ class Project(db.Model):
     owner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     contents = db.relationship('Content', backref='project', cascade='all, delete-orphan')
     batch_processes = db.relationship('BatchProcessing', backref='project', cascade='all, delete-orphan')
+    images = db.relationship('Image', backref='project', cascade='all, delete-orphan')
 
 class ProjectSharing(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('project.id', ondelete='CASCADE'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
     shared_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class Image(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('project.id', ondelete='CASCADE'), nullable=False)
     name = db.Column(db.String(100), nullable=False)
     original = db.Column(db.String(200), nullable=False)
     transcribed_text = db.Column(db.Text)
 
 class Content(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('project.id', ondelete='CASCADE'), nullable=False)
     data = db.Column(db.Text, nullable=False)  # JSON string for dynamic columns
 
 class BatchProcessing(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('project.id', ondelete='CASCADE'), nullable=False)
     status = db.Column(db.String(20), nullable=False, default='pending')  # pending, running, completed, canceled, failed
     progress = db.Column(db.Float, default=0.0)
     total_rows = db.Column(db.Integer, default=0)

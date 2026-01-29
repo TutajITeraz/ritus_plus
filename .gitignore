@@ -220,3 +220,7 @@ ritus-client/package-lock.json
 ritus-client/package-lock.json
 /releases
 /ritus-client/dist-tableonly
+ritus-client/src/config.js
+ritus-server/config.py
+ritus-server/config.py
+ritus_plus.zip

@@ -10,12 +10,18 @@ On Linux:
 ```
 cd ritus-server/
 ./easy_install.sh
+
+source .venv/bin/activate
+python init_db.py
 ```
 
 On Mac:
 ```
 cd ritus-server/
 ./easy_install_mac.sh
+
+source .venv/bin/activate
+python init_db.py
 ```
 
 There is no Windows version, because Kraken if not available for Windows. Sorry.
@@ -105,3 +111,9 @@ http://localhost:4173/index-tableonly.html
 ### Fast server run, without OCR:
 python krakenServer.py --no-kraken
 
+
+
+### When you update this software on a server, remember: ###
+set proper config.js
+set config.py
+systemctl restart kraken_flask

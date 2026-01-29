@@ -58,6 +58,7 @@ CORS(app, resources={
 
 # JWT Configuration
 app.config["JWT_SECRET_KEY"] = SECRET_KEY
+app.config["JWT_ACCESS_TOKEN_EXPIRE_MINUTES"] = 10080  # 7 days
 jwt = JWTManager(app)
 
 # Konfiguracja Gunicorn Logging
@@ -75,17 +76,21 @@ app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024
 db.init_app(app)
 init_cache(app)
 
-# Create database tables and admin user
-with app.app_context():
-    db.create_all()
-    # Create admin user if not exists
-    admin_user = User.query.filter_by(username=ADMIN_USERNAME).first()
-    if not admin_user:
-        admin_user = User(username=ADMIN_USERNAME, is_admin=True)
-        admin_user.set_password(ADMIN_PASSWORD)
-        db.session.add(admin_user)
-        db.session.commit()
-        logger.info("Admin user created")
+def init_database():
+    """Initialize database tables and create admin user if needed."""
+    with app.app_context():
+        db.create_all()
+        # Create admin user if not exists
+        admin_user = User.query.filter_by(username=ADMIN_USERNAME).first()
+        if not admin_user:
+            admin_user = User(username=ADMIN_USERNAME, is_admin=True)
+            admin_user.set_password(ADMIN_PASSWORD)
+            db.session.add(admin_user)
+            db.session.commit()
+            logger.info("Admin user created")
+
+# Initialize database for both direct run and Gunicorn
+init_database()
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 if not os.path.exists(app.config["UPLOAD_FOLDER"]):
@@ -527,8 +532,22 @@ def delete_user(user_id):
         return jsonify({"error": "Admin access required"}), 403
 
     user = User.query.get_or_404(user_id)
+    
+    # Manually delete all projects owned by this user first
+    # This ensures cascade deletion of images and other related data
+    owned_projects = Project.query.filter_by(owner_id=user_id).all()
+    for project in owned_projects:
+        # Delete project folder and all files
+        project_folder = os.path.join(app.config["UPLOAD_FOLDER"], f"project_{project.id}")
+        if os.path.exists(project_folder):
+            import shutil
+            shutil.rmtree(project_folder)
+        db.session.delete(project)
+    
+    # Delete the user (this will also delete any remaining relationships via cascade)
     db.session.delete(user)
     db.session.commit()
+    logger.info(f"Deleted user {user.username} and all their projects by admin {current_user.username}")
     return jsonify({"message": "User deleted"})
 
 @app.route("/api/users/<int:user_id>/projects/<int:project_id>/share", methods=["POST"])
@@ -1305,10 +1324,5 @@ def open_browser():
         webbrowser.open_new("http://127.0.0.1:5000")
 
 if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
-    enable_wal(app)
+    open_browser()
     app.run(host="127.0.0.1", port=5000, debug=True)
-else:
-    # Uruchomienie przez Gunicorna
-    enable_wal(app)

@@ -71,6 +71,12 @@ run_cmd "pip install openai==1.55.3 httpx==0.27.2 --force-reinstall --quiet"
 print_and_log "Installing flask_caching..."
 run_cmd "pip install flask_caching"
 
+print_and_log "Installing flask_jwt..."
+run_cmd ".venv/bin/pip install flask_jwt --quiet"
+
+print_and_log "Installing flask_jwt_extended ..."
+run_cmd ".venv/bin/pip install flask_jwt_extended --quiet"
+
 # Check if user wants to install Torch for acceleration
 read -p "Do you want to install PyTorch for GPU/CPU acceleration (this can take up to 10GB)? (y/n): " accel_choice
 

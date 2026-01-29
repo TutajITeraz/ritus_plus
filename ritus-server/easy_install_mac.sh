@@ -115,6 +115,12 @@ run_cmd ".venv/bin/pip install matplotlib==3.9.4 --quiet"
 print_and_log "Installing flask-caching..."
 run_cmd ".venv/bin/pip install flask-caching --quiet"
 
+print_and_log "Installing flask_jwt..."
+run_cmd ".venv/bin/pip install flask_jwt --quiet"
+
+print_and_log "Installing flask_jwt_extended ..."
+run_cmd ".venv/bin/pip install flask_jwt_extended --quiet"
+
 print_and_log "Installing pandas..."
 run_cmd ".venv/bin/pip install pandas --quiet"
 
