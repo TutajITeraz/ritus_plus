@@ -30,6 +30,10 @@ const models = createListCollection({
     { label: "Cremma Generic 1.0.1", value: "cremma-generic-1.0.1.mlmodel" },
     { label: "ManuMcFondue", value: "ManuMcFondue.mlmodel" },
     { label: "Catmus Medieval", value: "catmus-medieval.mlmodel" },
+    { label: "McCATMuS (16th-21st c. Polyglot)", value: "McCATMuS_nfd_nofix_V1.mlmodel" },
+    { label: "LECTAUREP (French Admin)", value: "lectaurep_base.mlmodel" },
+    { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
+    { label: "German Handwriting", value: "german_handwriting.mlmodel" },
   ],
 });
 
@@ -54,14 +58,7 @@ const Transcribe = ({
   useEffect(() => {
     setPageCount(images.length);
     setEndPage(images.length);
-  }, [images]);
-
-  // Start transcription immediately only for single image
-  useEffect(() => {
-    if (selectedImageId && !isTranscribing) {
-      handleTranscribe();
-    }
-  }, [selectedImageId]);
+  }, [images.length]);
 
   const handleTranscribe = async () => {
     if (isTranscribing) return;
@@ -167,7 +164,7 @@ const Transcribe = ({
                     Start Page
                   </Text>
                   <Input
-                    defaultValue={startPage}
+                    value={startPage}
                     type="number"
                     variant="outline"
                     placeholder="Enter start page"
@@ -180,7 +177,7 @@ const Transcribe = ({
                     End Page
                   </Text>
                   <Input
-                    defaultValue={endPage}
+                    value={endPage}
                     type="number"
                     variant="outline"
                     placeholder="Enter end page"

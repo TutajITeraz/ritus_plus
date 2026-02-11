@@ -65,6 +65,9 @@ run_cmd "pip install matplotlib"
 print_and_log "Installing pandas..."
 run_cmd "pip install pandas"
 
+print_and_log "Installing Party (OCR alternative)..."
+run_cmd "pip install git+https://github.com/mittagessen/party.git"
+
 print_and_log "Installing openai and httpx..."
 run_cmd "pip install openai==1.55.3 httpx==0.27.2 --force-reinstall --quiet"
 
@@ -122,11 +125,31 @@ run_cmd "kraken get 10.5281/zenodo.10886224"
 print_and_log "Downloading catmus-medieval.mlmodel..."
 run_cmd "kraken get 10.5281/zenodo.12743230"
 
+print_and_log "Downloading McCATMuS_nfd_nofix_V1.mlmodel..."
+run_cmd "kraken get 10.5281/zenodo.13788177"
+
+print_and_log "Downloading LECTAUREP Contemporary French (lectaurep_base.mlmodel)..."
+run_cmd "kraken get 10.5281/zenodo.6542744"
+
+print_and_log "Downloading Lucien Peraire's handwriting (peraire2_ft_MMCFR.mlmodel)..."
+run_cmd "kraken get 10.5281/zenodo.8193498"
+
+print_and_log "Downloading German Handwriting (german_handwriting.mlmodel)..."
+run_cmd "kraken get 10.5281/zenodo.7933463"
+
 cp ~/.config/kraken/* ./models/
 
 print_and_log "Downloading and installing Kraken model (blla.mlmodel)..."
 mkdir -p models
 curl -L -o models/blla.mlmodel https://github.com/mittagessen/kraken/raw/refs/heads/main/kraken/blla.mlmodel
+
+print_and_log "Downloading Party models (this may take a while)..."
+mkdir -p models/party
+print_and_log "Downloading Party Multilingual (model.safetensors)..."
+curl -L -o models/party/party_multilingual_v3.safetensors https://zenodo.org/records/15075344/files/model.safetensors?download=1
+
+print_and_log "Downloading Party European Languages (party_european_langs.safetensors)..."
+curl -L -o models/party/party_european_langs.safetensors https://zenodo.org/records/15764161/files/party_european_langs.safetensors?download=1
 
 # Ask if the user wants to run the server now
 read -p "Do you want to run the Kraken server now? (y/n): " server_choice

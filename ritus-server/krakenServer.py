@@ -118,6 +118,11 @@ if not NO_KRAKEN:
         "cremma-generic-1.0.1.mlmodel": get_model_path("cremma-generic-1.0.1.mlmodel"),
         "ManuMcFondue.mlmodel": get_model_path("ManuMcFondue.mlmodel"),
         "catmus-medieval.mlmodel": get_model_path("catmus-medieval.mlmodel"),
+        
+        "McCATMuS_nfd_nofix_V1.mlmodel": get_model_path("McCATMuS_nfd_nofix_V1.mlmodel"),
+        "lectaurep_base.mlmodel": get_model_path("lectaurep_base.mlmodel"),
+        "peraire2_ft_MMCFR.mlmodel": get_model_path("peraire2_ft_MMCFR.mlmodel"),
+        "german_handwriting.mlmodel": get_model_path("german_handwriting.mlmodel"),
         "blla.mlmodel": get_model_path("blla.mlmodel"),
     }
     # Uwaga: Ładowanie ciężkich modeli lepiej robić wewnątrz pierwszej prośby 

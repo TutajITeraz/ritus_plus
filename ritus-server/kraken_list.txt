@@ -1,0 +1,131 @@
+Retrieving model list ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   0% 0/0 -:--:-- 0:00:00
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ DOI                         ┃ summary                                              ┃ model type   ┃ keywords                                             ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 10.5281/zenodo.10602356     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.10602357 │ CATMuS-Print (Tiny, 2024-01-31) - Diachronic model   │ recognition  │ kraken_pytorch; optical text recognition             │
+│                             │ for French prints and other languages                │              │                                                      │
+│ 10.5281/zenodo.7050341      │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.7050342  │ Printed Ottoman Base Model Trained on the OpenITI    │ recognition  │ kraken_pytorch                                       │
+│                             │ Corpus                                               │              │                                                      │
+│ 10.5281/zenodo.7051643      │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.7051644  │ Printed Persian Base Model Trained on the OpenITI    │ recognition  │ kraken_pytorch                                       │
+│                             │ Corpus                                               │              │                                                      │
+│ 10.5281/zenodo.6891851      │                                                      │              │                                                      │
+│ ├── 10.5281/zenodo.7933402  │ Fraktur model trained from enhanced Austrian         │ recognition  │ kraken_pytorch; Fraktur; Latin                       │
+│ └── 10.5281/zenodo.6891852  │ Newspapers dataset                                   │ recognition  │ kraken_pytorch                                       │
+│                             │ Fraktur model trained from enhanced Austrian         │              │                                                      │
+│                             │ Newspapers dataset                                   │              │                                                      │
+│ 10.5281/zenodo.14602568     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.14602569 │ General segmentation model for print and handwriting │ segmentation │ multiscriptal                                        │
+│ 10.5281/zenodo.5617782      │                                                      │              │                                                      │
+│ ├── 10.5281/zenodo.6669508  │ Cremma-Medieval Old French Model (Litterature)       │ recognition  │ kraken_pytorch                                       │
+│ └── 10.5281/zenodo.5617783  │ Cremma-Medieval Old French Model (Litterature)       │ recognition  │ kraken_pytorch                                       │
+│ 10.5281/zenodo.13736583     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.13736584 │ Model trained on 11th century manuscripts to produce │ recognition  │ kraken_pytorch                                       │
+│                             │ expanded transcription (Latin).                      │              │                                                      │
+│ 10.5281/zenodo.7051645      │                                                      │              │                                                      │
+│ ├── 10.5281/zenodo.14585602 │ Printed Urdu Base Model Trained on the OpenITI       │ recognition  │ automatic-text-recognition                           │
+│ ├── 10.5281/zenodo.14574660 │ Corpus                                               │ recognition  │ kraken_pytorch                                       │
+│ └── 10.5281/zenodo.7051646  │ Printed Urdu Base Model Trained on the OpenITI       │ recognition  │ kraken_pytorch                                       │
+│                             │ Corpus                                               │              │                                                      │
+│                             │ Printed Urdu Base Model Trained on the OpenITI       │              │                                                      │
+│                             │ Corpus                                               │              │                                                      │
+│ 10.5281/zenodo.10066218     │                                                      │              │                                                      │
+│ ├── 10.5281/zenodo.12743230 │ CATMuS Medieval 1.5.0                                │ recognition  │ kraken_pytorch; handwritten text recognition; htr;   │
+│ └── 10.5281/zenodo.10066219 │ CATMuS Medieval                                      │ recognition  │ middle ages                                          │
+│                             │                                                      │              │ kraken_pytorch; handwritten text recognition; htr;   │
+│                             │                                                      │              │ middle ages                                          │
+│ 10.5281/zenodo.7410359      │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.7410529  │ Gallicorpora+ ancient prints (Litterature)           │ recognition  │ HTR; Model; print; Historical document; french;      │
+│                             │                                                      │              │ kraken_pytorch                                       │
+│ 10.5281/zenodo.10788590     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.10788591 │ HTR model for documentary Latin, Old French and      │ recognition  │ kraken_pytorch                                       │
+│                             │ Spanish medieval manuscripts (11th-16th)             │              │                                                      │
+│ 10.5281/zenodo.6657808      │                                                      │              │                                                      │
+│ ├── 10.5281/zenodo.10886224 │ Model train on openly licensed data from HTR-United  │ recognition  │ kraken_pytorch                                       │
+│ ├── 10.5281/zenodo.6657809  │ from the 17th century to the 21st were used.         │ recognition  │ kraken_pytorch                                       │
+│ └── 10.5281/zenodo.10874058 │ Model train on openly licensed data from HTR-United. │ recognition  │ kraken_pytorch                                       │
+│                             │ All French manuscript data from the 17th century to  │              │                                                      │
+│                             │ the 21st were used (72k lines).                      │              │                                                      │
+│                             │ Model train on openly licensed data from HTR-United. │              │                                                      │
+│                             │ All French manuscript data from the 17th century to  │              │                                                      │
+│                             │ the 21st were used.                                  │              │                                                      │
+│ 10.5281/zenodo.2577812      │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.2577813  │ A generalized model for English printed text         │ recognition  │ kraken_pytorch                                       │
+│ 10.5281/zenodo.13814199     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.13814200 │ Segmentation model for historical Samaritan          │ recognition  │ kraken_pytorch                                       │
+│                             │ Manuscripts for one column pages, model trained on   │              │                                                      │
+│                             │ 13 pentateuchal Samaritan manuscripts                │              │                                                      │
+│ 10.5281/zenodo.18207778     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.18207779 │ Bastarda HTR model related to the Augustinian        │ recognition  │ automatic-text-recognition                           │
+│                             │ canonesses in Inzigkofen                             │              │                                                      │
+│ 10.5281/zenodo.10519595     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.10519596 │ OCR model for German prints trained from several     │ recognition  │ kraken_pytorch; antiqua; Fraktur; Latin; OCR         │
+│                             │ datasets                                             │              │                                                      │
+│ 10.5281/zenodo.18207718     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.18207719 │ Textualis HTR model related to the Augustinian       │ recognition  │ automatic-text-recognition                           │
+│                             │ canonesses in Inzigkofen                             │              │                                                      │
+│ 10.5281/zenodo.7050295      │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.7050296  │ Printed Arabic Base Model Trained on the OpenITI     │ recognition  │ kraken_pytorch                                       │
+│                             │ Corpus                                               │              │                                                      │
+│ 10.5281/zenodo.5468285      │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.5468286  │ Medieval Hebrew manuscripts version 1.0              │ recognition  │ kraken_pytorch                                       │
+│ 10.5281/zenodo.7050269      │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.7050270  │ Printed Arabic-Script Base Model Trained on the      │ recognition  │ kraken_pytorch                                       │
+│                             │ OpenITI Corpus                                       │              │                                                      │
+│ 10.5281/zenodo.11113736     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.11113737 │ Latin Incunabula and Early Prints                    │ recognition  │ kraken_pytorch; OCR; Optical Character Recognition   │
+│ 10.5281/zenodo.5468664      │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.5468665  │ Medieval Hebrew manuscripts in Sephardi bookhand     │ recognition  │ kraken_pytorch                                       │
+│                             │ version 1.0                                          │              │                                                      │
+│ 10.5281/zenodo.10592715     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.10592716 │ CATMuS-Print (Large, 2024-01-30) - Diachronic model  │ recognition  │ kraken_pytorch; optical text recognition             │
+│                             │ for French prints and other languages                │              │                                                      │
+│ 10.5281/zenodo.8193497      │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.8193498  │ Transcription model for Lucien Peraire's handwriting │ recognition  │ kraken_pytorch; HTR; Peraire; Manu McFrench;         │
+│                             │ (French, 20th century)                               │              │ contemporary handwriting; French                     │
+│ 10.5281/zenodo.6542743      │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.6542744  │ LECTAUREP Contemporary French Model (Administration) │ recognition  │ kraken_pytorch; HTR; transcription model;            │
+│                             │                                                      │              │ recognition model; French; Contemporary French       │
+│ 10.5281/zenodo.7234165      │                                                      │              │                                                      │
+│ ├── 10.5281/zenodo.7631619  │ Model trained on all available data, from 8th to     │ recognition  │ kraken_pytorch                                       │
+│ └── 10.5281/zenodo.7234166  │ 16th century, from GalliCorpora, CREMMA Medieval and │ recognition  │ kraken_pytorch                                       │
+│                             │ CREMMA Medieval Lat, as well as data from Eutyches,  │              │                                                      │
+│                             │ Caroline Minuscule, DecameronFR. Transcription       │              │                                                      │
+│                             │ guidelines:                                          │              │                                                      │
+│                             │ https://hal.archives-ouvertes.fr/hal-03697382        │              │                                                      │
+│                             │ Model trained on all available data, from 8th to     │              │                                                      │
+│                             │ 16th century, from GalliCorpora, CREMMA Medieval and │              │                                                      │
+│                             │ CREMMA Medieval Lat, as well as data from Eutyches,  │              │                                                      │
+│                             │ Caroline Minuscule, DecameronFR. Transcription       │              │                                                      │
+│                             │ guidelines:                                          │              │                                                      │
+│                             │ https://hal.archives-ouvertes.fr/hal-03697382        │              │                                                      │
+│ 10.5281/zenodo.7933462      │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.7933463  │ HTR model for German manuscripts trained from        │ recognition  │ kraken_pytorch; HTR; Handwritten text recognition;   │
+│                             │ several datasets                                     │              │ Manuskript                                           │
+│ 10.5281/zenodo.13942713     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.13942714 │ Kuzushiji                                            │ recognition  │ kraken_pytorch; ATR; HTR; OCR; kraken; eScriptorium; │
+│                             │                                                      │              │ japanese; kuzushiji                                  │
+│ 10.5281/zenodo.5468572      │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.5468573  │ Medieval Hebrew manuscripts in Italian bookhand      │ recognition  │ kraken_pytorch                                       │
+│                             │ version 1.0                                          │              │                                                      │
+│ 10.5281/zenodo.5468477      │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.5468478  │ Medieval Hebrew manuscripts in Ashkenazi bookhand    │ recognition  │ kraken_pytorch                                       │
+│ 10.5281/zenodo.18207675     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.18207676 │ Fanny loves Wilhelm. HTR Model trained on letters    │ recognition  │ automatic-text-recognition                           │
+│                             │ and notes by Fanny Mendelssohn (Fanny Hensel)        │              │                                                      │
+│ 10.5281/zenodo.13741956     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.13741957 │ Model trained on 11th century manuscripts to produce │ recognition  │ kraken_pytorch                                       │
+│                             │ graphematic transcription (Latin).                   │              │                                                      │
+│ 10.5281/zenodo.8425683      │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.8425684  │ Experimental printed syriac model                    │ recognition  │ kraken_pytorch                                       │
+│ 10.5281/zenodo.18207766     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.18207767 │ Cursive HTR model related to the Augustinian         │ recognition  │ automatic-text-recognition                           │
+│                             │ canonesses in Inzigkofen                             │              │                                                      │
+│ 10.5281/zenodo.13788176     │                                                      │              │                                                      │
+│ └── 10.5281/zenodo.13788177 │ McCATMuS - Transcription model for handwritten,      │ recognition  │ kraken_pytorch; HTR; OCR; generic model              │
+│                             │ printed and typewritten documents from the 16th      │              │                                                      │
+│                             │ century to the 21st century                          │              │                                                      │
+└─────────────────────────────┴──────────────────────────────────────────────────────┴──────────────┴──────────────────────────────────────────────────────┘
+(.venv) lukasz@mac1 ritus-server % 
