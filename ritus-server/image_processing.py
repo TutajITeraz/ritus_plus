@@ -424,6 +424,11 @@ def split_line_boundary_by_color(color_image, line, line_index, debug_dir, windo
         new_baseline_orig = [(x + left, y + top) for x, y in new_baseline_crop]
         new_boundary_orig = [(x + left, y + top) for x, y in new_boundary_crop]
 
+        # Clip coordinates to image bounds
+        width, height = color_image.size
+        new_baseline_orig = [(max(0, min(width - 1, x)), max(0, min(height - 1, y))) for x, y in new_baseline_orig]
+        new_boundary_orig = [(max(0, min(width - 1, x)), max(0, min(height - 1, y))) for x, y in new_boundary_orig]
+
         # Create new BaselineLine object
         if new_baseline_orig and new_boundary_orig:
             new_line = BaselineLine(
@@ -439,6 +444,7 @@ def split_line_boundary_by_color(color_image, line, line_index, debug_dir, windo
                 type=line.type if hasattr(line, 'type') else 'baselines'
             )
             new_line.color = color
+            new_line.segmentation_type = getattr(line, 'segmentation_type', 'baselines')
             new_lines.append(new_line)
             logger.debug(f"Created new line {new_line.id}, color {color}, baseline length={max(x for x, y in new_baseline_orig) - min(x for x, y in new_baseline_orig) if new_baseline_orig else 0}")
 

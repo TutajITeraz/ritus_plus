@@ -6,6 +6,7 @@ import json
 import re
 import cv2
 import torch
+import numpy as np
 import webbrowser
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -34,17 +35,18 @@ parser.add_argument('--no-kraken', action='store_true', help='Disable kraken OCR
 args, unknown = parser.parse_known_args()
 NO_KRAKEN = args.no_kraken
 
-if not NO_KRAKEN:
-    from kraken import binarization, rpred, pageseg, blla
-    from kraken.lib import vgsl
-    from kraken.lib.models import load_any
-
 def get_model_path(model_name):
     local_path = os.path.join("models", model_name)
     if os.path.exists(local_path): return local_path
     user_home = os.path.expanduser("~")
     app_support_path = os.path.join(user_home, "Library", "Application Support", "kraken", model_name)
     return app_support_path if os.path.exists(app_support_path) else None
+
+if not NO_KRAKEN:
+    from kraken import binarization, rpred, pageseg, blla
+    from kraken.lib import vgsl
+    from kraken.lib.models import load_any
+    from kraken.containers import BaselineLine, Segmentation
 
 # --- INICJALIZACJA FLASK ---
 app = Flask(__name__, static_folder="static", static_url_path="/")
@@ -107,7 +109,7 @@ def enable_wal(app):
 selected_device = "cuda:0" if torch.cuda.is_available() else "cpu"
 baseline_model = None
 ocr_model = None
-last_ocr_model_name = "Tridis_Medieval_EarlyModern.mlmodel"
+last_ocr_model_name = None
 MODEL_PATHS = {}
 
 if not NO_KRAKEN:
@@ -121,8 +123,24 @@ if not NO_KRAKEN:
     # Uwaga: Ładowanie ciężkich modeli lepiej robić wewnątrz pierwszej prośby 
     # lub użyć preload_app w Gunicorn, aby nie dublować RAM-u
     baseline_model_path = MODEL_PATHS.get("blla.mlmodel")
+    logger.info(f"Baseline model path: {baseline_model_path}")
+    
     if baseline_model_path:
-        baseline_model = vgsl.TorchVGSLModel.load_model(baseline_model_path).to(device=selected_device)
+        try:
+            temp_model = vgsl.TorchVGSLModel.load_model(baseline_model_path)
+            if temp_model is not None:
+                if hasattr(temp_model, 'to'):
+                    converted = temp_model.to(device=selected_device)
+                    baseline_model = converted if converted is not None else temp_model
+                else:
+                    baseline_model = temp_model
+                logger.info(f"Baseline model loaded successfully. Type: {type(baseline_model)}")
+            else:
+                logger.error("vgsl.TorchVGSLModel.load_model returned None at startup")
+        except Exception as e:
+            logger.error(f"Failed to load baseline model: {e}")
+    else:
+        logger.error("Baseline model path not found! 'models/blla.mlmodel' is missing.")
 
 ### Color separation: #######################################################
 
@@ -132,7 +150,11 @@ if not NO_KRAKEN:
 if not NO_KRAKEN:
     def serialize_segmentation(segmentation):
         serialized_lines = []
-        for line in segmentation:
+        if segmentation is None:
+            return []
+        if not hasattr(segmentation, 'lines'):
+            return []
+        for line in segmentation.lines:
             serialized_lines.append({
                 "id": line.id,
                 "baseline": line.baseline,
@@ -156,7 +178,7 @@ if not NO_KRAKEN:
             logger.error(f"Model not found: {model_name}")
             return "Model not found", 400
 
-        if model_name != last_ocr_model_name:
+        if model_name != last_ocr_model_name or ocr_model is None:
             logger.info(f"Loading model: {model_name}")
             ocr_model = load_any(model_path, device=selected_device)
             last_ocr_model_name = model_name
@@ -167,6 +189,34 @@ if not NO_KRAKEN:
             image = image.convert("L")
 
         logger.info("Baseline segmentation...")
+        if baseline_model is None:
+            logger.warning("Baseline model was not loaded at startup. Attempting to load now...")
+            path = MODEL_PATHS.get("blla.mlmodel")
+            if path:
+                try:
+                    temp_model = vgsl.TorchVGSLModel.load_model(path)
+                    
+                    if temp_model is not None:
+                        if hasattr(temp_model, 'to'):
+                            converted = temp_model.to(device=selected_device)
+                            baseline_model = converted if converted is not None else temp_model
+                        else:
+                            baseline_model = temp_model
+                        logger.info(f"Baseline model loaded successfully on demand. Type: {type(baseline_model)}")
+                    else:
+                        raise ValueError("vgsl.TorchVGSLModel.load_model returned None")
+
+                except Exception as e:
+                    logger.error(f"Failed to load baseline model on demand: {e}")
+                    return f"Failed to load baseline model: {e}", 500
+            else:
+                logger.error("Baseline model path not found! 'models/blla.mlmodel' is missing.")
+                return "Baseline model path not found", 500
+
+        if baseline_model is None:
+            logger.error("Baseline model is not loaded! Please check if 'models/blla.mlmodel' exists.")
+            return "Baseline model is not loaded", 500
+
         seg = blla.segment(image, model=baseline_model, device=selected_device)
         lines = serialize_segmentation(seg.lines)
 
@@ -314,7 +364,7 @@ def transcribe_image_by_id(image_id, model_name):
         logger.error(f"Image file not found at {image_path}")
         return f"Image file not found at {image_path}", 404
 
-    if model_name != last_ocr_model_name:
+    if model_name != last_ocr_model_name or ocr_model is None:
         logger.info(f"Loading model: {model_name}")
         ocr_model = load_any(model_path, device=selected_device)
         last_ocr_model_name = model_name
@@ -328,6 +378,37 @@ def transcribe_image_by_id(image_id, model_name):
         ocr_image = ocr_image.convert("L")
 
     logger.info("Baseline segmentation...")
+    if baseline_model is None:
+        logger.warning("Baseline model was not loaded at startup. Attempting to load now...")
+        path = MODEL_PATHS.get("blla.mlmodel")
+        if path:
+            try:
+                temp_model = vgsl.TorchVGSLModel.load_model(path)
+                logger.info(f"Raw baseline model type: {type(temp_model)}")
+                
+                if temp_model is not None:
+                    if hasattr(temp_model, 'to'):
+                        converted_model = temp_model.to(device=selected_device)
+                        # If .to() returns None (in-place modification), use temp_model
+                        baseline_model = converted_model if converted_model is not None else temp_model
+                    else:
+                        baseline_model = temp_model
+                    
+                    logger.info(f"Baseline model loaded successfully on demand. Final Type: {type(baseline_model)}")
+                else:
+                    raise ValueError("vgsl.TorchVGSLModel.load_model returned None")
+
+            except Exception as e:
+                logger.error(f"Failed to load baseline model on demand: {e}")
+                return f"Failed to load baseline model: {e}", 500
+        else:
+            logger.error("Baseline model path not found! 'models/blla.mlmodel' is missing.")
+            return "Baseline model path not found", 500
+
+    if baseline_model is None:
+        logger.error("Baseline model is not loaded! Please check if 'models/blla.mlmodel' exists.")
+        return "Baseline model is not loaded", 500
+        
     seg = blla.segment(ocr_image, model=baseline_model, device=selected_device, text_direction='horizontal-tb')
 
     # Log segmentation attributes for debugging
@@ -351,9 +432,13 @@ def transcribe_image_by_id(image_id, model_name):
         logger.info(f"Processing line {i + 1}")
         logger.info(f"Baseline: {line.baseline}")
         logger.info(f"Boundary: {line.boundary}")
-
+        
         # Split line by color and get new line segments
-        split_lines = split_line_boundary_by_color(color_image, line, i, debug_dir, window_size=80, red_threshold=10)
+        try:
+             split_lines = split_line_boundary_by_color(color_image, line, i, debug_dir, window_size=80, red_threshold=10)
+        except Exception as e:
+             logger.error(f"Failed to split line {i+1}: {e}")
+             split_lines = [line]
 
         # Process each split line for OCR
         for split_line in split_lines:
@@ -396,7 +481,7 @@ def transcribe_image_by_id(image_id, model_name):
                         buffered_text.append(record_text)
                     
                     previous_color = current_color
-                    logger.info(f"Prediction {current_color}: {record_text}")
+                    logger.info(f"Detected text ({current_color}): '{record_text}'")
             except Exception as e:
                 logger.error(f"OCR failed for line {i + 1}, color {split_line.color}: {str(e)}")
 
@@ -408,6 +493,8 @@ def transcribe_image_by_id(image_id, model_name):
             transcribed_text += " ".join(buffered_text) + "</red>"
         else:
             transcribed_text += " ".join(buffered_text)
+
+    logger.info(f"Total transcribed text: '{transcribed_text}'")
 
     image_record.transcribed_text = transcribed_text.strip()
     db.session.commit()

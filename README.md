@@ -117,3 +117,5 @@ python krakenServer.py --no-kraken
 set proper config.js
 set config.py
 systemctl restart kraken_flask
+## To check LOGS from gunicorn:
+journalctl -u kraken_flask -f
