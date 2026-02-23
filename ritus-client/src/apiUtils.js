@@ -25,6 +25,11 @@ const apiRequest = async (url, options = {}) => {
     ...options.headers,
   };
 
+  // If body is FormData, let the browser set the Content-Type header
+  if (options.body instanceof FormData) {
+    delete headers['Content-Type'];
+  }
+
   const response = await fetch(url, {
     ...options,
     headers,
@@ -176,21 +181,14 @@ export const fetchImages = async (projectId) => {
 
 export const uploadImages = async (projectId, formData) => {
   try {
-    const headers = getAuthHeaders(); // Don't set Content-Type for FormData
-    const response = await fetch(
+    // apiRequest will handle Authorization and clear Content-Type for FormData
+    const response = await apiRequest(
       `${SERVER_URL}/api/projects/${projectId}/upload`,
       {
         method: "POST",
-        headers,
         body: formData,
       }
     );
-    if (response.status === 401) {
-      removeAuthToken();
-      removeCurrentUser();
-      window.location.href = '/login';
-      throw new Error('Authentication required');
-    }
     if (!response.ok) {
       const errorData = await response.json();
       throw new Error(errorData.message || "Upload failed");
@@ -209,17 +207,9 @@ export const uploadImages = async (projectId, formData) => {
 
 export const deleteImage = async (imageId) => {
   try {
-    const headers = getAuthHeaders();
-    const response = await fetch(`${SERVER_URL}/api/images/${imageId}`, {
+    const response = await apiRequest(`${SERVER_URL}/api/images/${imageId}`, {
       method: "DELETE",
-      headers,
     });
-    if (response.status === 401) {
-      removeAuthToken();
-      removeCurrentUser();
-      window.location.href = '/login';
-      throw new Error('Authentication required');
-    }
     if (!response.ok) throw new Error("Failed to delete image");
     return await response.json();
   } catch (error) {
@@ -235,21 +225,10 @@ export const deleteImage = async (imageId) => {
 
 export const updateImage = async (imageId, data) => {
   try {
-    const headers = {
-      "Content-Type": "application/json",
-      ...getAuthHeaders(),
-    };
-    const response = await fetch(`${SERVER_URL}/api/images/${imageId}`, {
+    const response = await apiRequest(`${SERVER_URL}/api/images/${imageId}`, {
       method: "PUT",
-      headers,
       body: JSON.stringify(data),
     });
-    if (response.status === 401) {
-      removeAuthToken();
-      removeCurrentUser();
-      window.location.href = '/login';
-      throw new Error('Authentication required');
-    }
     if (!response.ok)
       throw new Error(`Failed to update image: ${response.status}`);
     return await response.json();
@@ -266,20 +245,12 @@ export const updateImage = async (imageId, data) => {
 
 export const transcribeImage = async (imageId, modelName) => {
   try {
-    const headers = getAuthHeaders();
     const formData = new FormData();
     formData.append("modelName", modelName);
-    const response = await fetch(`${SERVER_URL}/api/transcribe/${imageId}`, {
+    const response = await apiRequest(`${SERVER_URL}/api/transcribe/${imageId}`, {
       method: "POST",
-      headers,
       body: formData,
     });
-    if (response.status === 401) {
-      removeAuthToken();
-      removeCurrentUser();
-      window.location.href = '/login';
-      throw new Error('Authentication required');
-    }
     if (!response.ok) {
       const errorData = await response.json();
       throw new Error(errorData.message || "Transcription failed");
@@ -298,7 +269,7 @@ export const transcribeImage = async (imageId, modelName) => {
 
 export const fetchProjectContent = async (projectId) => {
   try {
-    const response = await fetch(
+    const response = await apiRequest(
       `${SERVER_URL}/api/projects/${projectId}/content`
     );
     if (!response.ok) throw new Error("Failed to fetch project content");
@@ -398,11 +369,10 @@ export const saveProjectContent = async (projectId, contentRows) => {
       create: contentRows,
     };
 
-    const response = await fetch(
+    const response = await apiRequest(
       `${SERVER_URL}/api/projects/${projectId}/content/bulk`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       }
     );
@@ -431,11 +401,10 @@ export const saveProjectContent = async (projectId, contentRows) => {
 
 export const startBatchProcess = async (projectId, similarityThreshold) => {
   try {
-    const response = await fetch(
+    const response = await apiRequest(
       `${SERVER_URL}/api/projects/${projectId}/batch-process`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           similarity_threshold: similarityThreshold * 100,
         }),
@@ -459,7 +428,7 @@ export const startBatchProcess = async (projectId, similarityThreshold) => {
 
 export const getBatchProcessStatus = async (projectId) => {
   try {
-    const response = await fetch(
+    const response = await apiRequest(
       `${SERVER_URL}/api/projects/${projectId}/batch-process`
     );
     if (!response.ok) {
@@ -482,7 +451,7 @@ export const getBatchProcessStatus = async (projectId) => {
 
 export const cancelBatchProcess = async (projectId) => {
   try {
-    const response = await fetch(
+    const response = await apiRequest(
       `${SERVER_URL}/api/projects/${projectId}/batch-process`,
       {
         method: "DELETE",
@@ -507,11 +476,8 @@ export const cancelBatchProcess = async (projectId) => {
 export const aiAutoFix = async (question) => {
   try {
     console.log("fetch to ai send...");
-    const response = await fetch(`${SERVER_URL}/api/ai-autofix`, {
+    const response = await apiRequest(`${SERVER_URL}/api/ai-autofix`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
       body: JSON.stringify({ question }),
     });
 
