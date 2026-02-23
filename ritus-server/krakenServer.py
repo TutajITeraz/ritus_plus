@@ -60,7 +60,8 @@ CORS(app, resources={
 
 # JWT Configuration
 app.config["JWT_SECRET_KEY"] = SECRET_KEY
-app.config["JWT_ACCESS_TOKEN_EXPIRE_MINUTES"] = 10080  # 7 days
+from datetime import timedelta
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(minutes=10080)  # 7 days
 jwt = JWTManager(app)
 
 # Konfiguracja Gunicorn Logging
@@ -76,7 +77,7 @@ app.config["UPLOAD_FOLDER"] = "uploads"
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024 
 
 db.init_app(app)
-init_cache(app)
+cache = init_cache(app)
 
 def init_database():
     """Initialize database tables and create admin user if needed."""
@@ -1361,6 +1362,8 @@ def transcribe_by_id(image_id):
 # Static File Serving
 @app.route("/project/<path:path>")
 @app.route("/new-project")
+@app.route("/users")
+@app.route("/login")
 @app.route("/")
 def serve_react_app(path=""):
     try:
