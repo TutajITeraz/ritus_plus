@@ -179,18 +179,16 @@ const ProjectList = () => {
                             <Select.Indicator />
                           </Select.IndicatorGroup>
                         </Select.Control>
-                        <Portal>
-                          <Select.Positioner>
-                            <Select.Content>
-                              {typeCollection.items.map((item) => (
-                                <Select.Item item={item} key={item.value}>
-                                  {item.label}
-                                  <Select.ItemIndicator />
-                                </Select.Item>
-                              ))}
-                            </Select.Content>
-                          </Select.Positioner>
-                        </Portal>
+                        <Select.Positioner>
+                          <Select.Content>
+                            {typeCollection.items.map((item) => (
+                              <Select.Item item={item} key={item.value}>
+                                {item.label}
+                                <Select.ItemIndicator />
+                              </Select.Item>
+                            ))}
+                          </Select.Content>
+                        </Select.Positioner>
                       </Select.Root>
                     </Box>
                     {newProject.type === "iiif" && (
