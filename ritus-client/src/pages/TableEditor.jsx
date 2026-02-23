@@ -77,7 +77,7 @@ const TableEditor = () => {
   const [showSwitchDialog, setShowSwitchDialog] = useState(false);
   const [showConverterDialog, setShowConverterDialog] = useState(false);
   const [showBatchDialog, setShowBatchDialog] = useState(false);
-  const [similarityThreshold, setSimilarityThreshold] = useState(75);
+  const [similarityThreshold, setSimilarityThreshold] = useState(0.75);
   const [batchStatus, setBatchStatus] = useState({
     status: "none",
     progress: 0,
