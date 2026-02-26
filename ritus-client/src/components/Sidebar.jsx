@@ -28,6 +28,7 @@ import {
 } from "../apiUtils";
 import { useNavigate } from "react-router-dom";
 import { toaster } from "@/components/ui/toaster";
+import { ProgressBar } from "@/components/ui/progress";
 import IiifDownloader from "./IiifDownloader";
 import Transcribe from "./Transcribe";
 import TranscriptionEditor from "./TranscriptionEditor";
@@ -46,6 +47,7 @@ const Sidebar = ({
     images.find((img) => img.original === mainImage) || null;
   const navigate = useNavigate();
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [isIiifDownloaderOpen, setIsIiifDownloaderOpen] = useState(false);
   const [transcriptionText, setTranscriptionText] = useState(
     selectedImage?.transcribed_text || ""
@@ -205,10 +207,12 @@ const Sidebar = ({
     }
 
     setIsUploading(true);
+    setUploadProgress(0); // Reset progress
+
     const formData = new FormData();
     Array.from(files).forEach((file) => formData.append("images", file));
     try {
-      const data = await uploadImages(projectId, formData);
+      const data = await uploadImages(projectId, formData, setUploadProgress);
       if (data && data.files) {
         const updatedImages = await fetchImages(projectId);
         setImages(updatedImages);
@@ -225,6 +229,7 @@ const Sidebar = ({
       });
     } finally {
       setIsUploading(false);
+      setUploadProgress(0);
     }
   };
 
@@ -381,6 +386,17 @@ const Sidebar = ({
                       </Button>
                     </FileUpload.Trigger>
                   </FileUpload.Root>
+                  {isUploading && (
+                    <Box width="100%">
+                      <ProgressBar 
+                        value={uploadProgress} 
+                        size="sm" 
+                        colorPalette="blue" 
+                        label="Uploading..."
+                        showValueText
+                      />
+                    </Box>
+                  )}
                   <Button
                     size="sm"
                     variant="subtle"

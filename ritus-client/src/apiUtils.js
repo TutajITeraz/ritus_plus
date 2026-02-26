@@ -179,22 +179,50 @@ export const fetchImages = async (projectId) => {
   }
 };
 
-export const uploadImages = async (projectId, formData) => {
-  try {
-    // apiRequest will handle Authorization and clear Content-Type for FormData
-    const response = await apiRequest(
-      `${SERVER_URL}/api/projects/${projectId}/upload`,
-      {
-        method: "POST",
-        body: formData,
-      }
-    );
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.message || "Upload failed");
+export const uploadImages = async (projectId, formData, onProgress) => {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const token = getAuthToken();
+
+    xhr.open("POST", `${SERVER_URL}/api/projects/${projectId}/upload`);
+
+    if (token) {
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     }
-    return await response.json();
-  } catch (error) {
+
+    if (onProgress && xhr.upload) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percentComplete = Math.round((event.loaded / event.total) * 100);
+          onProgress(percentComplete);
+        }
+      };
+    }
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const response = JSON.parse(xhr.responseText);
+          resolve(response);
+        } catch (e) {
+          reject(new Error("Invalid JSON response"));
+        }
+      } else {
+        try {
+          const errorData = JSON.parse(xhr.responseText);
+          reject(new Error(errorData.message || "Upload failed"));
+        } catch (e) {
+          reject(new Error("Upload failed"));
+        }
+      }
+    };
+
+    xhr.onerror = () => {
+      reject(new Error("Network error occurred during upload"));
+    };
+
+    xhr.send(formData);
+  }).catch((error) => {
     toaster.create({
       title: "Error",
       description: error.message || "Failed to upload images",
@@ -202,7 +230,7 @@ export const uploadImages = async (projectId, formData) => {
       duration: 3000,
     });
     throw error;
-  }
+  });
 };
 
 export const deleteImage = async (imageId) => {
