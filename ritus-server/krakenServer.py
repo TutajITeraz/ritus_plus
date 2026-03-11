@@ -13,12 +13,17 @@ from flask_cors import CORS
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 from PIL import Image as PILImage
 from PIL import ImageFile
+import threading
 from threading import Timer, Thread
 from flask_caching import Cache
 from config import SERVER_URL, ADMIN_USERNAME, ADMIN_PASSWORD, SECRET_KEY
 
 # Importy lokalne
-from models import db, User, Project, ProjectSharing, Image, Content, BatchProcessing
+from models import db, User, Project, ProjectSharing, Image, Content, BatchProcessing, IiifDownloadJob
+from download_iiif import run_iiif_download
+
+# Registry of stop events keyed by project_id for IIIF background downloads
+_iiif_stop_events = {}
 from batch_analysis import batch_process_project
 from image_processing import split_line_boundary_by_color
 from ai_tools import gpt_autofix
@@ -831,6 +836,157 @@ def cancel_batch_process(project_id):
         logger.error(f"Error in cancel_batch_process for project ID {project_id}: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+
+# ---------------------------------------------------------------------------
+# IIIF Background Download Routes
+# ---------------------------------------------------------------------------
+
+@app.route("/api/projects/<int:project_id>/iiif-download", methods=["POST"])
+@jwt_required()
+def start_iiif_download(project_id):
+    """Start (or resume) a server-side IIIF background download."""
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
+    project = Project.query.get_or_404(project_id)
+    if not project.iiif_url:
+        return jsonify({"error": "Project has no IIIF URL"}), 400
+
+    # Check for an already-running job
+    existing_job = IiifDownloadJob.query.filter_by(project_id=project_id).first()
+    if existing_job and existing_job.status == "running":
+        return jsonify({"error": "Download already running"}), 409
+
+    body = request.get_json(silent=True) or {}
+    confirm = body.get("confirm")  # "append" | "restart" | None
+
+    # Count existing images
+    image_count = Image.query.filter_by(project_id=project_id).count()
+
+    # Determine start_page
+    if existing_job and existing_job.status == "cancelled" and confirm is None:
+        # Resume from where we left off – no conflict dialog needed
+        start_page = (existing_job.current_page or 0) + 1
+    elif image_count > 0 and confirm is None:
+        # Images already present – ask front-end what to do
+        return jsonify({
+            "conflict": True,
+            "image_count": image_count,
+            "message": "Project already has images. Choose 'append' to add after them or 'restart' to start from page 1."
+        }), 409
+    elif confirm == "append" or (existing_job and existing_job.status == "cancelled" and confirm == "append"):
+        start_page = image_count + 1
+    elif confirm == "restart":
+        start_page = 1
+    else:
+        start_page = 1
+
+    # Upsert the job record
+    if existing_job:
+        existing_job.status = "pending"
+        existing_job.current_page = start_page - 1
+        existing_job.error_message = None
+        job = existing_job
+    else:
+        job = IiifDownloadJob(project_id=project_id, status="pending", start_page=start_page)
+        db.session.add(job)
+
+    job.start_page = start_page
+    db.session.commit()
+    job_id = job.id
+
+    # Create stop event
+    stop_event = threading.Event()
+    _iiif_stop_events[project_id] = stop_event
+
+    def on_progress(current_page, total_pages, status, error=None):
+        with app.app_context():
+            j = IiifDownloadJob.query.get(job_id)
+            if j is None:
+                return
+            j.current_page = current_page
+            j.total_pages = total_pages
+            j.status = status
+            if error:
+                j.error_message = error
+            db.session.commit()
+        if status in ("completed", "failed", "cancelled"):
+            _iiif_stop_events.pop(project_id, None)
+
+    thread = Thread(
+        target=run_iiif_download,
+        kwargs=dict(
+            project_id=project_id,
+            iiif_url=project.iiif_url,
+            upload_folder=app.config["UPLOAD_FOLDER"],
+            start_page=start_page,
+            flask_app=app,
+            on_progress=on_progress,
+            stop_event=stop_event,
+        ),
+        daemon=True,
+    )
+    thread.start()
+
+    logger.info(f"Started IIIF background download for project {project_id} from page {start_page}")
+    return jsonify({"message": "Download started", "start_page": start_page}), 202
+
+
+@app.route("/api/projects/<int:project_id>/iiif-download", methods=["GET"])
+@jwt_required()
+def get_iiif_download_status(project_id):
+    """Return current download job status."""
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
+    job = IiifDownloadJob.query.filter_by(project_id=project_id).first()
+    if not job:
+        return jsonify({"status": "none"})
+
+    return jsonify({
+        "status": job.status,
+        "current_page": job.current_page,
+        "total_pages": job.total_pages,
+        "start_page": job.start_page,
+        "error_message": job.error_message,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+    })
+
+
+@app.route("/api/projects/<int:project_id>/iiif-download", methods=["DELETE"])
+@jwt_required()
+def cancel_iiif_download(project_id):
+    """Request cancellation of a running IIIF download."""
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
+    reset = request.args.get("reset") == "true"
+
+    stop_event = _iiif_stop_events.get(project_id)
+    if stop_event:
+        stop_event.set()
+    _iiif_stop_events.pop(project_id, None)
+
+    job = IiifDownloadJob.query.filter_by(project_id=project_id).first()
+    if job:
+        if reset:
+            db.session.delete(job)
+        elif job.status in ("running", "pending"):
+            job.status = "cancelled"
+        db.session.commit()
+
+    return jsonify({"message": "Reset" if reset else "Cancellation requested"})
+
+
 # Project Routes
 @app.route("/api/projects", methods=["GET"])
 @jwt_required()
@@ -854,6 +1010,22 @@ def get_projects():
                 if first_image
                 else None
             )
+            image_count = Image.query.filter_by(project_id=p.id).count()
+            transcribed_count = Image.query.filter(
+                Image.project_id == p.id,
+                Image.transcribed_text.isnot(None),
+                Image.transcribed_text != ""
+            ).count()
+            iiif_job = IiifDownloadJob.query.filter_by(project_id=p.id).first()
+            iiif_download_job = None
+            if iiif_job:
+                iiif_download_job = {
+                    "status": iiif_job.status,
+                    "current_page": iiif_job.current_page,
+                    "total_pages": iiif_job.total_pages,
+                    "start_page": iiif_job.start_page,
+                    "error_message": iiif_job.error_message,
+                }
             result = {
                 "id": p.id,
                 "name": p.name,
@@ -861,7 +1033,10 @@ def get_projects():
                 "iiif_url": p.iiif_url,
                 "first_thumbnail": thumbnail_url,
                 "owner_id": p.owner_id,
-                "is_owner": p.owner_id == current_user.id
+                "is_owner": p.owner_id == current_user.id,
+                "image_count": image_count,
+                "transcribed_count": transcribed_count,
+                "iiif_download_job": iiif_download_job,
             }
             if p.owner_id == current_user.id:
                 shared_user_ids = [s.user_id for s in ProjectSharing.query.filter_by(project_id=p.id).all()]

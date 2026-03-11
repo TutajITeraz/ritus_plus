@@ -1,5 +1,5 @@
 // components/ProjectList.jsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Box,
   Button,
@@ -16,13 +16,15 @@ import {
   Select,
   createListCollection,
   CloseButton,
+  Progress,
 } from "@chakra-ui/react";
-import { LuPlus, LuTrash2, LuUsers } from "react-icons/lu";
+import { LuPlus, LuTrash2 } from "react-icons/lu";
+import { FaDownload, FaStop } from "react-icons/fa";
 import { MdImageNotSupported } from "react-icons/md";
 import { useNavigate } from "react-router-dom";
-import { fetchProjects, createProject, deleteProject, fetchUsers, shareProject, unshareProject, updateProjectShares } from "../apiUtils";
+import { fetchProjects, createProject, deleteProject, fetchUsers, updateProjectShares, startIiifDownload, getIiifDownloadStatus, cancelIiifDownload } from "../apiUtils";
 import { useAuth } from "../App";
-import IiifDownloader from "../components/IiifDownloader";
+import { toaster } from "@/components/ui/toaster";
 import BatchProjectCreator from "../components/BatchProjectCreator";
 
 const typeCollection = createListCollection({
@@ -32,6 +34,73 @@ const typeCollection = createListCollection({
   ],
 });
 
+// ---------------------------------------------------------------------------
+// Per-project IIIF download status widget
+// ---------------------------------------------------------------------------
+const IiifProjectStatus = ({ project, jobStatus, onDownload, onCancel }) => {
+  const status = jobStatus?.status;
+  const current = jobStatus?.current_page ?? 0;
+  const total = jobStatus?.total_pages ?? 0;
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+
+  if (status === "running" || status === "pending") {
+    return (
+      <Stack spacing={1}>
+        <Text fontSize="sm" color="blue.600">{status === "pending" ? "Starting download…" : "Downloading in background…"}</Text>
+        <Progress.Root value={status === "pending" ? null : pct} maxW="260px">
+          <HStack gap="3">
+            <Progress.Track flex="1">
+              <Progress.Range />
+            </Progress.Track>
+            <Progress.ValueText>{current}/{total || "?"}</Progress.ValueText>
+          </HStack>
+        </Progress.Root>
+        <Button size="xs" variant="subtle" colorPalette="red" onClick={onCancel}>
+          <FaStop /> Cancel
+        </Button>
+      </Stack>
+    );
+  }
+
+  if (status === "failed") {
+    return (
+      <Stack spacing={1}>
+        <Text fontSize="sm" color="red.600">Download failed: {jobStatus?.error_message}</Text>
+        <Button size="xs" variant="subtle" onClick={() => onDownload(null)}>
+          <FaDownload /> Retry
+        </Button>
+      </Stack>
+    );
+  }
+
+  if (status === "cancelled") {
+    return (
+      <Stack spacing={1}>
+        <Text fontSize="sm" color="orange.600">
+          Cancelled at page {current}/{total || "?"}
+        </Text>
+        <Button size="xs" variant="subtle" onClick={() => onDownload(null)}>
+          <FaDownload /> Resume
+        </Button>
+      </Stack>
+    );
+  }
+
+  if (status === "completed") {
+    return (
+      <Text fontSize="sm" color="green.600">✓ Download complete</Text>
+    );
+  }
+
+  // No job or status="none" – show Download button
+  if (!project.iiif_url) return null;
+  return (
+    <Button size="sm" variant="subtle" onClick={() => onDownload(null)}>
+      <FaDownload /> Download IIIF
+    </Button>
+  );
+};
+
 const ProjectList = () => {
   const [projectData, setProjectData] = useState({ owned: [], shared: [] });
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -40,33 +109,121 @@ const ProjectList = () => {
     type: "files",
     iiif_url: "",
   });
-  const [isIiifDownloaderOpen, setIsIiifDownloaderOpen] = useState(false);
-  const [createdProjectId, setCreatedProjectId] = useState(null);
   const [users, setUsers] = useState([]);
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   const [sharingProject, setSharingProject] = useState(null);
   const [selectedUsers, setSelectedUsers] = useState([]);
+  // Server-side IIIF download state
+  const [iiifJobStatuses, setIiifJobStatuses] = useState({});
+  const [conflictDialog, setConflictDialog] = useState({ open: false, projectId: null, imageCount: 0 });
+  const pollingRef = useRef(null);
   const navigate = useNavigate();
   const { currentUser, logout } = useAuth();
 
   useEffect(() => {
-    fetchProjects().then(setProjectData);
+    fetchProjects().then((data) => {
+      setProjectData(data);
+      // Seed iiifJobStatuses from the projects response
+      const statuses = {};
+      [...(data.owned || []), ...(data.shared || [])].forEach((p) => {
+        if (p.iiif_download_job) statuses[p.id] = p.iiif_download_job;
+      });
+      setIiifJobStatuses(statuses);
+    });
     if (currentUser) {
       fetchUsers().then(setUsers);
     }
   }, [currentUser]);
+
+  // Poll running jobs every 3s
+  useEffect(() => {
+    const runningIds = Object.entries(iiifJobStatuses)
+      .filter(([, s]) => s?.status === "running" || s?.status === "pending")
+      .map(([id]) => parseInt(id));
+
+    if (runningIds.length === 0) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+      return;
+    }
+    if (pollingRef.current) return; // already polling
+
+    pollingRef.current = setInterval(async () => {
+      const updates = {};
+      await Promise.all(
+        runningIds.map(async (projectId) => {
+          try {
+            const status = await getIiifDownloadStatus(projectId);
+            updates[projectId] = status;
+          } catch (_) {}
+        })
+      );
+      setIiifJobStatuses((prev) => ({ ...prev, ...updates }));
+      // Refresh project list when any job completes
+      const anyDone = Object.values(updates).some(
+        (s) => s?.status === "completed" || s?.status === "failed" || s?.status === "cancelled"
+      );
+      if (anyDone) {
+        fetchProjects().then((data) => {
+          setProjectData(data);
+          const statuses = {};
+          [...(data.owned || []), ...(data.shared || [])].forEach((p) => {
+            if (p.iiif_download_job) statuses[p.id] = p.iiif_download_job;
+          });
+          setIiifJobStatuses((prev) => ({ ...prev, ...statuses }));
+        });
+      }
+    }, 3000);
+
+    return () => {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    };
+  }, [iiifJobStatuses]);
+
+  const handleServerIiifDownload = async (projectId, confirm = null) => {
+    try {
+      const { status, data } = await startIiifDownload(projectId, confirm);
+      if (status === 409 && data.conflict) {
+        setConflictDialog({ open: true, projectId, imageCount: data.image_count });
+        return;
+      }
+      if (status === 409 && !data.conflict) {
+        toaster.create({ title: "Already running", description: data.error, type: "warning", duration: 3000 });
+        return;
+      }
+      // Mark as running immediately
+      setIiifJobStatuses((prev) => ({
+        ...prev,
+        [projectId]: { status: "running", current_page: 0, total_pages: 0 },
+      }));
+      toaster.create({ title: "Download started", description: `Starting from page ${data.start_page}`, type: "success", duration: 3000 });
+    } catch (e) {
+      toaster.create({ title: "Error", description: e.message, type: "error", duration: 5000 });
+    }
+  };
+
+  const handleCancelIiifDownload = async (projectId) => {
+    try {
+      await cancelIiifDownload(projectId);
+      setIiifJobStatuses((prev) => ({ ...prev, [projectId]: { ...prev[projectId], status: "cancelled" } }));
+    } catch (e) {
+      toaster.create({ title: "Error", description: e.message, type: "error", duration: 5000 });
+    }
+  };
 
   const handleCreateProject = async () => {
     const data = await createProject(newProject);
     if (data) {
       setProjectData(prev => ({
         ...prev,
-        owned: [...prev.owned, { id: data.id, ...newProject, first_thumbnail: null, owner_id: currentUser.id, is_owner: true }]
+        owned: [...prev.owned, { id: data.id, ...newProject, first_thumbnail: null, owner_id: currentUser.id, is_owner: true, image_count: 0, transcribed_count: 0 }]
       }));
       setIsDialogOpen(false);
       if (newProject.type === "iiif" && newProject.iiif_url) {
-        setCreatedProjectId(data.id);
-        setIsIiifDownloaderOpen(true);
+        // Start server-side download immediately; navigate to project page
+        await handleServerIiifDownload(data.id);
+        navigate(`/project/${data.id}`);
       } else {
         navigate(`/project/${data.id}`);
       }
@@ -277,12 +434,24 @@ const ProjectList = () => {
                       <Text fontWeight="bold">Type:</Text>
                       <Text>{project.type}</Text>
                     </HStack>
-                    <HStack>
-                      <Text fontWeight="bold">IIIF URL:</Text>
-                      <Text>{project.iiif_url || "N/A"}</Text>
-                    </HStack>
+                    {project.image_count > 0 && (
+                      <HStack>
+                        <Text fontSize="sm" color="gray.600">{project.image_count} images</Text>
+                        {project.transcribed_count > 0 && (
+                          <Text fontSize="sm" color="green.600">· {project.transcribed_count} transcribed</Text>
+                        )}
+                      </HStack>
+                    )}
                   </Stack>
-                  <HStack>
+                  <HStack alignItems="flex-start">
+                    {project.type === "iiif" && (
+                      <IiifProjectStatus
+                        project={project}
+                        jobStatus={iiifJobStatuses[project.id]}
+                        onDownload={(confirm) => handleServerIiifDownload(project.id, confirm)}
+                        onCancel={() => handleCancelIiifDownload(project.id)}
+                      />
+                    )}
                     <Button
                       onClick={() => handleShareProject(project)}
                       variant="subtle"
@@ -353,12 +522,24 @@ const ProjectList = () => {
                       <Text fontWeight="bold">Type:</Text>
                       <Text>{project.type}</Text>
                     </HStack>
-                    <HStack>
-                      <Text fontWeight="bold">IIIF URL:</Text>
-                      <Text>{project.iiif_url || "N/A"}</Text>
-                    </HStack>
+                    {project.image_count > 0 && (
+                      <HStack>
+                        <Text fontSize="sm" color="gray.600">{project.image_count} images</Text>
+                        {project.transcribed_count > 0 && (
+                          <Text fontSize="sm" color="green.600">· {project.transcribed_count} transcribed</Text>
+                        )}
+                      </HStack>
+                    )}
                     <Text fontSize="sm" color="gray.600">Shared with you</Text>
                   </Stack>
+                  {project.type === "iiif" && (
+                    <IiifProjectStatus
+                      project={project}
+                      jobStatus={iiifJobStatuses[project.id]}
+                      onDownload={(confirm) => handleServerIiifDownload(project.id, confirm)}
+                      onCancel={() => handleCancelIiifDownload(project.id)}
+                    />
+                  )}
                 </HStack>
               </Flex>
             ))}
@@ -372,16 +553,38 @@ const ProjectList = () => {
           No projects found. Create your first project to get started.
         </Text>
       )}
-      {isIiifDownloaderOpen && (
-        <IiifDownloader
-          iiifUrl={newProject.iiif_url}
-          projectId={createdProjectId}
-          onClose={() => {
-            setIsIiifDownloaderOpen(false);
-            navigate(`/project/${createdProjectId}`);
-          }}
-        />
-      )}
+      {/* Conflict Dialog */}
+      <Dialog.Root
+        open={conflictDialog.open}
+        onOpenChange={(e) => setConflictDialog((prev) => ({ ...prev, open: e.open }))}
+        placement="center"
+        motionPreset="slide-in-bottom"
+      >
+        <Portal>
+          <Dialog.Backdrop />
+          <Dialog.Positioner>
+            <Dialog.Content>
+              <Dialog.Header>
+                <Dialog.Title>Project already has images</Dialog.Title>
+              </Dialog.Header>
+              <Dialog.Body>
+                <Text>This project already has {conflictDialog.imageCount} downloaded image(s). What would you like to do?</Text>
+              </Dialog.Body>
+              <Dialog.Footer gap={2}>
+                <Button variant="outline" onClick={() => setConflictDialog({ open: false, projectId: null, imageCount: 0 })}>Cancel</Button>
+                <Button variant="outline" onClick={() => {
+                  setConflictDialog({ open: false, projectId: null, imageCount: 0 });
+                  handleServerIiifDownload(conflictDialog.projectId, "append");
+                }}>Append after existing</Button>
+                <Button colorPalette="red" onClick={() => {
+                  setConflictDialog({ open: false, projectId: null, imageCount: 0 });
+                  handleServerIiifDownload(conflictDialog.projectId, "restart");
+                }}>Restart from page 1</Button>
+              </Dialog.Footer>
+            </Dialog.Content>
+          </Dialog.Positioner>
+        </Portal>
+      </Dialog.Root>
 
       {/* Share Project Dialog */}
       <Dialog.Root

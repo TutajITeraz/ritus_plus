@@ -13,18 +13,24 @@ import {
   Accordion,
   Portal,
   Popover,
+  HStack,
+  Progress,
 } from "@chakra-ui/react";
 import { RiFileEditFill } from "react-icons/ri";
 import { LuUpload } from "react-icons/lu";
-import { FaRegTrashAlt, FaDownload } from "react-icons/fa";
+import { FaRegTrashAlt, FaDownload, FaStop } from "react-icons/fa";
 import { TiArrowBack } from "react-icons/ti";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   updateProject,
   updateImage,
   uploadImages,
   deleteImage,
   fetchImages,
+  startIiifDownload,
+  getIiifDownloadStatus,
+  cancelIiifDownload,
+  resetIiifJob,
 } from "../apiUtils";
 import { useNavigate } from "react-router-dom";
 import { toaster } from "@/components/ui/toaster";
@@ -49,6 +55,10 @@ const Sidebar = ({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isIiifDownloaderOpen, setIsIiifDownloaderOpen] = useState(false);
+  // Server-side IIIF background download
+  const [iiifJob, setIiifJob] = useState(null);  // {status, current_page, total_pages, error_message}
+  const [iiifConflict, setIiifConflict] = useState(false);
+  const iiifPollRef = useRef(null);
   const [transcriptionText, setTranscriptionText] = useState(
     selectedImage?.transcribed_text || ""
   );
@@ -84,6 +94,71 @@ const Sidebar = ({
   }, [selectedImage, mainImage, images, transcriptionText]);
 
   console.log("Sidebar projectId:", projectId); // Debug log
+
+  // Load initial IIIF job status + poll while running
+  useEffect(() => {
+    if (!projectId) return;
+    getIiifDownloadStatus(projectId)
+      .then((s) => setIiifJob(s.status !== "none" ? s : null))
+      .catch(() => {});
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!(["running", "pending"].includes(iiifJob?.status))) {
+      clearInterval(iiifPollRef.current);
+      iiifPollRef.current = null;
+      return;
+    }
+    if (iiifPollRef.current) return;
+    iiifPollRef.current = setInterval(async () => {
+      try {
+        const s = await getIiifDownloadStatus(projectId);
+        setIiifJob(s.status !== "none" ? s : null);
+        if (s.status === "completed" || s.status === "failed" || s.status === "cancelled") {
+          clearInterval(iiifPollRef.current);
+          iiifPollRef.current = null;
+          if (s.status === "completed") {
+            fetchImages(projectId).then((imgs) => {
+              setImages(imgs);
+              if (!mainImage && imgs.length > 0) setMainImage(imgs[0].original);
+            });
+          }
+        }
+      } catch (_) {}
+    }, 3000);
+    return () => {
+      clearInterval(iiifPollRef.current);
+      iiifPollRef.current = null;
+    };
+  }, [iiifJob?.status]);
+
+  const handleServerIiifDownload = async (confirm = null) => {
+    if (!project?.iiif_url) return;
+    try {
+      const { status, data } = await startIiifDownload(projectId, confirm);
+      if (status === 409 && data.conflict) {
+        setIiifConflict(true);
+        return;
+      }
+      if (status === 409 && !data.conflict) {
+        toaster.create({ title: "Already running", description: data.error, type: "warning", duration: 3000 });
+        return;
+      }
+      setIiifJob({ status: "running", current_page: 0, total_pages: 0 });
+      toaster.create({ title: "Download started in background", description: `Starting from page ${data.start_page}`, type: "success", duration: 3000 });
+    } catch (e) {
+      toaster.create({ title: "Error", description: e.message, type: "error", duration: 5000 });
+    }
+  };
+
+  const handleCancelServerIiif = async () => {
+    try {
+      await cancelIiifDownload(projectId);
+      setIiifJob((prev) => prev ? { ...prev, status: "cancelled" } : prev);
+    } catch (e) {
+      toaster.create({ title: "Error", description: e.message, type: "error", duration: 5000 });
+    }
+  };
 
   const handleProjectUpdate = async (field, value) => {
     const response = await updateProject(project.id, { [field]: value });
@@ -248,6 +323,9 @@ const Sidebar = ({
       await Promise.all(images.map((img) => deleteImage(img.id)));
       setImages([]);
       setMainImage(null);
+      // Fully delete the IIIF job record so Resume can't pick up a stale page offset
+      try { await resetIiifJob(projectId); } catch (_) {}
+      setIiifJob(null);
     } catch (error) {
       toaster.create({
         title: "Delete Error",
@@ -406,6 +484,56 @@ const Sidebar = ({
                     <FaDownload />
                     Download IIIF
                   </Button>
+                  {/* Server-side background download */}
+                  {project?.iiif_url && (
+                    <>
+                      {(!iiifJob || iiifJob.status === "none") && (
+                        <Button
+                          size="sm"
+                          variant="subtle"
+                          onClick={() => handleServerIiifDownload()}
+                          disabled={isUploading}
+                        >
+                          <FaDownload /> Download IIIF in background
+                        </Button>
+                      )}
+                      {iiifJob?.status === "running" && (
+                        <Stack spacing={1}>
+                          <Text fontSize="xs" color="blue.600">Background download…</Text>
+                          <Progress.Root value={iiifJob.total_pages > 0 ? Math.round((iiifJob.current_page / iiifJob.total_pages) * 100) : 0} maxW="220px">
+                            <HStack gap="3">
+                              <Progress.Track flex="1">
+                                <Progress.Range />
+                              </Progress.Track>
+                              <Progress.ValueText>{iiifJob.current_page}/{iiifJob.total_pages || "?"}</Progress.ValueText>
+                            </HStack>
+                          </Progress.Root>
+                          <Button size="xs" variant="subtle" colorPalette="red" onClick={handleCancelServerIiif}>
+                            <FaStop /> Stop
+                          </Button>
+                        </Stack>
+                      )}
+                      {iiifJob?.status === "failed" && (
+                        <Stack spacing={1}>
+                          <Text fontSize="xs" color="red.600">Error: {iiifJob.error_message}</Text>
+                          <Button size="xs" variant="subtle" onClick={() => handleServerIiifDownload()}>
+                            <FaDownload /> Retry
+                          </Button>
+                        </Stack>
+                      )}
+                      {iiifJob?.status === "cancelled" && (
+                        <Stack spacing={1}>
+                          <Text fontSize="xs" color="orange.600">Stopped at {iiifJob.current_page}/{iiifJob.total_pages || "?"}.</Text>
+                          <Button size="xs" variant="subtle" onClick={() => handleServerIiifDownload()}>
+                            <FaDownload /> Resume
+                          </Button>
+                        </Stack>
+                      )}
+                      {iiifJob?.status === "completed" && (
+                        <Text fontSize="xs" color="green.600">✓ All {iiifJob.total_pages} pages downloaded.</Text>
+                      )}
+                    </>
+                  )}
                   <Dialog.Root placement="center">
                     <Dialog.Trigger asChild>
                       <Button
@@ -527,6 +655,36 @@ const Sidebar = ({
           </Accordion.ItemContent>
         </Accordion.Item>
       </Accordion.Root>
+      {/* IIIF conflict dialog */}
+      <Dialog.Root
+        open={iiifConflict}
+        onOpenChange={(e) => setIiifConflict(e.open)}
+        placement="center"
+        motionPreset="slide-in-bottom"
+      >
+        <Portal>
+          <Dialog.Backdrop />
+          <Dialog.Positioner>
+            <Dialog.Content>
+              <Dialog.Header>
+                <Dialog.Title>Project already has images</Dialog.Title>
+              </Dialog.Header>
+              <Dialog.Body>
+                <Text>This project already has downloaded images. What would you like to do?</Text>
+              </Dialog.Body>
+              <Dialog.Footer gap={2}>
+                <Button variant="outline" onClick={() => setIiifConflict(false)}>Cancel</Button>
+                <Button variant="outline" onClick={() => { setIiifConflict(false); handleServerIiifDownload("append"); }}>
+                  Append after existing
+                </Button>
+                <Button colorPalette="red" onClick={() => { setIiifConflict(false); handleServerIiifDownload("restart"); }}>
+                  Restart from page 1
+                </Button>
+              </Dialog.Footer>
+            </Dialog.Content>
+          </Dialog.Positioner>
+        </Portal>
+      </Dialog.Root>
       {isIiifDownloaderOpen && (
         <IiifDownloader
           iiifUrl={project.iiif_url}

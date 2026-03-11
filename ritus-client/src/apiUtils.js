@@ -661,3 +661,66 @@ export const updateProjectShares = async (projectId, userIds) => {
     throw error;
   }
 };
+
+// ---------------------------------------------------------------------------
+// IIIF server-side background download
+// ---------------------------------------------------------------------------
+
+/**
+ * Start (or resume) a server-side IIIF download.
+ * @param {number} projectId
+ * @param {string|null} confirm  null | "append" | "restart"
+ * @returns {Promise<{message, start_page}|{conflict, image_count, message}>}
+ */
+export const startIiifDownload = async (projectId, confirm = null) => {
+  const body = confirm ? { confirm } : {};
+  const response = await apiRequest(
+    `${SERVER_URL}/api/projects/${projectId}/iiif-download`,
+    { method: "POST", body: JSON.stringify(body) }
+  );
+  const data = await response.json();
+  if (!response.ok && response.status !== 409) {
+    throw new Error(data.error || "Failed to start IIIF download");
+  }
+  return { status: response.status, data };
+};
+
+/**
+ * Get current IIIF download job status for a project.
+ * @param {number} projectId
+ * @returns {Promise<{status, current_page, total_pages, start_page, error_message}>}
+ */
+export const getIiifDownloadStatus = async (projectId) => {
+  const response = await apiRequest(
+    `${SERVER_URL}/api/projects/${projectId}/iiif-download`
+  );
+  if (!response.ok) throw new Error("Failed to get IIIF download status");
+  return await response.json();
+};
+
+/**
+ * Cancel a running IIIF download.
+ * @param {number} projectId
+ */
+export const cancelIiifDownload = async (projectId) => {
+  const response = await apiRequest(
+    `${SERVER_URL}/api/projects/${projectId}/iiif-download`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) throw new Error("Failed to cancel IIIF download");
+  return await response.json();
+};
+
+/**
+ * Fully delete the IIIF download job record from the DB (e.g. after Delete All Images).
+ * @param {number} projectId
+ */
+export const resetIiifJob = async (projectId) => {
+  const response = await apiRequest(
+    `${SERVER_URL}/api/projects/${projectId}/iiif-download?reset=true`,
+    { method: "DELETE" }
+  );
+  // Ignore 404 – no job to delete is fine
+  if (!response.ok && response.status !== 404) throw new Error("Failed to reset IIIF job");
+  return response.status === 404 ? {} : await response.json();
+};

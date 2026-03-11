@@ -229,3 +229,6 @@ ritus-server/config.py
 ritus-server/config.py
 ritus-server/config.py
 /ritus-server/party
+translation_tests.txt
+ritus-server/config.py
+ritus-client/src/config.js

@@ -31,6 +31,7 @@ class Project(db.Model):
     contents = db.relationship('Content', backref='project', cascade='all, delete-orphan')
     batch_processes = db.relationship('BatchProcessing', backref='project', cascade='all, delete-orphan')
     images = db.relationship('Image', backref='project', cascade='all, delete-orphan')
+    iiif_download_job = db.relationship('IiifDownloadJob', backref='project', cascade='all, delete-orphan', uselist=False)
 
 class ProjectSharing(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -58,6 +59,17 @@ class BatchProcessing(db.Model):
     total_rows = db.Column(db.Integer, default=0)
     processed_rows = db.Column(db.Integer, default=0)
     similarity_threshold = db.Column(db.Float, default=0.0)
+    error_message = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=db.func.now())
+    updated_at = db.Column(db.DateTime, default=db.func.now(), onupdate=db.func.now())
+
+class IiifDownloadJob(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('project.id', ondelete='CASCADE'), nullable=False, unique=True)
+    status = db.Column(db.String(20), nullable=False, default='pending')  # pending, running, completed, failed, cancelled
+    current_page = db.Column(db.Integer, default=0)
+    total_pages = db.Column(db.Integer, default=0)
+    start_page = db.Column(db.Integer, default=1)  # 1-based; for resuming
     error_message = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=db.func.now())
     updated_at = db.Column(db.DateTime, default=db.func.now(), onupdate=db.func.now())
