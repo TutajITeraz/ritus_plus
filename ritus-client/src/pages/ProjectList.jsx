@@ -62,6 +62,17 @@ const IiifProjectStatus = ({ project, jobStatus, onDownload, onCancel }) => {
     );
   }
 
+  if (status === "waiting") {
+    return (
+      <Stack spacing={1}>
+        <Text fontSize="sm" color="orange.500">Waiting… (same domain busy)</Text>
+        <Button size="xs" variant="subtle" colorPalette="red" onClick={onCancel}>
+          <FaStop /> Cancel
+        </Button>
+      </Stack>
+    );
+  }
+
   if (status === "failed") {
     return (
       <Stack spacing={1}>
@@ -138,7 +149,7 @@ const ProjectList = () => {
   // Poll running jobs every 3s
   useEffect(() => {
     const runningIds = Object.entries(iiifJobStatuses)
-      .filter(([, s]) => s?.status === "running" || s?.status === "pending")
+      .filter(([, s]) => s?.status === "running" || s?.status === "pending" || s?.status === "waiting")
       .map(([id]) => parseInt(id));
 
     if (runningIds.length === 0) {
@@ -266,7 +277,7 @@ const ProjectList = () => {
       <Flex justify="space-between" align="center" mb={4}>
         <Image src="/logo.svg" alt="Ritus Logo" height="40px" />
         <HStack>
-          <Text fontSize="sm" color="gray.500">v. 1.8</Text>
+          <Text fontSize="sm" color="gray.500">v. 1.9</Text>
           {currentUser && (
             <>
               <Text fontSize="sm">Welcome, {currentUser.username}</Text>
@@ -434,6 +445,12 @@ const ProjectList = () => {
                       <Text fontWeight="bold">Type:</Text>
                       <Text>{project.type}</Text>
                     </HStack>
+                    {project.iiif_url && (
+                      <HStack>
+                        <Text fontWeight="bold" fontSize="xs">IIIF URL:</Text>
+                        <Text fontSize="sm" color="gray.500" maxW="400px" isTruncated>{project.iiif_url}</Text>
+                      </HStack>
+                    )}
                     {project.image_count > 0 && (
                       <HStack>
                         <Text fontSize="sm" color="gray.600">{project.image_count} images</Text>
@@ -522,6 +539,12 @@ const ProjectList = () => {
                       <Text fontWeight="bold">Type:</Text>
                       <Text>{project.type}</Text>
                     </HStack>
+                    {project.iiif_url && (
+                      <HStack>
+                        <Text fontWeight="bold" fontSize="sm">IIIF URL:</Text>
+                        <Text fontSize="sm" color="gray.500" maxW="400px" isTruncated>{project.iiif_url}</Text>
+                      </HStack>
+                    )}
                     {project.image_count > 0 && (
                       <HStack>
                         <Text fontSize="sm" color="gray.600">{project.image_count} images</Text>

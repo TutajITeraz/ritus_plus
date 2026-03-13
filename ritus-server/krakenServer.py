@@ -8,6 +8,7 @@ import cv2
 import torch
 import numpy as np
 import webbrowser
+from urllib.parse import urlparse
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
@@ -24,6 +25,78 @@ from download_iiif import run_iiif_download
 
 # Registry of stop events keyed by project_id for IIIF background downloads
 _iiif_stop_events = {}
+# Domain-based serialisation: only one download per domain at a time
+_iiif_running_by_domain = {}  # domain -> project_id currently running
+
+
+def _iiif_domain(url):
+    """Return lowercase netloc (domain) from a URL."""
+    try:
+        return urlparse(url).netloc.lower()
+    except Exception:
+        return url
+
+
+def _launch_iiif_thread(project_id, job_id, iiif_url, upload_folder, start_page):
+    """Create stop-event, register the domain as busy, and start the download thread."""
+    domain = _iiif_domain(iiif_url)
+    _iiif_running_by_domain[domain] = project_id
+
+    stop_event = threading.Event()
+    _iiif_stop_events[project_id] = stop_event
+
+    def on_progress(current_page, total_pages, status, error=None):
+        with app.app_context():
+            j = IiifDownloadJob.query.get(job_id)
+            if j is None:
+                return
+            j.current_page = current_page
+            j.total_pages = total_pages
+            j.status = status
+            if error:
+                j.error_message = error
+            db.session.commit()
+        if status in ("completed", "failed", "cancelled"):
+            _iiif_stop_events.pop(project_id, None)
+            _iiif_running_by_domain.pop(domain, None)
+            _promote_waiting_domain(domain)
+
+    thread = Thread(
+        target=run_iiif_download,
+        kwargs=dict(
+            project_id=project_id,
+            iiif_url=iiif_url,
+            upload_folder=upload_folder,
+            start_page=start_page,
+            flask_app=app,
+            on_progress=on_progress,
+            stop_event=stop_event,
+        ),
+        daemon=True,
+    )
+    thread.start()
+
+
+def _promote_waiting_domain(domain):
+    """Find the oldest waiting job for *domain* and start it."""
+    with app.app_context():
+        waiting = (
+            IiifDownloadJob.query
+            .filter_by(status="waiting")
+            .order_by(IiifDownloadJob.id.asc())
+            .all()
+        )
+        for job in waiting:
+            project = Project.query.get(job.project_id)
+            if project and project.iiif_url and _iiif_domain(project.iiif_url) == domain:
+                job.status = "pending"
+                db.session.commit()
+                logger.info(f"Promoting waiting IIIF job for project {project.id} (domain {domain})")
+                _launch_iiif_thread(
+                    project.id, job.id, project.iiif_url,
+                    app.config["UPLOAD_FOLDER"], job.start_page
+                )
+                return
 from batch_analysis import batch_process_project
 from image_processing import split_line_boundary_by_color
 from ai_tools import gpt_autofix
@@ -855,10 +928,10 @@ def start_iiif_download(project_id):
     if not project.iiif_url:
         return jsonify({"error": "Project has no IIIF URL"}), 400
 
-    # Check for an already-running job
+    # Check for an already-running job for THIS project
     existing_job = IiifDownloadJob.query.filter_by(project_id=project_id).first()
-    if existing_job and existing_job.status == "running":
-        return jsonify({"error": "Download already running"}), 409
+    if existing_job and existing_job.status in ("running", "waiting"):
+        return jsonify({"error": "Download already running or waiting"}), 409
 
     body = request.get_json(silent=True) or {}
     confirm = body.get("confirm")  # "append" | "restart" | None
@@ -886,50 +959,28 @@ def start_iiif_download(project_id):
 
     # Upsert the job record
     if existing_job:
-        existing_job.status = "pending"
         existing_job.current_page = start_page - 1
         existing_job.error_message = None
         job = existing_job
     else:
-        job = IiifDownloadJob(project_id=project_id, status="pending", start_page=start_page)
+        job = IiifDownloadJob(project_id=project_id, start_page=start_page)
         db.session.add(job)
 
     job.start_page = start_page
+
+    # Check if another project from the same domain is already downloading
+    domain = _iiif_domain(project.iiif_url)
+    if domain in _iiif_running_by_domain:
+        job.status = "waiting"
+        db.session.commit()
+        logger.info(f"IIIF download for project {project_id} queued (domain {domain} busy)")
+        return jsonify({"message": "Queued – waiting for same-domain download to finish", "start_page": start_page, "waiting": True}), 202
+
+    job.status = "pending"
     db.session.commit()
     job_id = job.id
 
-    # Create stop event
-    stop_event = threading.Event()
-    _iiif_stop_events[project_id] = stop_event
-
-    def on_progress(current_page, total_pages, status, error=None):
-        with app.app_context():
-            j = IiifDownloadJob.query.get(job_id)
-            if j is None:
-                return
-            j.current_page = current_page
-            j.total_pages = total_pages
-            j.status = status
-            if error:
-                j.error_message = error
-            db.session.commit()
-        if status in ("completed", "failed", "cancelled"):
-            _iiif_stop_events.pop(project_id, None)
-
-    thread = Thread(
-        target=run_iiif_download,
-        kwargs=dict(
-            project_id=project_id,
-            iiif_url=project.iiif_url,
-            upload_folder=app.config["UPLOAD_FOLDER"],
-            start_page=start_page,
-            flask_app=app,
-            on_progress=on_progress,
-            stop_event=stop_event,
-        ),
-        daemon=True,
-    )
-    thread.start()
+    _launch_iiif_thread(project_id, job_id, project.iiif_url, app.config["UPLOAD_FOLDER"], start_page)
 
     logger.info(f"Started IIIF background download for project {project_id} from page {start_page}")
     return jsonify({"message": "Download started", "start_page": start_page}), 202
@@ -962,7 +1013,7 @@ def get_iiif_download_status(project_id):
 @app.route("/api/projects/<int:project_id>/iiif-download", methods=["DELETE"])
 @jwt_required()
 def cancel_iiif_download(project_id):
-    """Request cancellation of a running IIIF download."""
+    """Request cancellation of a running/waiting IIIF download."""
     current_user = get_current_user()
     if not current_user:
         return jsonify({"error": "Authentication required"}), 401
@@ -980,8 +1031,19 @@ def cancel_iiif_download(project_id):
     if job:
         if reset:
             db.session.delete(job)
-        elif job.status in ("running", "pending"):
-            job.status = "cancelled"
+        elif job.status in ("running", "pending", "waiting"):
+            if job.status == "waiting":
+                # Not running yet – cancel immediately without touching domain registry
+                job.status = "cancelled"
+            else:
+                job.status = "cancelled"
+                # Clean up domain registry if this was the active download
+                project = Project.query.get(project_id)
+                if project and project.iiif_url:
+                    domain = _iiif_domain(project.iiif_url)
+                    if _iiif_running_by_domain.get(domain) == project_id:
+                        _iiif_running_by_domain.pop(domain, None)
+                        _promote_waiting_domain(domain)
         db.session.commit()
 
     return jsonify({"message": "Reset" if reset else "Cancellation requested"})
