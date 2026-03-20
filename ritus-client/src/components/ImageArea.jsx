@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import {
   Box,
+  Badge,
   Button,
   Center,
   HStack,
@@ -14,6 +15,8 @@ import Controls from "./Controls";
 import { fetchImages } from "../apiUtils";
 
 const ImageArea = ({ images, setImages, mainImage, setMainImage, projectId }) => {
+  const currentImageIndex = images.findIndex((img) => img.original === mainImage);
+
   useEffect(() => {
     const loadImages = async () => {
       try {
@@ -43,6 +46,22 @@ const ImageArea = ({ images, setImages, mainImage, setMainImage, projectId }) =>
       >
         {mainImage ? (
           <Box position="relative" h="100%" w="100%">
+            {currentImageIndex >= 0 && (
+              <Badge
+                position="absolute"
+                top={2}
+                left={2}
+                zIndex={10}
+                colorPalette="blackAlpha"
+                bg="blackAlpha.700"
+                color="white"
+                borderRadius="full"
+                px={3}
+                py={1}
+              >
+                Page {currentImageIndex + 1} / {images.length}
+              </Badge>
+            )}
             <TransformWrapper initialScale={1} initialPositionX={0} initialPositionY={0} minScale={0.1}>
               <Controls />
               <TransformComponent wrapperStyle={{ height: "100%", width: "100%" }}>

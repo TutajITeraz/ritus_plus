@@ -151,6 +151,13 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
   const [model, setModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
   const [mode, setMode] = useState("skip");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
+  const [rangeFrom, setRangeFrom] = useState(1);
+  const [rangeTo, setRangeTo] = useState(project.image_count || 1);
+
+  useEffect(() => {
+    setRangeFrom(1);
+    setRangeTo(project.image_count || 1);
+  }, [project.image_count, open]);
 
   const status = jobStatus?.status;
   const current = jobStatus?.current_image ?? 0;
@@ -239,9 +246,38 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
                         <RadioGroup.ItemIndicator />
                         <RadioGroup.ItemText>Override – re-transcribe everything</RadioGroup.ItemText>
                       </RadioGroup.Item>
+                      <RadioGroup.Item value="range">
+                        <RadioGroup.ItemHiddenInput />
+                        <RadioGroup.ItemIndicator />
+                        <RadioGroup.ItemText>Range – override selected pages only</RadioGroup.ItemText>
+                      </RadioGroup.Item>
                     </Stack>
                   </RadioGroup.Root>
                 </Stack>
+                {mode === "range" && (
+                  <HStack align="end" spacing={3}>
+                    <Box flex="1">
+                      <Text fontWeight="bold">From</Text>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={project.image_count || 1}
+                        value={rangeFrom}
+                        onChange={(e) => setRangeFrom(e.target.value)}
+                      />
+                    </Box>
+                    <Box flex="1">
+                      <Text fontWeight="bold">To</Text>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={project.image_count || 1}
+                        value={rangeTo}
+                        onChange={(e) => setRangeTo(e.target.value)}
+                      />
+                    </Box>
+                  </HStack>
+                )}
                 <Stack>
                     <Checkbox.Root checked={ignoreEdges} onCheckedChange={(e) => setIgnoreEdges(e.checked)}>
                         <Checkbox.HiddenInput />
@@ -255,7 +291,7 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
             </Dialog.Body>
             <Dialog.Footer>
               <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button colorPalette="purple" onClick={() => { setOpen(false); onStart(model, mode, ignoreEdges); }}>
+              <Button colorPalette="purple" onClick={() => { setOpen(false); onStart(model, mode, ignoreEdges, rangeFrom, rangeTo); }}>
                 Start Transcription
               </Button>
             </Dialog.Footer>
@@ -286,6 +322,20 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
           <Text fontSize="sm" color="orange.600">Transcription cancelled at {current}/{total || "?"}</Text>
           <Button size="xs" variant="subtle" colorPalette="purple" onClick={() => setOpen(true)}>
             Resume / Retry
+          </Button>
+        </Stack>
+        {dialog}
+      </>
+    );
+  }
+
+  if (status === "completed") {
+    return (
+      <>
+        <Stack spacing={1}>
+          <Text fontSize="sm" color="green.600">✓ All {total || "?"} pages transcribed</Text>
+          <Button size="xs" variant="subtle" colorPalette="purple" onClick={() => setOpen(true)}>
+            Transcribe Again
           </Button>
         </Stack>
         {dialog}
@@ -437,12 +487,39 @@ const ProjectList = () => {
     };
   }, [transcribeJobStatuses]);
 
-  const handleStartTranscribe = async (projectId, model, mode, ignoreEdges) => {
+  const handleStartTranscribe = async (projectId, model, mode, ignoreEdges, rangeFrom, rangeTo) => {
+    const parsedRangeFrom = Number(rangeFrom);
+    const parsedRangeTo = Number(rangeTo);
+    const project = [...projectData.owned, ...projectData.shared].find((entry) => entry.id === projectId);
+    if (mode === "range") {
+      const maxPages = project?.image_count || 0;
+      if (!Number.isInteger(parsedRangeFrom) || !Number.isInteger(parsedRangeTo) || parsedRangeFrom < 1 || parsedRangeTo < parsedRangeFrom || parsedRangeTo > maxPages) {
+        toaster.create({
+          title: "Invalid range",
+          description: `Choose a valid page range between 1 and ${maxPages}.`,
+          type: "error",
+          duration: 5000,
+        });
+        return;
+      }
+    }
+
     try {
-      await startBatchTranscribe(projectId, model, mode, ignoreEdges);
+      await startBatchTranscribe(
+        projectId,
+        model,
+        mode,
+        ignoreEdges,
+        mode === "range" ? parsedRangeFrom : null,
+        mode === "range" ? parsedRangeTo : null,
+      );
       setTranscribeJobStatuses((prev) => ({
         ...prev,
-        [projectId]: { status: "pending", current_image: 0, total_images: 0 },
+        [projectId]: {
+          status: "pending",
+          current_image: 0,
+          total_images: mode === "range" ? parsedRangeTo - parsedRangeFrom + 1 : 0,
+        },
       }));
       toaster.create({
         title: "Transcription started",
@@ -790,7 +867,7 @@ const ProjectList = () => {
                     <TranscribeProjectStatus
                       project={project}
                       jobStatus={transcribeJobStatuses[project.id]}
-                      onStart={(model, mode, ignoreEdges) => handleStartTranscribe(project.id, model, mode, ignoreEdges)}
+                      onStart={(model, mode, ignoreEdges, rangeFrom, rangeTo) => handleStartTranscribe(project.id, model, mode, ignoreEdges, rangeFrom, rangeTo)}
                       onCancel={() => handleCancelTranscribe(project.id)}
                     />
                     <Button

@@ -737,13 +737,27 @@ export const resetIiifJob = async (projectId) => {
  * @param {string} modelName
  * @param {"skip"|"continue"|"override"} mode
  * @param {boolean} ignoreEdges
+ * @param {number|null} rangeFrom
+ * @param {number|null} rangeTo
  */
-export const startBatchTranscribe = async (projectId, modelName, mode = "skip", ignoreEdges = true) => {
+export const startBatchTranscribe = async (
+  projectId,
+  modelName,
+  mode = "skip",
+  ignoreEdges = true,
+  rangeFrom = null,
+  rangeTo = null
+) => {
+  const payload = { model_name: modelName, mode, ignore_edges: ignoreEdges };
+  if (mode === "range") {
+    payload.range_from = rangeFrom;
+    payload.range_to = rangeTo;
+  }
   const response = await apiRequest(
     `${SERVER_URL}/api/projects/${projectId}/batch-transcribe`,
     {
       method: "POST",
-      body: JSON.stringify({ model_name: modelName, mode, ignore_edges: ignoreEdges }),
+      body: JSON.stringify(payload),
     }
   );
   const data = await response.json();

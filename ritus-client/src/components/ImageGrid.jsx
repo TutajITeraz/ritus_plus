@@ -29,8 +29,21 @@ const ImageGrid = ({ images, setMainImage, mainImage, setImages }) => {
       m={4}
     >
       <HStack spacing={4} pb={2} h="100%" minW="fit-content">
-        {images.map((img) => (
-          <Box key={img.id} flexShrink={0}>
+        {images.map((img, index) => (
+          <Box key={img.id} flexShrink={0} position="relative">
+            <Badge
+              position="absolute"
+              top={2}
+              left={2}
+              zIndex={2}
+              colorPalette="blackAlpha"
+              bg="blackAlpha.700"
+              color="white"
+              borderRadius="full"
+              px={2}
+            >
+              {index + 1}
+            </Badge>
             <Image
               src={img.thumbnail}
               alt={img.name}

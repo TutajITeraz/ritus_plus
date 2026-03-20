@@ -5,6 +5,7 @@ import {
   Flex,
   Text,
   Button,
+  Input,
   Stack,
   Image,
   Link,
@@ -89,6 +90,8 @@ const Sidebar = ({
   const [transcribeModel, setTranscribeModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
   const [transcribeMode, setTranscribeMode] = useState("skip");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
+  const [transcribeRangeFrom, setTranscribeRangeFrom] = useState(1);
+  const [transcribeRangeTo, setTranscribeRangeTo] = useState(1);
   const [transcribeStarting, setTranscribeStarting] = useState(false);
   const transcribePollRef = useRef(null);
 
@@ -135,6 +138,12 @@ const Sidebar = ({
       .then((s) => setTranscribeJob(s.status !== "none" ? s : null))
       .catch(() => {});
   }, [projectId]);
+
+  useEffect(() => {
+    const totalImages = Math.max(1, images.length || 1);
+    setTranscribeRangeFrom(1);
+    setTranscribeRangeTo(totalImages);
+  }, [images.length, transcribeDialogOpen]);
 
   useEffect(() => {
     if (!(["running", "pending"].includes(iiifJob?.status))) {
@@ -412,10 +421,35 @@ const Sidebar = ({
   };
 
   const handleStartBatchTranscribe = async () => {
+    const rangeFrom = Number(transcribeRangeFrom);
+    const rangeTo = Number(transcribeRangeTo);
+    if (transcribeMode === "range") {
+      if (!Number.isInteger(rangeFrom) || !Number.isInteger(rangeTo) || rangeFrom < 1 || rangeTo < rangeFrom || rangeTo > images.length) {
+        toaster.create({
+          title: "Invalid range",
+          description: `Choose a valid page range between 1 and ${images.length}.`,
+          type: "error",
+          duration: 5000,
+        });
+        return;
+      }
+    }
+
     setTranscribeStarting(true);
     try {
-      await startBatchTranscribe(projectId, transcribeModel, transcribeMode, ignoreEdges);
-      setTranscribeJob({ status: "running", current_image: 0, total_images: images.length });
+      await startBatchTranscribe(
+        projectId,
+        transcribeModel,
+        transcribeMode,
+        ignoreEdges,
+        transcribeMode === "range" ? rangeFrom : null,
+        transcribeMode === "range" ? rangeTo : null,
+      );
+      setTranscribeJob({
+        status: "running",
+        current_image: 0,
+        total_images: transcribeMode === "range" ? rangeTo - rangeFrom + 1 : images.length,
+      });
       setTranscribeDialogOpen(false);
       toaster.create({ title: "Transcription started", description: "Running in background — you can close the browser.", type: "success", duration: 4000 });
     } catch (e) {
@@ -640,7 +674,12 @@ const Sidebar = ({
                     </Stack>
                   )}
                   {transcribeJob?.status === "completed" && (
-                    <Text fontSize="xs" color="green.600">✓ All {transcribeJob.total_images} pages transcribed.</Text>
+                    <Stack spacing={1}>
+                      <Text fontSize="xs" color="green.600">✓ All {transcribeJob.total_images} pages transcribed.</Text>
+                      <Button size="xs" variant="subtle" onClick={() => setTranscribeDialogOpen(true)}>
+                        <RiFileEditFill /> Transcribe Again
+                      </Button>
+                    </Stack>
                   )}
                   <Dialog.Root placement="center">
                     <Dialog.Trigger asChild>
@@ -817,9 +856,40 @@ const Sidebar = ({
                             <RadioGroup.ItemText>Override all (re-transcribe everything)</RadioGroup.ItemText>
                           </RadioGroup.Item>
                         </HStack>
+                        <HStack>
+                          <RadioGroup.Item value="range">
+                            <RadioGroup.ItemHiddenInput />
+                            <RadioGroup.ItemIndicator />
+                            <RadioGroup.ItemText>Range (override only selected pages)</RadioGroup.ItemText>
+                          </RadioGroup.Item>
+                        </HStack>
                       </Stack>
                     </RadioGroup.Root>
                   </Stack>
+                  {transcribeMode === "range" && (
+                    <HStack align="end" spacing={3}>
+                      <Box flex="1">
+                        <Text fontWeight="bold">From</Text>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={images.length || 1}
+                          value={transcribeRangeFrom}
+                          onChange={(e) => setTranscribeRangeFrom(e.target.value)}
+                        />
+                      </Box>
+                      <Box flex="1">
+                        <Text fontWeight="bold">To</Text>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={images.length || 1}
+                          value={transcribeRangeTo}
+                          onChange={(e) => setTranscribeRangeTo(e.target.value)}
+                        />
+                      </Box>
+                    </HStack>
+                  )}
                   <Stack>
                       <Checkbox.Root checked={ignoreEdges} onCheckedChange={(e) => setIgnoreEdges(e.checked)}>
                           <Checkbox.HiddenInput />

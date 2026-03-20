@@ -1140,7 +1140,17 @@ def cancel_iiif_download(project_id):
 # Background Transcription Runner
 # ---------------------------------------------------------------------------
 
-def run_batch_transcribe(project_id, job_id, model_name, mode, flask_app, stop_event, ignore_edges=False):
+def run_batch_transcribe(
+    project_id,
+    job_id,
+    model_name,
+    mode,
+    flask_app,
+    stop_event,
+    ignore_edges=False,
+    range_from=None,
+    range_to=None,
+):
     """
     Transcribe all images in a project in a background thread.
 
@@ -1148,10 +1158,11 @@ def run_batch_transcribe(project_id, job_id, model_name, mode, flask_app, stop_e
     others wait in "pending" status. Within a project, images are processed
     in parallel using a ThreadPoolExecutor (transcription_workers in domain_config.json).
 
-    mode:
-      "skip"     – skip images that already have transcribed_text
-      "continue" – start from the first image without transcribed_text
-      "override" – re-transcribe every image regardless
+        mode:
+            "skip"     – skip images that already have transcribed_text
+            "continue" – start from the first image without transcribed_text
+            "override" – re-transcribe every image regardless
+            "range"    – re-transcribe only a selected inclusive page range
     """
     if NO_KRAKEN:
         with flask_app.app_context():
@@ -1200,8 +1211,14 @@ def run_batch_transcribe(project_id, job_id, model_name, mode, flask_app, stop_e
                         len(images)
                     )
                     to_process_ids = [img.id for img in images[first_idx:]]
+                elif mode == "range":
+                    start_idx = max(0, (range_from or 1) - 1)
+                    end_idx = min(total, range_to or total)
+                    to_process_ids = [img.id for img in images[start_idx:end_idx]]
                 else:  # override
                     to_process_ids = [img.id for img in images]
+
+                total = len(to_process_ids)
 
             update_job(0, total, "running")
 
@@ -1266,8 +1283,28 @@ def start_batch_transcribe(project_id):
     body = request.get_json(silent=True) or {}
     model_name = body.get("model_name", "Tridis_Medieval_EarlyModern.mlmodel")
     mode = body.get("mode", "skip")
-    if mode not in ("skip", "continue", "override"):
-        return jsonify({"error": "mode must be skip, continue, or override"}), 400
+    if mode not in ("skip", "continue", "override", "range"):
+        return jsonify({"error": "mode must be skip, continue, override, or range"}), 400
+
+    range_from = body.get("range_from")
+    range_to = body.get("range_to")
+    if mode == "range":
+        if range_from is None or range_to is None:
+            return jsonify({"error": "range_from and range_to are required for range mode"}), 400
+        try:
+            range_from = int(range_from)
+            range_to = int(range_to)
+        except (TypeError, ValueError):
+            return jsonify({"error": "range_from and range_to must be integers"}), 400
+
+        if range_from < 1 or range_to < 1 or range_from > range_to:
+            return jsonify({"error": "Invalid page range"}), 400
+
+        image_count = Image.query.filter_by(project_id=project_id).count()
+        if image_count == 0:
+            return jsonify({"error": "Project has no images"}), 400
+        if range_from > image_count or range_to > image_count:
+            return jsonify({"error": f"Page range must be within 1-{image_count}"}), 400
 
     if existing:
         existing.status = "pending"
@@ -1299,11 +1336,15 @@ def start_batch_transcribe(project_id):
 
     Thread(
         target=run_batch_transcribe,
-        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges),
+        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges, range_from, range_to),
         daemon=True,
     ).start()
 
-    logger.info(f"Started batch transcription for project {project_id} (mode={mode}, model={model_name}, ignore_edges={ignore_edges})")
+    logger.info(
+        f"Started batch transcription for project {project_id} "
+        f"(mode={mode}, model={model_name}, ignore_edges={ignore_edges}, "
+        f"range_from={range_from}, range_to={range_to})"
+    )
     return jsonify({"message": "Transcription started", "job_id": job_id}), 202
 
 
