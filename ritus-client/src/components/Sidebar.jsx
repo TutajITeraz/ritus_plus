@@ -104,6 +104,7 @@ const Sidebar = ({
   }, [selectedImage]);
 
   // Debug logging for selectedImage and mainImage
+  /*
   useEffect(() => {
     console.log("Sidebar state update:", {
       selectedImage: {
@@ -120,6 +121,7 @@ const Sidebar = ({
       transcriptionText,
     });
   }, [selectedImage, mainImage, images, transcriptionText]);
+  */
 
   console.log("Sidebar projectId:", projectId); // Debug log
 

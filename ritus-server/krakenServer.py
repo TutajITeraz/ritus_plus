@@ -1213,7 +1213,11 @@ def run_batch_transcribe(project_id, job_id, model_name, mode, flask_app, stop_e
                     return
                 with flask_app.app_context():
                     try:
-                        result = transcribe_image_by_id(image_id, model_name)
+                        result = transcribe_image_by_id(
+                            image_id,
+                            model_name,
+                            ignore_edges=ignore_edges,
+                        )
                         if isinstance(result, tuple):
                             logger.error(f"Transcription failed for image {image_id}: {result[0]}")
                     except Exception as e:
@@ -1288,6 +1292,10 @@ def start_batch_transcribe(project_id):
     _transcribe_stop_events[project_id] = stop_event
     
     ignore_edges = body.get("ignore_edges", False)
+    if isinstance(ignore_edges, str):
+        ignore_edges = ignore_edges.lower() == "true"
+    else:
+        ignore_edges = bool(ignore_edges)
 
     Thread(
         target=run_batch_transcribe,
