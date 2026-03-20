@@ -14,6 +14,7 @@ import {
   Progress,
   Select,
   createListCollection,
+  Checkbox,
 } from "@chakra-ui/react";
 import { toaster } from "@/components/ui/toaster";
 import { transcribeImage } from "../apiUtils";
@@ -49,6 +50,7 @@ const Transcribe = ({
   const [startPage, setStartPage] = useState(initialStartPage);
   const [endPage, setEndPage] = useState(images.length);
   const [model, setModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
+  const [ignoreEdges, setIgnoreEdges] = useState(true);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [totalLines, setTotalLines] = useState(0);
@@ -88,7 +90,7 @@ const Transcribe = ({
         }
 
         try {
-          const result = await transcribeImage(imageId, model);
+          const result = await transcribeImage(imageId, model, ignoreEdges);
           if (result.status === "success") {
             transcribedCount += 1;
             linesCount += result.line_count;
@@ -221,6 +223,15 @@ const Transcribe = ({
                   </Select.Positioner>
                 </Portal>
               </Select.Root>
+            </Box>
+            <Box>
+              <Checkbox.Root checked={ignoreEdges} onCheckedChange={(e) => setIgnoreEdges(e.checked)} disabled={isTranscribing}>
+                  <Checkbox.HiddenInput />
+                  <Checkbox.Control>
+                      <Checkbox.Indicator />
+                  </Checkbox.Control>
+                  <Checkbox.Label>Ignore lines touching edges</Checkbox.Label>
+              </Checkbox.Root>
             </Box>
             {isTranscribing && (
               <>

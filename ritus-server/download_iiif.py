@@ -20,15 +20,29 @@ logger = logging.getLogger(__name__)
 # Retry delays in seconds after consecutive failures (index 0 = 1st retry, etc.)
 RETRY_DELAYS = [5, 10, 15, 30, 60]
 
+# Browser-like headers to avoid 403 from services like gallica.bnf.fr
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+}
+
 
 # ---------------------------------------------------------------------------
 # Manifest helpers
 # ---------------------------------------------------------------------------
 
-def download_iiif_manifest(url):
+def download_iiif_manifest(url, headers=None, request_timeout=30):
     """Download and return a parsed IIIF manifest JSON."""
     logger.info(f"Downloading IIIF manifest from: {url}")
-    response = requests.get(url, timeout=30)
+    response = requests.get(url, timeout=request_timeout, headers=headers or BROWSER_HEADERS)
     response.raise_for_status()
     logger.info("IIIF manifest downloaded successfully.")
     return response.json()
@@ -131,7 +145,7 @@ def get_labels_and_urls(manifest):
 # Image download with retry
 # ---------------------------------------------------------------------------
 
-def fetch_image_with_retry(image_url, service_url=None, stop_event=None):
+def fetch_image_with_retry(image_url, service_url=None, stop_event=None, headers=None, request_timeout=60):
     """
     Download an image, retrying with increasing delays on failure.
     Raises RuntimeError if all attempts fail, InterruptedError if cancelled.
@@ -143,7 +157,7 @@ def fetch_image_with_retry(image_url, service_url=None, stop_event=None):
         if stop_event and stop_event.is_set():
             raise InterruptedError("Download cancelled")
         try:
-            return _fetch_once(image_url, service_url)
+            return _fetch_once(image_url, service_url, headers=headers, request_timeout=request_timeout)
         except Exception as e:
             last_error = e
             if delay is None:
@@ -162,9 +176,10 @@ def fetch_image_with_retry(image_url, service_url=None, stop_event=None):
     )
 
 
-def _fetch_once(image_url, service_url=None):
+def _fetch_once(image_url, service_url=None, headers=None, request_timeout=60):
     """Single download attempt, falls back to IIIF Image API service URL if needed."""
-    resp = requests.get(image_url, timeout=60)
+    hdrs = headers or BROWSER_HEADERS
+    resp = requests.get(image_url, timeout=request_timeout, headers=hdrs)
     resp.raise_for_status()
     try:
         img = PILImage.open(BytesIO(resp.content))
@@ -177,7 +192,7 @@ def _fetch_once(image_url, service_url=None):
         for size_param in ("full/full", "full/max", "full/2048,"):
             fallback_url = f"{service_url}/{size_param}/0/default.jpg"
             logger.info(f"  Direct URL failed, trying IIIF service: {fallback_url}")
-            resp2 = requests.get(fallback_url, timeout=60)
+            resp2 = requests.get(fallback_url, timeout=request_timeout, headers=hdrs)
             if resp2.status_code == 200:
                 try:
                     img = PILImage.open(BytesIO(resp2.content))
@@ -201,20 +216,24 @@ def run_iiif_download(
     flask_app,
     on_progress,
     stop_event,
+    sleep_seconds=0,
+    request_timeout=60,
 ):
     """
     Full server-side IIIF download – meant to run in a background thread.
 
     Parameters
     ----------
-    project_id   : int
-    iiif_url     : str
-    upload_folder: str    path like "uploads"
-    start_page   : int    1-based; pass len(existing_images)+1 to append
-    flask_app    : Flask  application instance for DB context
-    on_progress  : callable(current_page, total_pages, status, error=None)
-                   status in {"running", "completed", "failed", "cancelled"}
-    stop_event   : threading.Event – set externally to cancel
+    project_id      : int
+    iiif_url        : str
+    upload_folder   : str    path like "uploads"
+    start_page      : int    1-based; pass len(existing_images)+1 to append
+    flask_app       : Flask  application instance for DB context
+    on_progress     : callable(current_page, total_pages, status, error=None)
+                      status in {"running", "completed", "failed", "cancelled"}
+    stop_event      : threading.Event – set externally to cancel
+    sleep_seconds   : float  seconds to sleep between image downloads (rate limiting)
+    request_timeout : int    timeout in seconds for HTTP requests
     """
     from models import db, Image as ImageModel  # avoid circular import at module level
 
@@ -227,7 +246,7 @@ def run_iiif_download(
                 on_progress(0, 0, "cancelled")
                 return
             try:
-                manifest = download_iiif_manifest(iiif_url)
+                manifest = download_iiif_manifest(iiif_url, request_timeout=request_timeout)
                 break
             except Exception as e:
                 last_error = e
@@ -268,7 +287,7 @@ def run_iiif_download(
                 return
 
             try:
-                img = fetch_image_with_retry(image_url, service_url, stop_event=stop_event)
+                img = fetch_image_with_retry(image_url, service_url, stop_event=stop_event, request_timeout=request_timeout)
             except InterruptedError:
                 on_progress(start_page - 1 + pages_done, total_pages, "cancelled")
                 return
@@ -336,6 +355,15 @@ def run_iiif_download(
 
             pages_done += 1
             on_progress(start_page - 1 + pages_done, total_pages, "running")
+
+            # Per-domain rate limiting: sleep between image downloads
+            if sleep_seconds > 0:
+                half_steps = int(sleep_seconds * 2)
+                for _ in range(max(half_steps, 1)):
+                    if stop_event.is_set():
+                        on_progress(start_page - 1 + pages_done, total_pages, "cancelled")
+                        return
+                    time.sleep(0.5)
 
         on_progress(start_page - 1 + pages_done, total_pages, "completed")
 

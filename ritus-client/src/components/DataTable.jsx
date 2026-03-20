@@ -692,22 +692,37 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
     const textColumn =
       tableStructure.find((col) => col.type === "text")?.name ||
       "formula_text_from_ms";
-    const mergedText = Array.from(selectedRows)
-      .map((id) => data.find((row) => row._internalId === id)?.[textColumn])
+      const fromColumn = tableStructure.find(
+        (col) => col.name === "where_in_ms_from"
+      )?.name;
+      const toColumn = tableStructure.find(
+        (col) => col.name === "where_in_ms_to"
+      )?.name;
+      const mergedRows = Array.from(selectedRows)
+        .map((id) => data.find((row) => row._internalId === id))
+        .filter(Boolean)
+        .sort(
+          (a, b) =>
+            (a?.[sequenceKey] != null && !isNaN(a[sequenceKey])
+              ? Number(a[sequenceKey])
+              : Infinity) -
+            (b?.[sequenceKey] != null && !isNaN(b[sequenceKey])
+              ? Number(b[sequenceKey])
+              : Infinity)
+        );
+      const mergedText = mergedRows
+        .map((row) => row?.[textColumn])
       .filter(Boolean)
       .join(" ");
-    const mergeSequence = Math.min(
-      ...Array.from(selectedRows).map(
-        (id) =>
-          data.find((row) => row._internalId === id)?.[sequenceKey] || Infinity
-      )
-    );
-    const baseRowId = Array.from(selectedRows).sort(
-      (a, b) =>
-        (data.find((row) => row._internalId === a)?.[sequenceKey] || Infinity) -
-        (data.find((row) => row._internalId === b)?.[sequenceKey] || Infinity)
-    )[0];
-    const baseRow = data.find((row) => row._internalId === baseRowId);
+      const firstMergedRow = mergedRows[0];
+      const lastMergedRow = mergedRows[mergedRows.length - 1];
+      const mergeSequence =
+        firstMergedRow?.[sequenceKey] != null &&
+        !isNaN(firstMergedRow[sequenceKey])
+          ? Number(firstMergedRow[sequenceKey])
+          : Infinity;
+      const baseRowId = firstMergedRow?._internalId;
+      const baseRow = firstMergedRow;
     const newRow = {
       _internalId: getUniqueId(),
       [textColumn]: mergedText,
@@ -722,6 +737,12 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
         newRow[col.name] = baseRow?.[col.name] || col.value || "";
       }
     });
+    if (fromColumn) {
+      newRow[fromColumn] = firstMergedRow?.[fromColumn] || "";
+    }
+    if (toColumn) {
+      newRow[toColumn] = lastMergedRow?.[toColumn] || "";
+    }
     const firstRowIndex = data.findIndex(
       (row) => row._internalId === baseRowId
     );

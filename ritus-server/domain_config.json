@@ -1,0 +1,11 @@
+{
+  "transcription_workers": 8,
+  "digi.vatlib.it": {
+    "sleep_seconds": 2,
+    "timeout": 120
+  },
+  "gallica.bnf.fr": {
+    "sleep_seconds": 1,
+    "timeout": 60
+  }
+}

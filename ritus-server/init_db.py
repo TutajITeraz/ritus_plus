@@ -11,7 +11,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from krakenServer import app, db
-from models import User
+from models import User, Project, Image, BatchTranscribeJob, IiifDownloadJob
 from config import ADMIN_USERNAME, ADMIN_PASSWORD
 
 def init_database():
@@ -36,7 +36,29 @@ def init_database():
 
         # Print database statistics
         total_users = User.query.count()
-        print(f"Database initialized with {total_users} user(s).")
+        total_projects = Project.query.count()
+        total_images = Image.query.count()
+        total_iiif_jobs = IiifDownloadJob.query.count()
+        total_transcribe_jobs = BatchTranscribeJob.query.count()
+        print(f"  users:               {total_users}")
+        print(f"  projects:            {total_projects}")
+        print(f"  images:              {total_images}")
+        print(f"  iiif_download_jobs:  {total_iiif_jobs}")
+        print(f"  batch_transcribe_jobs: {total_transcribe_jobs}")
+
+        # Ensure domain_config.json exists with sensible defaults
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "domain_config.json")
+        if not os.path.exists(config_path):
+            import json
+            default_config = {
+                "gallica.bnf.fr": {"sleep_seconds": 1, "timeout": 60},
+                "digi.vatlib.it": {"sleep_seconds": 2, "timeout": 120}
+            }
+            with open(config_path, "w") as f:
+                json.dump(default_config, f, indent=2)
+            print("Created default domain_config.json")
+        else:
+            print(f"domain_config.json already exists at {config_path}")
 
         print("Database initialization complete!")
 

@@ -1,4 +1,3 @@
-// components/ProjectList.jsx
 import { useState, useEffect, useRef } from "react";
 import {
   Box,
@@ -17,15 +16,31 @@ import {
   createListCollection,
   CloseButton,
   Progress,
+  RadioGroup,
+  Checkbox,
 } from "@chakra-ui/react";
 import { LuPlus, LuTrash2 } from "react-icons/lu";
-import { FaDownload, FaStop } from "react-icons/fa";
+import { FaDownload, FaStop, FaFileCsv } from "react-icons/fa";
 import { MdImageNotSupported } from "react-icons/md";
 import { useNavigate } from "react-router-dom";
-import { fetchProjects, createProject, deleteProject, fetchUsers, updateProjectShares, startIiifDownload, getIiifDownloadStatus, cancelIiifDownload } from "../apiUtils";
+import {
+  fetchProjects,
+  createProject,
+  deleteProject,
+  fetchUsers,
+  updateProjectShares,
+  startIiifDownload,
+  getIiifDownloadStatus,
+  cancelIiifDownload,
+  startBatchTranscribe,
+  getBatchTranscribeStatus,
+  cancelBatchTranscribe,
+  exportTranscriptions,
+} from "../apiUtils";
 import { useAuth } from "../App";
 import { toaster } from "@/components/ui/toaster";
 import BatchProjectCreator from "../components/BatchProjectCreator";
+import TranscribeAllDialog from "../components/TranscribeAllDialog";
 
 const typeCollection = createListCollection({
   items: [
@@ -112,6 +127,182 @@ const IiifProjectStatus = ({ project, jobStatus, onDownload, onCancel }) => {
   );
 };
 
+// ---------------------------------------------------------------------------
+// Models list (mirrors Transcribe.jsx)
+// ---------------------------------------------------------------------------
+const transcribeModels = createListCollection({
+  items: [
+    { label: "Tridis Medieval EarlyModern", value: "Tridis_Medieval_EarlyModern.mlmodel" },
+    { label: "Cremma Generic 1.0.1", value: "cremma-generic-1.0.1.mlmodel" },
+    { label: "ManuMcFondue", value: "ManuMcFondue.mlmodel" },
+    { label: "Catmus Medieval", value: "catmus-medieval.mlmodel" },
+    { label: "McCATMuS (16th-21st c. Polyglot)", value: "McCATMuS_nfd_nofix_V1.mlmodel" },
+    { label: "LECTAUREP (French Admin)", value: "lectaurep_base.mlmodel" },
+    { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
+    { label: "German Handwriting", value: "german_handwriting.mlmodel" },
+  ],
+});
+
+// ---------------------------------------------------------------------------
+// Per-project transcription status widget
+// ---------------------------------------------------------------------------
+const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
+  const [open, setOpen] = useState(false);
+  const [model, setModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
+  const [mode, setMode] = useState("skip");
+  const [ignoreEdges, setIgnoreEdges] = useState(true);
+
+  const status = jobStatus?.status;
+  const current = jobStatus?.current_image ?? 0;
+  const total = jobStatus?.total_images ?? 0;
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+
+  // Running/pending: no dialog needed, early return is fine
+  if (status === "running" || status === "pending") {
+    return (
+      <Stack spacing={1}>
+        <Text fontSize="sm" color="purple.600">
+          {status === "pending" ? "Starting transcription…" : "Transcribing in background…"}
+        </Text>
+        <Progress.Root value={status === "pending" ? null : pct} maxW="260px">
+          <HStack gap="3">
+            <Progress.Track flex="1">
+              <Progress.Range />
+            </Progress.Track>
+            <Progress.ValueText>{current}/{total || "?"}</Progress.ValueText>
+          </HStack>
+        </Progress.Root>
+        <Button size="xs" variant="subtle" colorPalette="red" onClick={onCancel}>
+          <FaStop /> Cancel
+        </Button>
+      </Stack>
+    );
+  }
+
+  // No images and no active job
+  if (!status && project.image_count === 0) return null;
+
+  // The dialog is shared by the Transcribe button (no job), Retry (failed), and
+  // Resume (cancelled) buttons. It must be rendered in ALL those branches — do
+  // not use early returns below so the Dialog.Root is always included.
+  const dialog = (
+    <Dialog.Root open={open} onOpenChange={(e) => setOpen(e.open)}>
+      <Portal>
+        <Dialog.Backdrop />
+        <Dialog.Positioner>
+          <Dialog.Content>
+            <Dialog.Header>
+              <Dialog.Title>Transcribe: {project.name}</Dialog.Title>
+              <Dialog.CloseTrigger asChild><CloseButton size="sm" /></Dialog.CloseTrigger>
+            </Dialog.Header>
+            <Dialog.Body>
+              <Stack spacing={4}>
+                <Stack spacing={2}>
+                  <Text fontWeight="bold">Model</Text>
+                  <Select.Root
+                    collection={transcribeModels}
+                    value={[model]}
+                    onValueChange={(d) => setModel(d.value[0])}
+                  >
+                    <Select.HiddenSelect />
+                    <Select.Control>
+                      <Select.Trigger><Select.ValueText /></Select.Trigger>
+                      <Select.IndicatorGroup><Select.Indicator /></Select.IndicatorGroup>
+                    </Select.Control>
+                    <Select.Positioner>
+                      <Select.Content>
+                        {transcribeModels.items.map((item) => (
+                          <Select.Item item={item} key={item.value}>
+                            {item.label}<Select.ItemIndicator />
+                          </Select.Item>
+                        ))}
+                      </Select.Content>
+                    </Select.Positioner>
+                  </Select.Root>
+                </Stack>
+                <Stack spacing={2}>
+                  <Text fontWeight="bold">Mode</Text>
+                  <RadioGroup.Root value={mode} onValueChange={(d) => setMode(d.value)}>
+                    <Stack spacing={1}>
+                      <RadioGroup.Item value="skip">
+                        <RadioGroup.ItemHiddenInput />
+                        <RadioGroup.ItemIndicator />
+                        <RadioGroup.ItemText>Skip already transcribed pages</RadioGroup.ItemText>
+                      </RadioGroup.Item>
+                      <RadioGroup.Item value="continue">
+                        <RadioGroup.ItemHiddenInput />
+                        <RadioGroup.ItemIndicator />
+                        <RadioGroup.ItemText>Continue from first untranscribed page</RadioGroup.ItemText>
+                      </RadioGroup.Item>
+                      <RadioGroup.Item value="override">
+                        <RadioGroup.ItemHiddenInput />
+                        <RadioGroup.ItemIndicator />
+                        <RadioGroup.ItemText>Override – re-transcribe everything</RadioGroup.ItemText>
+                      </RadioGroup.Item>
+                    </Stack>
+                  </RadioGroup.Root>
+                </Stack>
+                <Stack>
+                    <Checkbox.Root checked={ignoreEdges} onCheckedChange={(e) => setIgnoreEdges(e.checked)}>
+                        <Checkbox.HiddenInput />
+                        <Checkbox.Control>
+                            <Checkbox.Indicator />
+                        </Checkbox.Control>
+                        <Checkbox.Label>Ignore lines touching edges</Checkbox.Label>
+                    </Checkbox.Root>
+                </Stack>
+              </Stack>
+            </Dialog.Body>
+            <Dialog.Footer>
+              <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+              <Button colorPalette="purple" onClick={() => { setOpen(false); onStart(model, mode, ignoreEdges); }}>
+                Start Transcription
+              </Button>
+            </Dialog.Footer>
+          </Dialog.Content>
+        </Dialog.Positioner>
+      </Portal>
+    </Dialog.Root>
+  );
+
+  if (status === "failed") {
+    return (
+      <>
+        <Stack spacing={1}>
+          <Text fontSize="sm" color="red.600">Transcription failed: {jobStatus?.error_message}</Text>
+          <Button size="xs" variant="subtle" colorPalette="purple" onClick={() => setOpen(true)}>
+            Retry
+          </Button>
+        </Stack>
+        {dialog}
+      </>
+    );
+  }
+
+  if (status === "cancelled") {
+    return (
+      <>
+        <Stack spacing={1}>
+          <Text fontSize="sm" color="orange.600">Transcription cancelled at {current}/{total || "?"}</Text>
+          <Button size="xs" variant="subtle" colorPalette="purple" onClick={() => setOpen(true)}>
+            Resume / Retry
+          </Button>
+        </Stack>
+        {dialog}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Button size="sm" variant="subtle" colorPalette="purple" onClick={() => setOpen(true)}>
+        Transcribe
+      </Button>
+      {dialog}
+    </>
+  );
+};
+
 const ProjectList = () => {
   const [projectData, setProjectData] = useState({ owned: [], shared: [] });
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -127,7 +318,10 @@ const ProjectList = () => {
   // Server-side IIIF download state
   const [iiifJobStatuses, setIiifJobStatuses] = useState({});
   const [conflictDialog, setConflictDialog] = useState({ open: false, projectId: null, imageCount: 0 });
+  // Server-side transcription state
+  const [transcribeJobStatuses, setTranscribeJobStatuses] = useState({});
   const pollingRef = useRef(null);
+  const transcribePollingRef = useRef(null);
   const navigate = useNavigate();
   const { currentUser, logout } = useAuth();
 
@@ -136,10 +330,13 @@ const ProjectList = () => {
       setProjectData(data);
       // Seed iiifJobStatuses from the projects response
       const statuses = {};
+      const txStatuses = {};
       [...(data.owned || []), ...(data.shared || [])].forEach((p) => {
         if (p.iiif_download_job) statuses[p.id] = p.iiif_download_job;
+        if (p.batch_transcribe_job) txStatuses[p.id] = p.batch_transcribe_job;
       });
       setIiifJobStatuses(statuses);
+      setTranscribeJobStatuses(txStatuses);
     });
     if (currentUser) {
       fetchUsers().then(setUsers);
@@ -178,10 +375,13 @@ const ProjectList = () => {
         fetchProjects().then((data) => {
           setProjectData(data);
           const statuses = {};
+          const txStatuses = {};
           [...(data.owned || []), ...(data.shared || [])].forEach((p) => {
             if (p.iiif_download_job) statuses[p.id] = p.iiif_download_job;
+            if (p.batch_transcribe_job) txStatuses[p.id] = p.batch_transcribe_job;
           });
           setIiifJobStatuses((prev) => ({ ...prev, ...statuses }));
+          setTranscribeJobStatuses((prev) => ({ ...prev, ...txStatuses }));
         });
       }
     }, 3000);
@@ -191,6 +391,114 @@ const ProjectList = () => {
       pollingRef.current = null;
     };
   }, [iiifJobStatuses]);
+
+  // Poll running transcription jobs every 3s
+  useEffect(() => {
+    const runningIds = Object.entries(transcribeJobStatuses)
+      .filter(([, s]) => s?.status === "running" || s?.status === "pending")
+      .map(([id]) => parseInt(id));
+
+    if (runningIds.length === 0) {
+      clearInterval(transcribePollingRef.current);
+      transcribePollingRef.current = null;
+      return;
+    }
+    if (transcribePollingRef.current) return;
+
+    transcribePollingRef.current = setInterval(async () => {
+      const updates = {};
+      await Promise.all(
+        runningIds.map(async (projectId) => {
+          try {
+            const status = await getBatchTranscribeStatus(projectId);
+            updates[projectId] = status;
+          } catch (_) {}
+        })
+      );
+      setTranscribeJobStatuses((prev) => ({ ...prev, ...updates }));
+      const anyDone = Object.values(updates).some(
+        (s) => s?.status === "completed" || s?.status === "failed" || s?.status === "cancelled"
+      );
+      if (anyDone) {
+        fetchProjects().then((data) => {
+          setProjectData(data);
+          const txStatuses = {};
+          [...(data.owned || []), ...(data.shared || [])].forEach((p) => {
+            if (p.batch_transcribe_job) txStatuses[p.id] = p.batch_transcribe_job;
+          });
+          setTranscribeJobStatuses((prev) => ({ ...prev, ...txStatuses }));
+        });
+      }
+    }, 3000);
+
+    return () => {
+      clearInterval(transcribePollingRef.current);
+      transcribePollingRef.current = null;
+    };
+  }, [transcribeJobStatuses]);
+
+  const handleStartTranscribe = async (projectId, model, mode, ignoreEdges) => {
+    try {
+      await startBatchTranscribe(projectId, model, mode, ignoreEdges);
+      setTranscribeJobStatuses((prev) => ({
+        ...prev,
+        [projectId]: { status: "pending", current_image: 0, total_images: 0 },
+      }));
+      toaster.create({
+        title: "Transcription started",
+        description: "Runs in background — you can close the browser.",
+        type: "success",
+        duration: 3000,
+      });
+    } catch (e) {
+      toaster.create({ title: "Error", description: e.message, type: "error", duration: 5000 });
+    }
+  };
+
+  const handleCancelTranscribe = async (projectId) => {
+    try {
+      await cancelBatchTranscribe(projectId);
+      setTranscribeJobStatuses((prev) => ({
+        ...prev,
+        [projectId]: { ...prev[projectId], status: "cancelled" },
+      }));
+    } catch (e) {
+      toaster.create({ title: "Error", description: e.message, type: "error", duration: 5000 });
+    }
+  };
+
+  const handleExportCSV = async () => {
+    try {
+      await exportTranscriptions();
+    } catch (e) {
+      toaster.create({ title: "Export failed", description: e.message, type: "error", duration: 5000 });
+    }
+  };
+
+  const handleDownloadAll = () => {
+    const toDownload = projectData.owned.filter(
+      (p) => p.type === "iiif" && p.iiif_url &&
+        !["running", "pending", "waiting", "completed"].includes(iiifJobStatuses[p.id]?.status)
+    );
+    toDownload.forEach((p) => handleServerIiifDownload(p.id, null));
+    if (toDownload.length === 0) {
+      toaster.create({ title: "Nothing to download", type: "info", duration: 3000 });
+    } else {
+      toaster.create({
+        title: `Starting ${toDownload.length} download(s)`,
+        type: "success",
+        duration: 3000,
+      });
+    }
+  };
+
+  const handleTranscribeAllJobsStarted = (projectIds) => {
+    const updates = {};
+    projectIds.forEach((id) => {
+      updates[id] = { status: "pending", current_image: 0, total_images: 0 };
+    });
+    setTranscribeJobStatuses((prev) => ({ ...prev, ...updates }));
+  };
 
   const handleServerIiifDownload = async (projectId, confirm = null) => {
     try {
@@ -277,7 +585,7 @@ const ProjectList = () => {
       <Flex justify="space-between" align="center" mb={4}>
         <Image src="/logo.svg" alt="Ritus Logo" height="40px" />
         <HStack>
-          <Text fontSize="sm" color="gray.500">v. 1.9</Text>
+          <Text fontSize="sm" color="gray.500">v. 1.11</Text>
           {currentUser && (
             <>
               <Text fontSize="sm">Welcome, {currentUser.username}</Text>
@@ -397,6 +705,16 @@ const ProjectList = () => {
         <BatchProjectCreator 
           onProjectsCreated={() => fetchProjects().then(setProjectData)}
         />
+        <Button variant="outline" size="sm" onClick={handleDownloadAll}>
+          <FaDownload /> Download All
+        </Button>
+        <TranscribeAllDialog
+          projects={projectData.owned}
+          onJobsStarted={handleTranscribeAllJobsStarted}
+        />
+        <Button variant="outline" size="sm" onClick={handleExportCSV}>
+          <FaFileCsv /> Export CSV
+        </Button>
       </HStack>
       
       {/* Owned Projects Section */}
@@ -469,6 +787,12 @@ const ProjectList = () => {
                         onCancel={() => handleCancelIiifDownload(project.id)}
                       />
                     )}
+                    <TranscribeProjectStatus
+                      project={project}
+                      jobStatus={transcribeJobStatuses[project.id]}
+                      onStart={(model, mode, ignoreEdges) => handleStartTranscribe(project.id, model, mode, ignoreEdges)}
+                      onCancel={() => handleCancelTranscribe(project.id)}
+                    />
                     <Button
                       onClick={() => handleShareProject(project)}
                       variant="subtle"

@@ -9,24 +9,32 @@ import torch
 import numpy as np
 import webbrowser
 from urllib.parse import urlparse
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 from PIL import Image as PILImage
 from PIL import ImageFile
 import threading
 from threading import Timer, Thread
+from concurrent.futures import ThreadPoolExecutor
 from flask_caching import Cache
 from config import SERVER_URL, ADMIN_USERNAME, ADMIN_PASSWORD, SECRET_KEY
 
 # Importy lokalne
-from models import db, User, Project, ProjectSharing, Image, Content, BatchProcessing, IiifDownloadJob
+from models import db, User, Project, ProjectSharing, Image, Content, BatchProcessing, IiifDownloadJob, BatchTranscribeJob
 from download_iiif import run_iiif_download
 
 # Registry of stop events keyed by project_id for IIIF background downloads
 _iiif_stop_events = {}
 # Domain-based serialisation: only one download per domain at a time
 _iiif_running_by_domain = {}  # domain -> project_id currently running
+
+# Registry of stop events for background transcription jobs
+_transcribe_stop_events = {}  # project_id -> threading.Event
+# Global serialisation lock: one project transcribes at a time (others wait as "pending")
+_transcribe_lock = threading.Lock()
+# Lock protecting OCR/baseline model loading; inference itself is read-only (thread-safe)
+_ocr_model_lock = threading.Lock()
 
 
 def _iiif_domain(url):
@@ -37,10 +45,25 @@ def _iiif_domain(url):
         return url
 
 
+def _load_domain_config():
+    """Load domain_config.json from the server directory. Returns empty dict if missing."""
+    config_path = os.path.join(os.path.dirname(__file__), "domain_config.json")
+    try:
+        with open(config_path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
 def _launch_iiif_thread(project_id, job_id, iiif_url, upload_folder, start_page):
     """Create stop-event, register the domain as busy, and start the download thread."""
     domain = _iiif_domain(iiif_url)
     _iiif_running_by_domain[domain] = project_id
+
+    # Read per-domain sleep/timeout from domain_config.json
+    domain_cfg = _load_domain_config().get(domain, {})
+    sleep_seconds = domain_cfg.get("sleep_seconds", 0)
+    request_timeout = domain_cfg.get("timeout", 60)
 
     stop_event = threading.Event()
     _iiif_stop_events[project_id] = stop_event
@@ -71,6 +94,8 @@ def _launch_iiif_thread(project_id, job_id, iiif_url, upload_folder, start_page)
             flask_app=app,
             on_progress=on_progress,
             stop_event=stop_event,
+            sleep_seconds=sleep_seconds,
+            request_timeout=request_timeout,
         ),
         daemon=True,
     )
@@ -253,8 +278,24 @@ if not NO_KRAKEN:
             })
         return serialized_lines
 
-    def transcribe_image(image_file, model_name):
+    def should_ignore_line(line, width, ignore_edges):
+        if not ignore_edges:
+            return False
+        if not line.baseline:
+            return True
+        xs = [p[0] for p in line.baseline]
+        min_x = min(xs)
+        max_x = max(xs)
+        line_width = max_x - min_x
+        
+        is_short = line_width < (0.25 * width)
+        near_edge = (min_x < 0.05 * width) or (max_x > 0.95 * width)
+        
+        return is_short and near_edge
+
+    def transcribe_image(image_file, model_name, ignore_edges=False):
         global baseline_model, last_ocr_model_name, ocr_model, selected_device
+
         import time
         start_time = time.time()
         model_path = MODEL_PATHS.get(model_name)
@@ -302,6 +343,16 @@ if not NO_KRAKEN:
             return "Baseline model is not loaded", 500
 
         seg = blla.segment(image, model=baseline_model, device=selected_device)
+        
+        # Filter lines based on width/edge proximity
+        if ignore_edges:
+            width, _ = image.size
+            valid_lines = []
+            for line in seg.lines:
+                if not should_ignore_line(line, width, ignore_edges):
+                    valid_lines.append(line)
+            seg.lines = valid_lines
+
         lines = serialize_segmentation(seg.lines)
 
         # black_seg, red_seg = split_seg(seg, image) # Only if split_seg is defined
@@ -435,7 +486,7 @@ def hsl_to_rgb(hsl):
     return (rgb * 255).astype(np.uint8)
 
 
-def transcribe_image_by_id(image_id, model_name):
+def transcribe_image_by_id(image_id, model_name, ignore_edges=False):
     global baseline_model, last_ocr_model_name, ocr_model, selected_device
     model_path = MODEL_PATHS.get(model_name)
     if not model_path:
@@ -448,10 +499,11 @@ def transcribe_image_by_id(image_id, model_name):
         logger.error(f"Image file not found at {image_path}")
         return f"Image file not found at {image_path}", 404
 
-    if model_name != last_ocr_model_name or ocr_model is None:
-        logger.info(f"Loading model: {model_name}")
-        ocr_model = load_any(model_path, device=selected_device)
-        last_ocr_model_name = model_name
+    with _ocr_model_lock:
+        if model_name != last_ocr_model_name or ocr_model is None:
+            logger.info(f"Loading model: {model_name}")
+            ocr_model = load_any(model_path, device=selected_device)
+            last_ocr_model_name = model_name
 
     logger.info("Image processing...")
     # Load color image for cropping and analysis
@@ -495,12 +547,15 @@ def transcribe_image_by_id(image_id, model_name):
         
     seg = blla.segment(ocr_image, model=baseline_model, device=selected_device, text_direction='horizontal-tb')
 
-    # Log segmentation attributes for debugging
-    logger.info(f"Segmentation attributes: {seg.__dict__}")
+    # Filter lines based on width/edge proximity
+    if ignore_edges:
+        width, _ = ocr_image.size
+        valid_lines = []
+        for line in seg.lines:
+            if not should_ignore_line(line, width, ignore_edges):
+                valid_lines.append(line)
+        seg.lines = valid_lines
 
-    # Ensure debug directory exists
-    debug_dir = "dbg_imgs"
-    os.makedirs(debug_dir, exist_ok=True)
 
     transcribed_text = ""
     new_lines = []
@@ -527,17 +582,18 @@ def transcribe_image_by_id(image_id, model_name):
         # Process each split line for OCR
         for split_line in split_lines:
             seg.lines = [split_line]
-            logger.info(f"Recognition for line {i + 1}, color {split_line.color}...")
+            line_color = getattr(split_line, 'color', 'black')
+            logger.info(f"Recognition for line {i + 1}, color {line_color}...")
             try:
                 predictions = rpred.rpred(ocr_model, ocr_image, seg)
                 for record in predictions:
                     record_text = str(record).strip()
                     # Skip if record is empty or contains only non-letter characters
                     if not record_text or not re.search(r'[a-zA-Z]', record_text):
-                        logger.debug(f"Skipping record for line {i + 1}, color {split_line.color}: '{record_text}' (empty or non-letter)")
+                        logger.debug(f"Skipping record for line {i + 1}, color {line_color}: '{record_text}' (empty or non-letter)")
                         continue
                     
-                    current_color = split_line.color.upper()
+                    current_color = line_color.upper()
                     if current_color == "RED":
                         if previous_color == "RED":
                             # Append to buffered text without closing/opening tags
@@ -567,7 +623,7 @@ def transcribe_image_by_id(image_id, model_name):
                     previous_color = current_color
                     logger.info(f"Detected text ({current_color}): '{record_text}'")
             except Exception as e:
-                logger.error(f"OCR failed for line {i + 1}, color {split_line.color}: {str(e)}")
+                logger.error(f"OCR failed for line {i + 1}, color {line_color}: {str(e)}")
 
         new_lines.extend(split_lines)
 
@@ -818,6 +874,37 @@ def debug_batch_processing():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+
+# ---------------------------------------------------------------------------
+# Domain Config Routes (admin-only)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/domain-config", methods=["GET"])
+@jwt_required()
+def get_domain_config():
+    current_user = get_current_user()
+    if not current_user or not current_user.is_admin:
+        return jsonify({"error": "Admin access required"}), 403
+    return jsonify(_load_domain_config())
+
+
+@app.route("/api/domain-config", methods=["PUT"])
+@jwt_required()
+def save_domain_config():
+    current_user = get_current_user()
+    if not current_user or not current_user.is_admin:
+        return jsonify({"error": "Admin access required"}), 403
+    data = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({"error": "Expected a JSON object"}), 400
+    config_path = os.path.join(os.path.dirname(__file__), "domain_config.json")
+    try:
+        with open(config_path, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        return jsonify({"error": f"Failed to save config: {e}"}), 500
+    return jsonify({"message": "Domain config saved"})
+
 # Batch Processing Routes
 @app.route("/api/projects/<int:project_id>/batch-process", methods=["POST"])
 def start_batch_process(project_id):
@@ -1049,6 +1136,259 @@ def cancel_iiif_download(project_id):
     return jsonify({"message": "Reset" if reset else "Cancellation requested"})
 
 
+# ---------------------------------------------------------------------------
+# Background Transcription Runner
+# ---------------------------------------------------------------------------
+
+def run_batch_transcribe(project_id, job_id, model_name, mode, flask_app, stop_event, ignore_edges=False):
+    """
+    Transcribe all images in a project in a background thread.
+
+    Projects are serialised by _transcribe_lock: one project runs at a time,
+    others wait in "pending" status. Within a project, images are processed
+    in parallel using a ThreadPoolExecutor (transcription_workers in domain_config.json).
+
+    mode:
+      "skip"     – skip images that already have transcribed_text
+      "continue" – start from the first image without transcribed_text
+      "override" – re-transcribe every image regardless
+    """
+    if NO_KRAKEN:
+        with flask_app.app_context():
+            j = BatchTranscribeJob.query.get(job_id)
+            if j:
+                j.status = "failed"
+                j.error_message = "Transcription service disabled (--no-kraken)"
+                db.session.commit()
+        return
+
+    def update_job(current, total, status, error=None):
+        with flask_app.app_context():
+            j = BatchTranscribeJob.query.get(job_id)
+            if j is None:
+                return
+            j.current_image = current
+            j.total_images = total
+            j.status = status
+            if error:
+                j.error_message = error
+            db.session.commit()
+        if status in ("completed", "failed", "cancelled"):
+            _transcribe_stop_events.pop(project_id, None)
+
+    # Sit in the queue as "pending" until the global lock is free
+    update_job(0, 0, "pending")
+
+    with _transcribe_lock:
+        # Was cancelled while waiting in the queue
+        if stop_event.is_set():
+            update_job(0, 0, "cancelled")
+            return
+
+        workers = max(1, int(_load_domain_config().get("transcription_workers", 1)))
+
+        try:
+            with flask_app.app_context():
+                images = Image.query.filter_by(project_id=project_id).order_by(Image.id.asc()).all()
+                total = len(images)
+
+                if mode == "skip":
+                    to_process_ids = [img.id for img in images if not img.transcribed_text]
+                elif mode == "continue":
+                    first_idx = next(
+                        (i for i, img in enumerate(images) if not img.transcribed_text),
+                        len(images)
+                    )
+                    to_process_ids = [img.id for img in images[first_idx:]]
+                else:  # override
+                    to_process_ids = [img.id for img in images]
+
+            update_job(0, total, "running")
+
+            completed_count = [0]
+            count_lock = threading.Lock()
+
+            def process_image(image_id):
+                if stop_event.is_set():
+                    return
+                with flask_app.app_context():
+                    try:
+                        result = transcribe_image_by_id(image_id, model_name)
+                        if isinstance(result, tuple):
+                            logger.error(f"Transcription failed for image {image_id}: {result[0]}")
+                    except Exception as e:
+                        logger.error(f"Error transcribing image {image_id}: {e}")
+                with count_lock:
+                    completed_count[0] += 1
+                    cnt = completed_count[0]
+                update_job(cnt, total, "running")
+
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                for iid in to_process_ids:
+                    if stop_event.is_set():
+                        break
+                    executor.submit(process_image, iid)
+
+            if stop_event.is_set():
+                update_job(completed_count[0], total, "cancelled")
+            else:
+                update_job(len(to_process_ids), total, "completed")
+
+        except Exception as e:
+            logger.exception(f"Unexpected error in run_batch_transcribe: {e}")
+            update_job(0, 0, "failed", error=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Batch Transcription Routes
+# ---------------------------------------------------------------------------
+
+@app.route("/api/projects/<int:project_id>/batch-transcribe", methods=["POST"])
+@jwt_required()
+def start_batch_transcribe(project_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
+    if NO_KRAKEN:
+        return jsonify({"error": "Transcription service is not available (Kraken OCR is disabled)"}), 503
+
+    existing = BatchTranscribeJob.query.filter_by(project_id=project_id).first()
+    if existing and existing.status in ("running", "pending"):
+        return jsonify({"error": "Transcription already running"}), 409
+
+    body = request.get_json(silent=True) or {}
+    model_name = body.get("model_name", "Tridis_Medieval_EarlyModern.mlmodel")
+    mode = body.get("mode", "skip")
+    if mode not in ("skip", "continue", "override"):
+        return jsonify({"error": "mode must be skip, continue, or override"}), 400
+
+    if existing:
+        existing.status = "pending"
+        existing.current_image = 0
+        existing.total_images = 0
+        existing.model_name = model_name
+        existing.mode = mode
+        existing.error_message = None
+        job = existing
+    else:
+        job = BatchTranscribeJob(
+            project_id=project_id,
+            status="pending",
+            model_name=model_name,
+            mode=mode,
+        )
+        db.session.add(job)
+    db.session.commit()
+    job_id = job.id
+
+    stop_event = threading.Event()
+    _transcribe_stop_events[project_id] = stop_event
+    
+    ignore_edges = body.get("ignore_edges", False)
+
+    Thread(
+        target=run_batch_transcribe,
+        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges),
+        daemon=True,
+    ).start()
+
+    logger.info(f"Started batch transcription for project {project_id} (mode={mode}, model={model_name}, ignore_edges={ignore_edges})")
+    return jsonify({"message": "Transcription started", "job_id": job_id}), 202
+
+
+@app.route("/api/projects/<int:project_id>/batch-transcribe", methods=["GET"])
+@jwt_required()
+def get_batch_transcribe_status(project_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
+    job = BatchTranscribeJob.query.filter_by(project_id=project_id).first()
+    if not job:
+        return jsonify({"status": "none"})
+    return jsonify({
+        "status": job.status,
+        "current_image": job.current_image,
+        "total_images": job.total_images,
+        "model_name": job.model_name,
+        "mode": job.mode,
+        "error_message": job.error_message,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+    })
+
+
+@app.route("/api/projects/<int:project_id>/batch-transcribe", methods=["DELETE"])
+@jwt_required()
+def cancel_batch_transcribe(project_id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
+    stop_event = _transcribe_stop_events.get(project_id)
+    if stop_event:
+        stop_event.set()
+    _transcribe_stop_events.pop(project_id, None)
+
+    job = BatchTranscribeJob.query.filter_by(project_id=project_id).first()
+    if job and job.status in ("running", "pending"):
+        job.status = "cancelled"
+        db.session.commit()
+
+    return jsonify({"message": "Cancellation requested"})
+
+
+# ---------------------------------------------------------------------------
+# Export Transcriptions Route
+# ---------------------------------------------------------------------------
+
+@app.route("/api/export/transcriptions", methods=["GET"])
+@jwt_required()
+def export_transcriptions():
+    """
+    Return all transcribed images across all projects the current user owns/shares,
+    as a CSV file: project_name, image_name, transcribed_text
+    """
+    import csv
+    import io
+
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    owned_ids = [p.id for p in Project.query.filter_by(owner_id=current_user.id).all()]
+    shared_ids = [ps.project_id for ps in ProjectSharing.query.filter_by(user_id=current_user.id).all()]
+    project_ids = list(set(owned_ids + shared_ids))
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["project_id", "project_name", "image_name", "transcribed_text"])
+
+    for pid in project_ids:
+        project = Project.query.get(pid)
+        images = Image.query.filter(
+            Image.project_id == pid,
+            Image.transcribed_text.isnot(None),
+            Image.transcribed_text != ""
+        ).order_by(Image.id.asc()).all()
+        for img in images:
+            writer.writerow([pid, project.name, img.name, img.transcribed_text])
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")  # BOM for Excel compatibility
+
+    return Response(
+        csv_bytes,
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=transcriptions.csv"},
+    )
+
+
 # Project Routes
 @app.route("/api/projects", methods=["GET"])
 @jwt_required()
@@ -1088,6 +1428,17 @@ def get_projects():
                     "start_page": iiif_job.start_page,
                     "error_message": iiif_job.error_message,
                 }
+            transcribe_job = BatchTranscribeJob.query.filter_by(project_id=p.id).first()
+            batch_transcribe_job = None
+            if transcribe_job:
+                batch_transcribe_job = {
+                    "status": transcribe_job.status,
+                    "current_image": transcribe_job.current_image,
+                    "total_images": transcribe_job.total_images,
+                    "model_name": transcribe_job.model_name,
+                    "mode": transcribe_job.mode,
+                    "error_message": transcribe_job.error_message,
+                }
             result = {
                 "id": p.id,
                 "name": p.name,
@@ -1099,6 +1450,7 @@ def get_projects():
                 "image_count": image_count,
                 "transcribed_count": transcribed_count,
                 "iiif_download_job": iiif_download_job,
+                "batch_transcribe_job": batch_transcribe_job,
             }
             if p.owner_id == current_user.id:
                 shared_user_ids = [s.user_id for s in ProjectSharing.query.filter_by(project_id=p.id).all()]
@@ -1551,9 +1903,12 @@ if not NO_KRAKEN:
         image_file.save(temp_path)
 
         model_name = request.form.get("modelName", "Tridis_Medieval_EarlyModern.mlmodel")
+        # Checkbox often sends "true" string or nothing
+        ignore_edges_str = request.form.get("ignoreEdges", "false")
+        ignore_edges = (ignore_edges_str.lower() == 'true')
 
         try:
-            transcribed_results = transcribe_image(temp_path, model_name)
+            transcribed_results = transcribe_image(temp_path, model_name, ignore_edges=ignore_edges)
             if isinstance(transcribed_results, tuple):
                 logger.error(f"Error in transcribe: {transcribed_results[0]}")
                 return jsonify({"status": "error", "text": transcribed_results[0]}), transcribed_results[1]
@@ -1581,8 +1936,11 @@ def transcribe_by_id(image_id):
         return jsonify({"status": "error", "message": "Transcription service is not available (Kraken OCR is disabled)"}), 503
 
     model_name = request.form.get("modelName", "Tridis_Medieval_EarlyModern.mlmodel")
+    ignore_edges_str = request.form.get("ignoreEdges", "false")
+    ignore_edges = (ignore_edges_str.lower() == 'true')
+    
     try:
-        result = transcribe_image_by_id(image_id, model_name)
+        result = transcribe_image_by_id(image_id, model_name, ignore_edges=ignore_edges)
         if isinstance(result, tuple):
             logger.error(f"Error in transcribe_by_id for ID {image_id}: {result[0]}")
             return jsonify({"status": "error", "message": result[0], "line_count": 0}), result[1]

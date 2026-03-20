@@ -15,6 +15,10 @@ import {
   Popover,
   HStack,
   Progress,
+  Select,
+  RadioGroup,
+  createListCollection,
+  Checkbox,
 } from "@chakra-ui/react";
 import { RiFileEditFill } from "react-icons/ri";
 import { LuUpload } from "react-icons/lu";
@@ -31,6 +35,9 @@ import {
   getIiifDownloadStatus,
   cancelIiifDownload,
   resetIiifJob,
+  startBatchTranscribe,
+  getBatchTranscribeStatus,
+  cancelBatchTranscribe,
 } from "../apiUtils";
 import { useNavigate } from "react-router-dom";
 import { toaster } from "@/components/ui/toaster";
@@ -39,6 +46,19 @@ import IiifDownloader from "./IiifDownloader";
 import Transcribe from "./Transcribe";
 import TranscriptionEditor from "./TranscriptionEditor";
 import AIAutoFixModal from "./AIAutoFixModal";
+
+const transcribeModels = createListCollection({
+  items: [
+    { label: "Tridis Medieval EarlyModern", value: "Tridis_Medieval_EarlyModern.mlmodel" },
+    { label: "Cremma Generic 1.0.1", value: "cremma-generic-1.0.1.mlmodel" },
+    { label: "ManuMcFondue", value: "ManuMcFondue.mlmodel" },
+    { label: "Catmus Medieval", value: "catmus-medieval.mlmodel" },
+    { label: "McCATMuS (16th-21st c. Polyglot)", value: "McCATMuS_nfd_nofix_V1.mlmodel" },
+    { label: "LECTAUREP (French Admin)", value: "lectaurep_base.mlmodel" },
+    { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
+    { label: "German Handwriting", value: "german_handwriting.mlmodel" },
+  ],
+});
 
 const Sidebar = ({
   project,
@@ -63,6 +83,14 @@ const Sidebar = ({
     selectedImage?.transcribed_text || ""
   );
   const [isAIAutoFixOpen, setIsAIAutoFixOpen] = useState(false);
+  // Background transcription job
+  const [transcribeJob, setTranscribeJob] = useState(null);
+  const [transcribeDialogOpen, setTranscribeDialogOpen] = useState(false);
+  const [transcribeModel, setTranscribeModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
+  const [transcribeMode, setTranscribeMode] = useState("skip");
+  const [ignoreEdges, setIgnoreEdges] = useState(true);
+  const [transcribeStarting, setTranscribeStarting] = useState(false);
+  const transcribePollRef = useRef(null);
 
   // Sync transcriptionText when selectedImage changes
   useEffect(() => {
@@ -101,6 +129,9 @@ const Sidebar = ({
     getIiifDownloadStatus(projectId)
       .then((s) => setIiifJob(s.status !== "none" ? s : null))
       .catch(() => {});
+    getBatchTranscribeStatus(projectId)
+      .then((s) => setTranscribeJob(s.status !== "none" ? s : null))
+      .catch(() => {});
   }, [projectId]);
 
   useEffect(() => {
@@ -131,6 +162,35 @@ const Sidebar = ({
       iiifPollRef.current = null;
     };
   }, [iiifJob?.status]);
+
+  useEffect(() => {
+    if (!([ "running", "pending" ].includes(transcribeJob?.status))) {
+      clearInterval(transcribePollRef.current);
+      transcribePollRef.current = null;
+      return;
+    }
+    if (transcribePollRef.current) return;
+    transcribePollRef.current = setInterval(async () => {
+      try {
+        const s = await getBatchTranscribeStatus(projectId);
+        setTranscribeJob(s.status !== "none" ? s : null);
+        if (["completed", "failed", "cancelled"].includes(s.status)) {
+          clearInterval(transcribePollRef.current);
+          transcribePollRef.current = null;
+          if (s.status === "completed") {
+            fetchImages(projectId).then((imgs) => {
+              setImages(imgs);
+              if (!mainImage && imgs.length > 0) setMainImage(imgs[0].original);
+            });
+          }
+        }
+      } catch (_) {}
+    }, 3000);
+    return () => {
+      clearInterval(transcribePollRef.current);
+      transcribePollRef.current = null;
+    };
+  }, [transcribeJob?.status]);
 
   const handleServerIiifDownload = async (confirm = null) => {
     if (!project?.iiif_url) return;
@@ -349,27 +409,26 @@ const Sidebar = ({
     setIsIiifDownloaderOpen(true);
   };
 
-  const handleTranscribeAll = () => {
-    if (!projectId || images.length === 0) {
-      toaster.create({
-        title: "Transcription Error",
-        description: "No images available to transcribe.",
-        type: "error",
-        duration: 5000,
-      });
-      return;
+  const handleStartBatchTranscribe = async () => {
+    setTranscribeStarting(true);
+    try {
+      await startBatchTranscribe(projectId, transcribeModel, transcribeMode, ignoreEdges);
+      setTranscribeJob({ status: "running", current_image: 0, total_images: images.length });
+      setTranscribeDialogOpen(false);
+      toaster.create({ title: "Transcription started", description: "Running in background — you can close the browser.", type: "success", duration: 4000 });
+    } catch (e) {
+      toaster.create({ title: "Error", description: e.message, type: "error", duration: 5000 });
+    } finally {
+      setTranscribeStarting(false);
     }
   };
 
-  const handleTranscribeOne = () => {
-    if (!selectedImage) {
-      toaster.create({
-        title: "Transcription Error",
-        description: "No image selected for transcription.",
-        type: "error",
-        duration: 5000,
-      });
-      return;
+  const handleCancelBatchTranscribe = async () => {
+    try {
+      await cancelBatchTranscribe(projectId);
+      setTranscribeJob((prev) => prev ? { ...prev, status: "cancelled" } : prev);
+    } catch (e) {
+      toaster.create({ title: "Error", description: e.message, type: "error", duration: 5000 });
     }
   };
 
@@ -534,31 +593,53 @@ const Sidebar = ({
                       )}
                     </>
                   )}
-                  <Dialog.Root placement="center">
-                    <Dialog.Trigger asChild>
-                      <Button
-                        size="sm"
-                        variant="subtle"
-                        disabled={
-                          !projectId || images.length === 0 || isUploading
-                        }
-                      >
-                        <RiFileEditFill /> Transcribe All
+                  {/* Background transcription */}
+                  {(!transcribeJob || transcribeJob.status === "none") && (
+                    <Button
+                      size="sm"
+                      variant="subtle"
+                      disabled={!projectId || images.length === 0 || isUploading}
+                      onClick={() => setTranscribeDialogOpen(true)}
+                    >
+                      <RiFileEditFill /> Transcribe All
+                    </Button>
+                  )}
+                  {transcribeJob?.status === "running" && (
+                    <Stack spacing={1}>
+                      <Text fontSize="xs" color="blue.600">Transcribing in background…</Text>
+                      <Progress.Root value={transcribeJob.total_images > 0 ? Math.round((transcribeJob.current_image / transcribeJob.total_images) * 100) : 0} maxW="220px">
+                        <HStack gap="3">
+                          <Progress.Track flex="1"><Progress.Range /></Progress.Track>
+                          <Progress.ValueText>{transcribeJob.current_image}/{transcribeJob.total_images || "?"}</Progress.ValueText>
+                        </HStack>
+                      </Progress.Root>
+                      <Button size="xs" variant="subtle" colorPalette="red" onClick={handleCancelBatchTranscribe}>
+                        <FaStop /> Stop
                       </Button>
-                    </Dialog.Trigger>
-                    <Portal>
-                      <Dialog.Backdrop />
-                      <Dialog.Positioner>
-                        <Transcribe
-                          images={images}
-                          projectId={projectId}
-                          selectedImageId={null}
-                          startPage={1}
-                          onClose={handleTranscribeClose}
-                        />
-                      </Dialog.Positioner>
-                    </Portal>
-                  </Dialog.Root>
+                    </Stack>
+                  )}
+                  {transcribeJob?.status === "pending" && (
+                    <Text fontSize="xs" color="gray.500">Transcription queued…</Text>
+                  )}
+                  {transcribeJob?.status === "failed" && (
+                    <Stack spacing={1}>
+                      <Text fontSize="xs" color="red.600">Transcription error: {transcribeJob.error_message}</Text>
+                      <Button size="xs" variant="subtle" onClick={() => setTranscribeDialogOpen(true)}>
+                        <RiFileEditFill /> Retry
+                      </Button>
+                    </Stack>
+                  )}
+                  {transcribeJob?.status === "cancelled" && (
+                    <Stack spacing={1}>
+                      <Text fontSize="xs" color="orange.600">Stopped at {transcribeJob.current_image}/{transcribeJob.total_images || "?"}.</Text>
+                      <Button size="xs" variant="subtle" onClick={() => setTranscribeDialogOpen(true)}>
+                        <RiFileEditFill /> Resume
+                      </Button>
+                    </Stack>
+                  )}
+                  {transcribeJob?.status === "completed" && (
+                    <Text fontSize="xs" color="green.600">✓ All {transcribeJob.total_images} pages transcribed.</Text>
+                  )}
                   <Dialog.Root placement="center">
                     <Dialog.Trigger asChild>
                       <Button
@@ -655,6 +736,113 @@ const Sidebar = ({
           </Accordion.ItemContent>
         </Accordion.Item>
       </Accordion.Root>
+      {/* Background transcribe dialog */}
+      <Dialog.Root
+        open={transcribeDialogOpen}
+        onOpenChange={(e) => setTranscribeDialogOpen(e.open)}
+        placement="center"
+        motionPreset="slide-in-bottom"
+      >
+        <Portal>
+          <Dialog.Backdrop />
+          <Dialog.Positioner>
+            <Dialog.Content>
+              <Dialog.Header>
+                <Dialog.Title>Transcribe All Images</Dialog.Title>
+                <Dialog.CloseTrigger asChild>
+                  <CloseButton size="sm" />
+                </Dialog.CloseTrigger>
+              </Dialog.Header>
+              <Dialog.Body>
+                <Stack spacing={5}>
+                  <Text fontSize="sm" color="gray.600">
+                    Runs server-side for all {images.length} image(s). You can
+                    close the browser — the job continues in the background.
+                  </Text>
+                  <Stack spacing={2}>
+                    <Text fontWeight="bold">Model</Text>
+                    <Select.Root
+                      collection={transcribeModels}
+                      value={[transcribeModel]}
+                      onValueChange={(d) => setTranscribeModel(d.value[0])}
+                    >
+                      <Select.HiddenSelect />
+                      <Select.Control>
+                        <Select.Trigger>
+                          <Select.ValueText placeholder="Select model" />
+                        </Select.Trigger>
+                        <Select.IndicatorGroup>
+                          <Select.Indicator />
+                        </Select.IndicatorGroup>
+                      </Select.Control>
+                      <Select.Positioner>
+                        <Select.Content>
+                          {transcribeModels.items.map((item) => (
+                            <Select.Item item={item} key={item.value}>
+                              {item.label}
+                              <Select.ItemIndicator />
+                            </Select.Item>
+                          ))}
+                        </Select.Content>
+                      </Select.Positioner>
+                    </Select.Root>
+                  </Stack>
+                  <Stack spacing={2}>
+                    <Text fontWeight="bold">Mode</Text>
+                    <RadioGroup.Root
+                      value={transcribeMode}
+                      onValueChange={(d) => setTranscribeMode(d.value)}
+                    >
+                      <Stack spacing={2}>
+                        <HStack>
+                          <RadioGroup.Item value="skip">
+                            <RadioGroup.ItemHiddenInput />
+                            <RadioGroup.ItemIndicator />
+                            <RadioGroup.ItemText>Skip already transcribed pages</RadioGroup.ItemText>
+                          </RadioGroup.Item>
+                        </HStack>
+                        <HStack>
+                          <RadioGroup.Item value="continue">
+                            <RadioGroup.ItemHiddenInput />
+                            <RadioGroup.ItemIndicator />
+                            <RadioGroup.ItemText>Continue from first untranscribed page</RadioGroup.ItemText>
+                          </RadioGroup.Item>
+                        </HStack>
+                        <HStack>
+                          <RadioGroup.Item value="override">
+                            <RadioGroup.ItemHiddenInput />
+                            <RadioGroup.ItemIndicator />
+                            <RadioGroup.ItemText>Override all (re-transcribe everything)</RadioGroup.ItemText>
+                          </RadioGroup.Item>
+                        </HStack>
+                      </Stack>
+                    </RadioGroup.Root>
+                  </Stack>
+                  <Stack>
+                      <Checkbox.Root checked={ignoreEdges} onCheckedChange={(e) => setIgnoreEdges(e.checked)}>
+                          <Checkbox.HiddenInput />
+                          <Checkbox.Control>
+                              <Checkbox.Indicator />
+                          </Checkbox.Control>
+                          <Checkbox.Label>Ignore short lines near borders (margin notes/noise)</Checkbox.Label>
+                      </Checkbox.Root>
+                  </Stack>
+                </Stack>
+              </Dialog.Body>
+              <Dialog.Footer>
+                <Button variant="outline" onClick={() => setTranscribeDialogOpen(false)}>Cancel</Button>
+                <Button
+                  colorPalette="purple"
+                  loading={transcribeStarting}
+                  onClick={handleStartBatchTranscribe}
+                >
+                  Start Transcription
+                </Button>
+              </Dialog.Footer>
+            </Dialog.Content>
+          </Dialog.Positioner>
+        </Portal>
+      </Dialog.Root>
       {/* IIIF conflict dialog */}
       <Dialog.Root
         open={iiifConflict}

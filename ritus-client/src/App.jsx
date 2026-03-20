@@ -10,7 +10,13 @@ import UserDetails from "./pages/UserDetails";
 import { getCurrentUser, logout } from "./apiUtils";
 
 // Authentication Context
-const AuthContext = createContext();
+const AuthContext = createContext({
+  isAuthenticated: false,
+  currentUser: null,
+  login: () => {},
+  logout: () => {},
+  checkAuth: () => false,
+});
 
 export const useAuth = () => useContext(AuthContext);
 

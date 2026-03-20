@@ -12,6 +12,7 @@ import {
   Portal,
   Badge,
   IconButton,
+  Stack,
 } from "@chakra-ui/react";
 import { LuArrowLeft, LuPlus, LuTrash2, LuPencil, LuUserPlus } from "react-icons/lu";
 import {
@@ -20,6 +21,8 @@ import {
   updateUser,
   deleteUser,
   fetchProjects,
+  getDomainConfig,
+  saveDomainConfig,
 } from "../apiUtils";
 import { useAuth } from "../App";
 
@@ -35,18 +38,55 @@ const UserDetails = () => {
     is_admin: false,
   });
   const [currentPassword, setCurrentPassword] = useState("");
+  const [domainConfig, setDomainConfig] = useState({});
+  const [transcriptionWorkers, setTranscriptionWorkers] = useState(1);
+  const [newDomain, setNewDomain] = useState({ domain: "", sleep_seconds: 0, timeout: 60 });
+  const [domainConfigSaving, setDomainConfigSaving] = useState(false);
   const navigate = useNavigate();
   const { currentUser } = useAuth();
 
   useEffect(() => {
     if (currentUser?.is_admin) {
       fetchUsers().then(setUsers);
+      getDomainConfig().then((cfg) => {
+        const { transcription_workers, ...domainOnly } = cfg;
+        setTranscriptionWorkers(transcription_workers ?? 1);
+        setDomainConfig(domainOnly);
+      }).catch(() => {});
     }
     fetchProjects().then((data) => {
-      // Combine owned and shared projects
       setProjects([...(data.owned || []), ...(data.shared || [])]);
     });
   }, [currentUser]);
+
+  const handleSaveDomainConfig = async () => {
+    setDomainConfigSaving(true);
+    try {
+      await saveDomainConfig({ transcription_workers: Number(transcriptionWorkers), ...domainConfig });
+    } catch (e) {
+      console.error("Failed to save domain config:", e);
+    } finally {
+      setDomainConfigSaving(false);
+    }
+  };
+
+  const handleAddDomain = () => {
+    const d = newDomain.domain.trim().toLowerCase();
+    if (!d) return;
+    setDomainConfig((prev) => ({
+      ...prev,
+      [d]: { sleep_seconds: Number(newDomain.sleep_seconds), timeout: Number(newDomain.timeout) },
+    }));
+    setNewDomain({ domain: "", sleep_seconds: 0, timeout: 60 });
+  };
+
+  const handleRemoveDomain = (domain) => {
+    setDomainConfig((prev) => {
+      const next = { ...prev };
+      delete next[domain];
+      return next;
+    });
+  };
 
   const handleCreateUser = async () => {
     try {
@@ -300,6 +340,139 @@ const UserDetails = () => {
           </Dialog.Positioner>
         </Portal>
       </Dialog.Root>
+
+      {/* Domain Config Section – admin only */}
+      {currentUser?.is_admin && (
+        <Box mt={8}>
+          <Text fontSize="xl" fontWeight="bold" mb={4}>Domain Configuration</Text>
+          <Text fontSize="sm" color="gray.500" mb={3}>
+            Configure per-domain sleep delays and timeouts for IIIF downloads.
+            Changes are saved to <strong>domain_config.json</strong> on the server.
+          </Text>
+
+          {/* Transcription concurrency setting */}
+          <HStack mb={5} spacing={4} align="center">
+            <Text fontWeight="bold" fontSize="sm" whiteSpace="nowrap">
+              Parallel pages per project:
+            </Text>
+            <Input
+              size="sm"
+              type="number"
+              min={1}
+              max={64}
+              step={1}
+              value={transcriptionWorkers}
+              onChange={(e) => setTranscriptionWorkers(e.target.value)}
+              w="80px"
+            />
+            <Text fontSize="xs" color="gray.500">
+              Strony transkrybowane jednocześnie w ramach jednego projektu (np. 4 lub 8 dla 8 rdzeni CPU).
+              Projekty są kolejkowane i transkrybowane jeden po drugim.
+            </Text>
+          </HStack>
+          <Table.Root size="sm" mb={4}>
+            <Table.Header>
+              <Table.Row>
+                <Table.ColumnHeader>Domain</Table.ColumnHeader>
+                <Table.ColumnHeader>Sleep between images (s)</Table.ColumnHeader>
+                <Table.ColumnHeader>Request timeout (s)</Table.ColumnHeader>
+                <Table.ColumnHeader></Table.ColumnHeader>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {Object.entries(domainConfig).map(([domain, cfg]) => (
+                <Table.Row key={domain}>
+                  <Table.Cell>{domain}</Table.Cell>
+                  <Table.Cell>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={cfg.sleep_seconds}
+                      onChange={(e) =>
+                        setDomainConfig((prev) => ({
+                          ...prev,
+                          [domain]: { ...prev[domain], sleep_seconds: Number(e.target.value) },
+                        }))
+                      }
+                      w="80px"
+                    />
+                  </Table.Cell>
+                  <Table.Cell>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min={5}
+                      step={5}
+                      value={cfg.timeout}
+                      onChange={(e) =>
+                        setDomainConfig((prev) => ({
+                          ...prev,
+                          [domain]: { ...prev[domain], timeout: Number(e.target.value) },
+                        }))
+                      }
+                      w="80px"
+                    />
+                  </Table.Cell>
+                  <Table.Cell>
+                    <IconButton
+                      aria-label="Remove domain"
+                      size="xs"
+                      variant="ghost"
+                      colorPalette="red"
+                      onClick={() => handleRemoveDomain(domain)}
+                    >
+                      <LuTrash2 />
+                    </IconButton>
+                  </Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table.Root>
+
+          {/* Add new domain row */}
+          <Stack spacing={2} mb={4}>
+            <Text fontWeight="bold" fontSize="sm">Add domain</Text>
+            <HStack>
+              <Input
+                size="sm"
+                placeholder="e.g. gallica.bnf.fr"
+                value={newDomain.domain}
+                onChange={(e) => setNewDomain({ ...newDomain, domain: e.target.value })}
+                w="220px"
+              />
+              <Input
+                size="sm"
+                type="number"
+                min={0}
+                step={0.5}
+                placeholder="Sleep (s)"
+                value={newDomain.sleep_seconds}
+                onChange={(e) => setNewDomain({ ...newDomain, sleep_seconds: e.target.value })}
+                w="100px"
+              />
+              <Input
+                size="sm"
+                type="number"
+                min={5}
+                step={5}
+                placeholder="Timeout (s)"
+                value={newDomain.timeout}
+                onChange={(e) => setNewDomain({ ...newDomain, timeout: e.target.value })}
+                w="100px"
+              />
+              <Button size="sm" onClick={handleAddDomain} disabled={!newDomain.domain.trim()}>
+                <LuPlus /> Add
+              </Button>
+            </HStack>
+          </Stack>
+
+          <Button colorPalette="blue" loading={domainConfigSaving} onClick={handleSaveDomainConfig}>
+            Save Domain Config
+          </Button>
+        </Box>
+      )}
     </Box>
   );
 };

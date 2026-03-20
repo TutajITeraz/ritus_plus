@@ -271,10 +271,11 @@ export const updateImage = async (imageId, data) => {
   }
 };
 
-export const transcribeImage = async (imageId, modelName) => {
+export const transcribeImage = async (imageId, modelName, ignoreEdges = true) => {
   try {
     const formData = new FormData();
     formData.append("modelName", modelName);
+    formData.append("ignoreEdges", ignoreEdges);
     const response = await apiRequest(`${SERVER_URL}/api/transcribe/${imageId}`, {
       method: "POST",
       body: formData,
@@ -723,4 +724,98 @@ export const resetIiifJob = async (projectId) => {
   // Ignore 404 – no job to delete is fine
   if (!response.ok && response.status !== 404) throw new Error("Failed to reset IIIF job");
   return response.status === 404 ? {} : await response.json();
+};
+
+
+// ---------------------------------------------------------------------------
+// Batch transcription (server-side background)
+// ---------------------------------------------------------------------------
+
+/**
+ * Start a server-side batch transcription job.
+ * @param {number} projectId
+ * @param {string} modelName
+ * @param {"skip"|"continue"|"override"} mode
+ * @param {boolean} ignoreEdges
+ */
+export const startBatchTranscribe = async (projectId, modelName, mode = "skip", ignoreEdges = true) => {
+  const response = await apiRequest(
+    `${SERVER_URL}/api/projects/${projectId}/batch-transcribe`,
+    {
+      method: "POST",
+      body: JSON.stringify({ model_name: modelName, mode, ignore_edges: ignoreEdges }),
+    }
+  );
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Failed to start transcription");
+  return data;
+};
+
+/**
+ * Get current batch transcription job status.
+ * @param {number} projectId
+ */
+export const getBatchTranscribeStatus = async (projectId) => {
+  const response = await apiRequest(
+    `${SERVER_URL}/api/projects/${projectId}/batch-transcribe`
+  );
+  if (!response.ok) throw new Error("Failed to get transcription status");
+  return await response.json();
+};
+
+/**
+ * Request cancellation of a running batch transcription job.
+ * @param {number} projectId
+ */
+export const cancelBatchTranscribe = async (projectId) => {
+  const response = await apiRequest(
+    `${SERVER_URL}/api/projects/${projectId}/batch-transcribe`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) throw new Error("Failed to cancel transcription");
+  return await response.json();
+};
+
+
+// ---------------------------------------------------------------------------
+// Export transcriptions
+// ---------------------------------------------------------------------------
+
+/**
+ * Trigger a CSV download of all transcribed images across owned/shared projects.
+ */
+export const exportTranscriptions = async () => {
+  const response = await apiRequest(`${SERVER_URL}/api/export/transcriptions`);
+  if (!response.ok) throw new Error("Failed to export transcriptions");
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "transcriptions.csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+
+// ---------------------------------------------------------------------------
+// Domain config (admin-only)
+// ---------------------------------------------------------------------------
+
+/** Fetch the domain_config.json as a JSON object. */
+export const getDomainConfig = async () => {
+  const response = await apiRequest(`${SERVER_URL}/api/domain-config`);
+  if (!response.ok) throw new Error("Failed to fetch domain config");
+  return await response.json();
+};
+
+/** Save the domain config object to domain_config.json. */
+export const saveDomainConfig = async (config) => {
+  const response = await apiRequest(`${SERVER_URL}/api/domain-config`, {
+    method: "PUT",
+    body: JSON.stringify(config),
+  });
+  if (!response.ok) throw new Error("Failed to save domain config");
+  return await response.json();
 };
