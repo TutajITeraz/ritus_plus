@@ -1,6 +1,6 @@
 import React, { useRef, useState, useCallback, useEffect } from "react";
-import { Box, Stack, Button, Icon } from "@chakra-ui/react";
-import { FaPaintBrush, FaSave } from "react-icons/fa";
+import { Box, Stack, Button } from "@chakra-ui/react";
+import { FaSave } from "react-icons/fa";
 import { toaster } from "@/components/ui/toaster";
 
 const TranscriptionEditor = ({
@@ -11,7 +11,16 @@ const TranscriptionEditor = ({
   isDisabled = false,
 }) => {
   const editorRef = useRef(null);
+  const lastLoadedImageIdRef = useRef(selectedImage?.id ?? null);
   const [localContent, setLocalContent] = useState("");
+
+  const normalizeEditorHtml = (html) =>
+    (html || "")
+      .replace(/<div><br><\/div>/gi, "<br>")
+      .replace(/<div>/gi, "<br>")
+      .replace(/<\/div>/gi, "")
+      .replace(/<br\s*\/?>/gi, "<br>")
+      .trim();
 
   // Convert <red> tags to <b> and <func> to <i> for display
   const parseToHtml = (text) => {
@@ -23,7 +32,7 @@ const TranscriptionEditor = ({
         .replace(/<func>/gi, "<i>")
         .replace(/<\/func>/gi, "</i>")
         .replace(/\n/g, "<br>")
-      : '<span style="color: gray;">No transcription available</span>';
+      : "";
     console.debug("Parsed HTML:", result);
     return result;
   };
@@ -46,20 +55,29 @@ const TranscriptionEditor = ({
   // Initialize editor with external transcriptionText
   useEffect(() => {
     const editor = editorRef.current;
+    if (!editor) return;
     console.debug(
       "Initializing editor with transcriptionText:",
       transcriptionText
     );
     const newHtml = parseToHtml(transcriptionText || "");
-    // Normalize for comparison to account for div vs br
-    const normalizedCurrent = editor.innerHTML.replace(/<div>/gi, "<br>").replace(/<\/div>/gi, "");
-    const normalizedNew = newHtml.replace(/<div>/gi, "<br>").replace(/<\/div>/gi, "");
+    const normalizedCurrent = normalizeEditorHtml(editor.innerHTML);
+    const normalizedNew = normalizeEditorHtml(newHtml);
+    const selectedImageId = selectedImage?.id ?? null;
+    const imageChanged = lastLoadedImageIdRef.current !== selectedImageId;
+    const editorHasFocus = document.activeElement === editor;
+
+    if (!imageChanged && editorHasFocus) {
+      return;
+    }
+
     if (normalizedCurrent !== normalizedNew) {
       editor.innerHTML = newHtml;
       cleanEditor();
       setLocalContent(parseToTaggedText(editor.innerHTML));
     }
-  }, [transcriptionText, isDisabled]);
+    lastLoadedImageIdRef.current = selectedImageId;
+  }, [transcriptionText, selectedImage, isDisabled]);
 
   // Prevent default backspace behavior
   const handleKeyDown = (e) => {
@@ -67,14 +85,6 @@ const TranscriptionEditor = ({
       console.debug("Keydown prevented: Editor is disabled");
       e.preventDefault();
       return;
-    }
-    if (e.key === "Backspace" && editorRef.current.innerHTML === "") {
-      e.preventDefault(); // Prevent browser navigation
-      console.debug("Backspace prevented, resetting to placeholder");
-      editorRef.current.innerHTML =
-        '<span style="color: gray;">No transcription available</span>';
-      setTranscriptionText("");
-      setLocalContent("");
     }
   };
 
@@ -113,16 +123,6 @@ const TranscriptionEditor = ({
     }
     const editor = editorRef.current;
     console.debug("Editor input detected, current HTML:", editor.innerHTML);
-    if (
-      editor.innerHTML ===
-      '<span style="color: gray;">No transcription available</span>'
-    ) {
-      setTranscriptionText("");
-      setLocalContent("");
-      console.debug("Editor cleared, transcriptionText set to empty");
-      return;
-    }
-    cleanEditor();
     const taggedText = parseToTaggedText(editor.innerHTML).trim();
     setLocalContent(taggedText);
     setTranscriptionText(taggedText);
