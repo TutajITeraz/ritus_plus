@@ -1,96 +1,234 @@
-from openai import OpenAI
+"""AI Autofix tool backed by a local Ollama instance.
 
-def get_or_create_assistant(user_api_key, cache):
-    # Check if cache is initialized
-    if cache is None:
-        raise RuntimeError("Cache is not initialized. Ensure init_cache is called in krakenServer.py before using gpt_autofix.")
-    
-    # Check if assistant is in cache
-    assistant = cache.get(f'assistant_{user_api_key}')
-    
-    if assistant is None:
-        client = OpenAI(api_key=user_api_key)
-        assistant = client.beta.assistants.create(
-            name="AI Autofix Assistant",
-            instructions=
+This module is a drop-in replacement for the previous OpenAI Assistants
+implementation (kept at `ai_tools_openai.py`). The public function
+`gpt_autofix(question, user_api_key, cache)` keeps the same signature and
+returns the same `{'text': ..., 'error': ...}` dict so callers in
+`krakenServer.py` do not need to change.
+
+`user_api_key` and `cache` are accepted for backwards compatibility but are
+no longer used (Ollama runs locally).
 """
-Hello. Im data scientist working with hand written recognition data from medieval Latin liturgical manuscripts. (until ca. 1300)
 
-Below i will provide you a raw text from hand written ocr. It can contain <red> </red> tags that may inform about a new rubric, rite name or may be some shortcuts of the ends of prayers.
-<func></func> tag can contain a prayer function (discribed below).
-Sometimes function is also assigned as <red> and this need to be fixed by you.
+import json
+import time
+import urllib.error
+import urllib.request
 
-I want you to fix this text and tags. You should use knowledge of known Latin words, phrases and of course prayers, liturgical ceremony, saints etc, to make this text better.
-Use prayers from the critical sources and corpus orationem if you know it.
-Your task is to fix the text but do not create new text. You can add one or two words if you are sure that it is missing, but do not create new prayers or long phrases.
+from prompt_template import SYSTEM_PROMPT
 
-You should fix typos, OCR errors, wrong or missing tags. You should fix the grammar and spelling mistakes. 
-Do not change the meaning of the text. Do not change the prayer to another one, do not change the rite to another one. 
-You should fix the structure of the text, like paragraphs, line breaks, punctuation, capitalization, spacing etc.
-Your job is to be an OCR proofreader, not a text editor!
+OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
+OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
 
-Also you should fix the <red> and <func> tags. You can remove them if you think that algorithm mark them by mistake, you can modify them or add them.
-I want only rite names to be inside <red> tags.
+# Default model and generation parameters.
+DEFAULT_MODEL = "gemma4:26b"
+DEFAULT_TEMPERATURE = 0.08
+DEFAULT_TIMEOUT = 600  # seconds, hard cap on a single request
+THINK_MODE = False     # no-think: disable Qwen/DeepSeek-style reasoning tokens
 
-If you notice a prayer function like one of this:
-[Apologia, Ordo feriae quintae, Scrutinium, Breuiarum apostolorum, Iudicium Paenitentiale, Rubrica, Per ipsum, Per haec omnia, Nobis quoque peccatoribus, Supplices te rogamus, Supra que, Unde et memores, Quam oblationem, Memento Domine, Te igitur, Uere dignum et iustum est, Sursum corda, Consecratio, Ordo de feria quinta, Qui pridie, Pater noster, Expositio praefatio symboli, Expositio euangeliorum, Memento, Hanc igitur, Ordinatio, Ordo de sabbato sancto, Ordo baptismi, Oratio sollemnis, Ordo de feria sexta, Ordo de feria quinta, Ordo paenitentiae, Exorcismus, Ad populum, Post communionem, Prophetia	Lect, Lectio, Exsultet, Oratio, Calendarium, Infra actionem	Canon miss, Psalmus, Versus, Antiphona, Sanctus, Capitulum, Benedictio, Super populum, Communicantes, EMPTY PAGES, Agnus dei, Canon missae, Martirologium, Ad complendum, Prefatio, Secreta, Collecta]
-please contain it in a <func></func> tag.
-Prayer function typically should be before the prayer, not in the middle of it.
 
-You should not print, say or comment anything but the correct text. This is authonomic process, so if you say anything but text, your words will be saved as a prayer, so don't do it.
-
-If you don't know how to fix the text - just print it as is. Do not comment that fact.
-
-In the following messages always remember rules from above.
-""",
-            tools=[{"type": "code_interpreter"}],
-            model="gpt-4o",
-        )
-        # Cache the assistant instance with a timeout (e.g., 24*1 hour)
-        cache.set(f'assistant_{user_api_key}', assistant, timeout=24*3600)
-    return assistant
-
-def gpt_autofix(question, user_api_key, cache):
-    response = {
-        'text': "",
-        'error': ""
-    }
+def get_ollama_models():
+    """Return the list of model names installed in the local Ollama instance."""
     try:
-        # Get or create the assistant for the user
-        assistant = get_or_create_assistant(user_api_key, cache)
+        req = urllib.request.Request(OLLAMA_TAGS_URL)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as e:
+        print(f"Cannot connect to Ollama: {e}")
+        return []
 
-        # Create a new thread for the user
-        client = OpenAI(api_key=user_api_key)
-        thread = client.beta.threads.create()
 
-        message = client.beta.threads.messages.create(
-            thread_id=thread.id,
-            role="user",
-            content=question
-        )
+def _run_ollama_chat(
+    model,
+    ocr_text,
+    system_prompt,
+    temperature=DEFAULT_TEMPERATURE,
+    timeout=DEFAULT_TIMEOUT,
+    think=THINK_MODE,
+):
+    """Call Ollama /api/chat with streaming enabled.
 
-        run = client.beta.threads.runs.create_and_poll(
-            thread_id=thread.id,
-            assistant_id=assistant.id,
-        )
+    Returns a dict with keys:
+        predicted, thinking_text, thinking_time, response_time, total_time,
+        tokens_generated, tokens_per_sec, has_thinking.
+    """
+    request_body = {
+        "model": model,
+        "stream": True,
+        "options": {
+            "temperature": temperature,
+            "repeat_penalty": 1.12,
+            "top_p": 0.92,
+        },
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": ocr_text.strip()},
+        ],
+    }
+    # Only attach "think" when we want to force a value; for no-think models
+    # we explicitly set it to False so the server does not engage thinking.
+    request_body["think"] = bool(think)
 
-        if run.status == 'completed': 
-            messages = client.beta.threads.messages.list(
-                thread_id=thread.id
-            )
-            print("-------------RAW MSG------------")
-            for msg in messages:
-                print(msg)
+    payload = json.dumps(request_body).encode("utf-8")
+    req = urllib.request.Request(
+        OLLAMA_CHAT_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
 
-                if msg.assistant_id and len(msg.assistant_id) > 1:
-                    full_mess = msg.content[0].text.value
-                    response['text'] = full_mess
+    collected_response = []
+    collected_thinking = []
+    t_start = time.time()
+    t_first_response = None
+    t_thinking_end = None
+    is_thinking = False
+    has_thinking = False
+    eval_count = 0
+    eval_duration_ns = 0
+    t_last_activity = time.time()
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            for line in response:
+                now = time.time()
+                if now - t_start > timeout:
+                    print(f"   HARD TIMEOUT reached ({timeout}s) - truncating response")
                     break
-        else:
-            response['error'] = str(run.status)
-            print(run.status)
+                if now - t_last_activity > 60:
+                    print(f"   STALL DETECTED (no data for 60s) - aborting sample")
+                    break
+                if not line.strip():
+                    continue
+                t_last_activity = now
+
+                try:
+                    chunk = json.loads(line.decode("utf-8"))
+                except json.JSONDecodeError:
+                    continue
+
+                msg = chunk.get("message", {}) or {}
+
+                if msg.get("thinking"):
+                    has_thinking = True
+                    is_thinking = True
+                    token = msg.get("content", "")
+                    if token:
+                        collected_thinking.append(token)
+                else:
+                    if is_thinking:
+                        # Transition from thinking -> response
+                        is_thinking = False
+                        t_thinking_end = now
+                    token = msg.get("content", "")
+                    if token:
+                        if t_first_response is None:
+                            t_first_response = now
+                        collected_response.append(token)
+
+                if chunk.get("done", False):
+                    eval_count = chunk.get("eval_count", 0) or 0
+                    eval_duration_ns = chunk.get("eval_duration", 0) or 0
+                    break
+
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return {
+            "predicted": f"[ERROR: {e}]",
+            "thinking_text": "",
+            "thinking_time": 0,
+            "response_time": 0,
+            "total_time": 0,
+            "tokens_generated": 0,
+            "tokens_per_sec": 0,
+            "has_thinking": False,
+        }
+
+    t_end = time.time()
+    total_time = t_end - t_start
+
+    if has_thinking and t_thinking_end:
+        thinking_time = t_thinking_end - t_start
+        response_time = t_end - t_thinking_end
+    elif t_first_response:
+        # Without thinking: t_first_response marks end of prompt processing
+        thinking_time = t_first_response - t_start
+        response_time = t_end - t_first_response
+    else:
+        thinking_time = 0
+        response_time = total_time
+
+    tokens_per_sec = (eval_count / (eval_duration_ns / 1e9)) if eval_duration_ns > 0 else 0
+
+    return {
+        "predicted": "".join(collected_response).strip(),
+        "thinking_text": "".join(collected_thinking).strip(),
+        "thinking_time": thinking_time,
+        "response_time": response_time,
+        "total_time": total_time,
+        "tokens_generated": eval_count,
+        "tokens_per_sec": round(tokens_per_sec, 1),
+        "has_thinking": has_thinking,
+    }
+
+
+def gpt_autofix(question, user_api_key=None, cache=None):
+    """Correct OCR text using a local Ollama model.
+
+    Backwards-compatible signature with the previous OpenAI-based
+    implementation. `user_api_key` and `cache` are accepted but ignored.
+
+    Returns:
+        dict: {"text": str, "error": str}
+    """
+    response = {"text": "", "error": ""}
+
+    if not question or not question.strip():
+        response["error"] = "Empty question"
+        return response
+
+    # Best-effort: warn early if Ollama is not reachable.
+    try:
+        urllib.request.urlopen(OLLAMA_TAGS_URL, timeout=5).read()
     except Exception as e:
-        response['error'] = str(e)
-        print(f"Error in gpt_autofix: {str(e)}")
+        response["error"] = f"Ollama is not reachable at {OLLAMA_TAGS_URL}: {e}"
+        print(f"Error in gpt_autofix: {response['error']}")
+        return response
+
+    try:
+        result = _run_ollama_chat(
+            model=DEFAULT_MODEL,
+            ocr_text=question,
+            system_prompt=SYSTEM_PROMPT,
+            temperature=DEFAULT_TEMPERATURE,
+            timeout=DEFAULT_TIMEOUT,
+            think=THINK_MODE,
+        )
+        predicted = result.get("predicted", "")
+        if predicted.startswith("[ERROR:"):
+            response["error"] = predicted
+            print(f"Error in gpt_autofix: {response['error']}")
+            return response
+
+        response["text"] = predicted
+        # Surface a few timing details to the server logs.
+        print(
+            "Ollama autofix: model={model} total={total:.2f}s "
+            "tokens={tok} tps={tps} thinking={think}".format(
+                model=DEFAULT_MODEL,
+                total=result.get("total_time", 0),
+                tok=result.get("tokens_generated", 0),
+                tps=result.get("tokens_per_sec", 0),
+                think=result.get("has_thinking", False),
+            )
+        )
+        if result.get("has_thinking") and result.get("thinking_text"):
+            print("--- thinking ---\n" + result["thinking_text"][:600])
+    except Exception as e:
+        response["error"] = str(e)
+        print(f"Error in gpt_autofix: {response['error']}")
 
     return response
+
+
+__all__ = ["gpt_autofix", "get_ollama_models", "DEFAULT_MODEL", "SYSTEM_PROMPT"]

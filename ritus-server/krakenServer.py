@@ -486,7 +486,7 @@ def hsl_to_rgb(hsl):
     return (rgb * 255).astype(np.uint8)
 
 
-def transcribe_image_by_id(image_id, model_name, ignore_edges=False):
+def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False):
     global baseline_model, last_ocr_model_name, ocr_model, selected_device
     model_path = MODEL_PATHS.get(model_name)
     if not model_path:
@@ -635,6 +635,9 @@ def transcribe_image_by_id(image_id, model_name, ignore_edges=False):
             transcribed_text += " ".join(buffered_text)
 
     logger.info(f"Total transcribed text: '{transcribed_text}'")
+
+    if add_page_break:
+        transcribed_text += "⏎"
 
     image_record.transcribed_text = transcribed_text.strip()
     db.session.commit()
@@ -1150,6 +1153,7 @@ def run_batch_transcribe(
     ignore_edges=False,
     range_from=None,
     range_to=None,
+    add_page_break=False,
 ):
     """
     Transcribe all images in a project in a background thread.
@@ -1234,6 +1238,7 @@ def run_batch_transcribe(
                             image_id,
                             model_name,
                             ignore_edges=ignore_edges,
+                            add_page_break=add_page_break,
                         )
                         if isinstance(result, tuple):
                             logger.error(f"Transcription failed for image {image_id}: {result[0]}")
@@ -1334,15 +1339,21 @@ def start_batch_transcribe(project_id):
     else:
         ignore_edges = bool(ignore_edges)
 
+    add_page_break = body.get("add_page_break", False)
+    if isinstance(add_page_break, str):
+        add_page_break = add_page_break.lower() == "true"
+    else:
+        add_page_break = bool(add_page_break)
+
     Thread(
         target=run_batch_transcribe,
-        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges, range_from, range_to),
+        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges, range_from, range_to, add_page_break),
         daemon=True,
     ).start()
 
     logger.info(
         f"Started batch transcription for project {project_id} "
-        f"(mode={mode}, model={model_name}, ignore_edges={ignore_edges}, "
+        f"(mode={mode}, model={model_name}, ignore_edges={ignore_edges}, add_page_break={add_page_break}, "
         f"range_from={range_from}, range_to={range_to})"
     )
     return jsonify({"message": "Transcription started", "job_id": job_id}), 202
@@ -1987,9 +1998,11 @@ def transcribe_by_id(image_id):
     model_name = request.form.get("modelName", "Tridis_Medieval_EarlyModern.mlmodel")
     ignore_edges_str = request.form.get("ignoreEdges", "false")
     ignore_edges = (ignore_edges_str.lower() == 'true')
+    add_page_break_str = request.form.get("addPageBreak", "false")
+    add_page_break = (add_page_break_str.lower() == 'true')
     
     try:
-        result = transcribe_image_by_id(image_id, model_name, ignore_edges=ignore_edges)
+        result = transcribe_image_by_id(image_id, model_name, ignore_edges=ignore_edges, add_page_break=add_page_break)
         if isinstance(result, tuple):
             logger.error(f"Error in transcribe_by_id for ID {image_id}: {result[0]}")
             return jsonify({"status": "error", "message": result[0], "line_count": 0}), result[1]

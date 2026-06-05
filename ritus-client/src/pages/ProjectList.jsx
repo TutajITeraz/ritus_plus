@@ -151,6 +151,7 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
   const [model, setModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
   const [mode, setMode] = useState("skip");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
+  const [addPageBreak, setAddPageBreak] = useState(false);
   const [rangeFrom, setRangeFrom] = useState(1);
   const [rangeTo, setRangeTo] = useState(project.image_count || 1);
 
@@ -287,11 +288,20 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
                         <Checkbox.Label>Ignore lines touching edges</Checkbox.Label>
                     </Checkbox.Root>
                 </Stack>
+                <Stack>
+                    <Checkbox.Root checked={addPageBreak} onCheckedChange={(e) => setAddPageBreak(e.checked)}>
+                        <Checkbox.HiddenInput />
+                        <Checkbox.Control>
+                            <Checkbox.Indicator />
+                        </Checkbox.Control>
+                        <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
+                    </Checkbox.Root>
+                </Stack>
               </Stack>
             </Dialog.Body>
             <Dialog.Footer>
               <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button colorPalette="purple" onClick={() => { setOpen(false); onStart(model, mode, ignoreEdges, rangeFrom, rangeTo); }}>
+              <Button colorPalette="purple" onClick={() => { setOpen(false); onStart(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak); }}>
                 Start Transcription
               </Button>
             </Dialog.Footer>
@@ -487,7 +497,7 @@ const ProjectList = () => {
     };
   }, [transcribeJobStatuses]);
 
-  const handleStartTranscribe = async (projectId, model, mode, ignoreEdges, rangeFrom, rangeTo) => {
+  const handleStartTranscribe = async (projectId, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak) => {
     const parsedRangeFrom = Number(rangeFrom);
     const parsedRangeTo = Number(rangeTo);
     const project = [...projectData.owned, ...projectData.shared].find((entry) => entry.id === projectId);
@@ -512,6 +522,7 @@ const ProjectList = () => {
         ignoreEdges,
         mode === "range" ? parsedRangeFrom : null,
         mode === "range" ? parsedRangeTo : null,
+        addPageBreak
       );
       setTranscribeJobStatuses((prev) => ({
         ...prev,
@@ -867,7 +878,7 @@ const ProjectList = () => {
                     <TranscribeProjectStatus
                       project={project}
                       jobStatus={transcribeJobStatuses[project.id]}
-                      onStart={(model, mode, ignoreEdges, rangeFrom, rangeTo) => handleStartTranscribe(project.id, model, mode, ignoreEdges, rangeFrom, rangeTo)}
+                      onStart={(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak) => handleStartTranscribe(project.id, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak)}
                       onCancel={() => handleCancelTranscribe(project.id)}
                     />
                     <Button

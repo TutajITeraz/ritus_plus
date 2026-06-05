@@ -316,8 +316,11 @@ const TableEditor = () => {
       console.log("Fetched images:", images);
 
       let sequenceCounter = 1;
+      let allParsedRows = [];
+      let imageIndex = 0;
 
-      const newData = images.reduce((acc, img, index) => {
+      // First pass: parse each image's text
+      for (const img of images) {
         const parseText = (text) => {
           const rows = [];
           let currentFormulaText = "";
@@ -378,6 +381,16 @@ const TableEditor = () => {
                 function_id: funcContent,
               });
               i = endIndex + 7;
+            } else if (text[i] === "⏎") {
+              sequenceCounter += pushIfNotEmpty({
+                id: sequenceCounter,
+                sequence_in_ms: sequenceCounter,
+                formula_text_from_ms: currentFormulaText,
+                rite_name_from_ms: "",
+                function_id: "",
+              });
+              currentFormulaText = "";
+              i++;
             } else {
               currentFormulaText += text[i];
               i++;
@@ -396,34 +409,63 @@ const TableEditor = () => {
         };
 
         const parsedRows = parseText(img.transcribed_text || "");
+        img.endsWithReturn = (img.transcribed_text || "").endsWith("⏎");
+        parsedRows.forEach(row => {
+          row._imageIndex = imageIndex;
+          row._img = img;
+        });
+        allParsedRows = allParsedRows.concat(parsedRows);
+        imageIndex++;
+      }
 
-        return acc.concat(
-          parsedRows.map((rowData, rowIndex) => {
-            const row = {
-              _internalId: Date.now() + index * 1000 + rowIndex,
-              where_in_ms_from: img.name || "",
-              where_in_ms_to: img.name || "",
-              formula_text_from_ms: rowData.formula_text_from_ms,
-              rite_name_from_ms: rowData.rite_name_from_ms,
-              function_id: rowData.function_id,
-              sequence_in_ms: rowData.sequence_in_ms,
-              digital_page_number: img.page_number || index + 1,
-            };
-            currentStructure.forEach((col) => {
-              if (!(col.name in row)) {
-                row[col.name] = col.value ?? "";
-              }
-            });
-            return row;
-          })
-        );
-      }, []);
+      // Second pass: merge rows across pages where no "⏎" separates them
+      let mergedRows = [];
+      let i = 0;
+      while (i < allParsedRows.length) {
+        let currentRow = { ...allParsedRows[i] };
+        let fromImg = currentRow._img;
+        let toImg = currentRow._img;
 
-      console.log("Transformed data:", newData);
-      setData(newData.length > 0 ? [...newData] : [generateEmptyRow(currentStructure)]);
+        // Merge with subsequent rows from different images if no "⏎" at end of previous image
+        while (i + 1 < allParsedRows.length && 
+               allParsedRows[i]._imageIndex !== allParsedRows[i + 1]._imageIndex && 
+               !allParsedRows[i]._img.endsWithReturn) {
+          const nextRow = allParsedRows[i + 1];
+          currentRow.formula_text_from_ms += nextRow.formula_text_from_ms;
+          if (!currentRow.rite_name_from_ms) currentRow.rite_name_from_ms = nextRow.rite_name_from_ms;
+          if (!currentRow.function_id) currentRow.function_id = nextRow.function_id;
+          toImg = nextRow._img;
+          i++;
+        }
+
+        // Create the final row
+        const row = {
+          _internalId: Date.now() + i * 1000,
+          where_in_ms_from: fromImg.name || "",
+          where_in_ms_to: toImg.name || "",
+          formula_text_from_ms: currentRow.formula_text_from_ms,
+          rite_name_from_ms: currentRow.rite_name_from_ms,
+          function_id: currentRow.function_id,
+          sequence_in_ms: currentRow.sequence_in_ms,
+          digital_page_number: fromImg.page_number || 1,
+        };
+
+        // Fill in any missing columns from the structure
+        currentStructure.forEach((col) => {
+          if (!(col.name in row)) {
+            row[col.name] = col.value ?? "";
+          }
+        });
+
+        mergedRows.push(row);
+        i++;
+      }
+
+      console.log("Transformed data:", mergedRows);
+      setData(mergedRows.length > 0 ? [...mergedRows] : [generateEmptyRow(currentStructure)]);
       console.log(
         "Set transcription data:",
-        newData.length > 0 ? newData : [generateEmptyRow(currentStructure)]
+        mergedRows.length > 0 ? mergedRows : [generateEmptyRow(currentStructure)]
       );
       toaster.create({
         title: "Success",

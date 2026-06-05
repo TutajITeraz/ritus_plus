@@ -51,7 +51,7 @@ const Transcribe = ({
   const [endPage, setEndPage] = useState(images.length);
   const [model, setModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
-  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [addPageBreak, setAddPageBreak] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [totalLines, setTotalLines] = useState(0);
   const [stopRequested, setStopRequested] = useState(false);
@@ -90,7 +90,7 @@ const Transcribe = ({
         }
 
         try {
-          const result = await transcribeImage(imageId, model, ignoreEdges);
+          const result = await transcribeImage(imageId, model, ignoreEdges, addPageBreak);
           if (result.status === "success") {
             transcribedCount += 1;
             linesCount += result.line_count;
@@ -231,6 +231,15 @@ const Transcribe = ({
                       <Checkbox.Indicator />
                   </Checkbox.Control>
                   <Checkbox.Label>Ignore lines touching edges</Checkbox.Label>
+              </Checkbox.Root>
+            </Box>
+            <Box>
+              <Checkbox.Root checked={addPageBreak} onCheckedChange={(e) => setAddPageBreak(e.checked)} disabled={isTranscribing}>
+                  <Checkbox.HiddenInput />
+                  <Checkbox.Control>
+                      <Checkbox.Indicator />
+                  </Checkbox.Control>
+                  <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
               </Checkbox.Root>
             </Box>
             {isTranscribing && (

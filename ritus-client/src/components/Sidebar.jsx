@@ -90,6 +90,7 @@ const Sidebar = ({
   const [transcribeModel, setTranscribeModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
   const [transcribeMode, setTranscribeMode] = useState("skip");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
+  const [addPageBreak, setAddPageBreak] = useState(false);
   const [transcribeRangeFrom, setTranscribeRangeFrom] = useState(1);
   const [transcribeRangeTo, setTranscribeRangeTo] = useState(1);
   const [transcribeStarting, setTranscribeStarting] = useState(false);
@@ -444,6 +445,7 @@ const Sidebar = ({
         ignoreEdges,
         transcribeMode === "range" ? rangeFrom : null,
         transcribeMode === "range" ? rangeTo : null,
+        addPageBreak
       );
       setTranscribeJob({
         status: "running",
@@ -897,6 +899,15 @@ const Sidebar = ({
                               <Checkbox.Indicator />
                           </Checkbox.Control>
                           <Checkbox.Label>Ignore short lines near borders (margin notes/noise)</Checkbox.Label>
+                      </Checkbox.Root>
+                  </Stack>
+                  <Stack>
+                      <Checkbox.Root checked={addPageBreak} onCheckedChange={(e) => setAddPageBreak(e.checked)}>
+                          <Checkbox.HiddenInput />
+                          <Checkbox.Control>
+                              <Checkbox.Indicator />
+                          </Checkbox.Control>
+                          <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
                       </Checkbox.Root>
                   </Stack>
                 </Stack>

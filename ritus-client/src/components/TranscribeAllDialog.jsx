@@ -10,6 +10,7 @@ import {
   createListCollection,
   RadioGroup,
   HStack,
+  Checkbox,
 } from "@chakra-ui/react";
 import { toaster } from "@/components/ui/toaster";
 import { startBatchTranscribe } from "../apiUtils";
@@ -38,6 +39,7 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
   const [open, setOpen] = useState(false);
   const [model, setModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
   const [mode, setMode] = useState("skip");
+  const [addPageBreak, setAddPageBreak] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
 
   const eligible = (projects || []).filter((p) => p.image_count > 0);
@@ -50,7 +52,7 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
     await Promise.all(
       eligible.map(async (p) => {
         try {
-          await startBatchTranscribe(p.id, model, mode);
+          await startBatchTranscribe(p.id, model, mode, true, null, null, addPageBreak);
           started.push(p.id);
         } catch (e) {
           failed.push(p.name);
@@ -169,6 +171,16 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
                       </HStack>
                     </Stack>
                   </RadioGroup.Root>
+                </Stack>
+
+                <Stack>
+                  <Checkbox.Root checked={addPageBreak} onCheckedChange={(e) => setAddPageBreak(e.checked)}>
+                    <Checkbox.HiddenInput />
+                    <Checkbox.Control>
+                      <Checkbox.Indicator />
+                    </Checkbox.Control>
+                    <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
+                  </Checkbox.Root>
                 </Stack>
               </Stack>
             </Dialog.Body>

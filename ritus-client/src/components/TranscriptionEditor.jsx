@@ -1,6 +1,6 @@
 import React, { useRef, useState, useCallback, useEffect } from "react";
 import { Box, Stack, Button } from "@chakra-ui/react";
-import { FaSave } from "react-icons/fa";
+import { FaSave, FaLevelDownAlt } from "react-icons/fa";
 import { toaster } from "@/components/ui/toaster";
 
 const TranscriptionEditor = ({
@@ -224,6 +224,25 @@ const TranscriptionEditor = ({
     }
   };
 
+  // Insert line break at cursor
+  const insertLineBreak = () => {
+    if (isDisabled) {
+      console.debug("Insert line break ignored: Editor is disabled");
+      return;
+    }
+    try {
+      const text = " \n⏎\n";
+      document.execCommand("insertText", false, text);
+      cleanEditor();
+      const taggedText = parseToTaggedText(editorRef.current.innerHTML).trim();
+      setLocalContent(taggedText);
+      setTranscriptionText(taggedText);
+      console.debug("Line break inserted, updated transcriptionText:", taggedText);
+    } catch (e) {
+      console.debug("Error inserting line break:", e.message);
+    }
+  };
+
   // Handle save button click
   const handleSave = () => {
     if (isDisabled) {
@@ -281,14 +300,17 @@ const TranscriptionEditor = ({
       />
       {!isDisabled && (
         <Stack direction="row" spacing={2} width="100%">
-          <Button size="sm" onClick={toggleRemoveFormat} flex="1">
+          <Button size="sm" onClick={toggleRemoveFormat} flex="0.4">
             Text
           </Button>
-          <Button size="sm" colorPalette="red" onClick={toggleBold} flex="1">
+          <Button size="sm" colorPalette="red" onClick={toggleBold} flex="0.8">
             Rite in a rubric
           </Button>
-          <Button size="sm" colorPalette="blue" onClick={toggleItalic} flex="1">
+          <Button size="sm" colorPalette="blue" onClick={toggleItalic} flex="0.8">
             Prayer function
+          </Button>
+          <Button size="sm" onClick={insertLineBreak} flex="0.1">
+            ⏎
           </Button>
         </Stack>
       )}
