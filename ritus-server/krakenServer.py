@@ -486,7 +486,7 @@ def hsl_to_rgb(hsl):
     return (rgb * 255).astype(np.uint8)
 
 
-def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False):
+def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0):
     global baseline_model, last_ocr_model_name, ocr_model, selected_device
     model_path = MODEL_PATHS.get(model_name)
     if not model_path:
@@ -574,7 +574,7 @@ def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_br
         
         # Split line by color and get new line segments
         try:
-             split_lines = split_line_boundary_by_color(color_image, line, i, debug_dir, window_size=80, red_threshold=10)
+             split_lines = split_line_boundary_by_color(color_image, line, i, window_size=80, red_threshold=red_threshold)
         except Exception as e:
              logger.error(f"Failed to split line {i+1}: {e}")
              split_lines = [line]
@@ -1154,6 +1154,7 @@ def run_batch_transcribe(
     range_from=None,
     range_to=None,
     add_page_break=False,
+    red_threshold=5.0,
 ):
     """
     Transcribe all images in a project in a background thread.
@@ -1239,6 +1240,7 @@ def run_batch_transcribe(
                             model_name,
                             ignore_edges=ignore_edges,
                             add_page_break=add_page_break,
+                            red_threshold=red_threshold,
                         )
                         if isinstance(result, tuple):
                             logger.error(f"Transcription failed for image {image_id}: {result[0]}")
@@ -1345,16 +1347,22 @@ def start_batch_transcribe(project_id):
     else:
         add_page_break = bool(add_page_break)
 
+    try:
+        red_threshold = float(body.get("red_threshold", 5.0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "red_threshold must be a number"}), 400
+    red_threshold = max(0.0, min(25.0, red_threshold))
+
     Thread(
         target=run_batch_transcribe,
-        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges, range_from, range_to, add_page_break),
+        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges, range_from, range_to, add_page_break, red_threshold),
         daemon=True,
     ).start()
 
     logger.info(
         f"Started batch transcription for project {project_id} "
         f"(mode={mode}, model={model_name}, ignore_edges={ignore_edges}, add_page_break={add_page_break}, "
-        f"range_from={range_from}, range_to={range_to})"
+        f"red_threshold={red_threshold}, range_from={range_from}, range_to={range_to})"
     )
     return jsonify({"message": "Transcription started", "job_id": job_id}), 202
 
@@ -2000,9 +2008,14 @@ def transcribe_by_id(image_id):
     ignore_edges = (ignore_edges_str.lower() == 'true')
     add_page_break_str = request.form.get("addPageBreak", "false")
     add_page_break = (add_page_break_str.lower() == 'true')
+    try:
+        red_threshold = float(request.form.get("redThreshold", 5.0))
+    except (TypeError, ValueError):
+        return jsonify({"status": "error", "message": "redThreshold must be a number", "line_count": 0}), 400
+    red_threshold = max(0.0, min(25.0, red_threshold))
     
     try:
-        result = transcribe_image_by_id(image_id, model_name, ignore_edges=ignore_edges, add_page_break=add_page_break)
+        result = transcribe_image_by_id(image_id, model_name, ignore_edges=ignore_edges, add_page_break=add_page_break, red_threshold=red_threshold)
         if isinstance(result, tuple):
             logger.error(f"Error in transcribe_by_id for ID {image_id}: {result[0]}")
             return jsonify({"status": "error", "message": result[0], "line_count": 0}), result[1]

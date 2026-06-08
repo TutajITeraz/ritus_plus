@@ -41,6 +41,11 @@ import { useAuth } from "../App";
 import { toaster } from "@/components/ui/toaster";
 import BatchProjectCreator from "../components/BatchProjectCreator";
 import TranscribeAllDialog from "../components/TranscribeAllDialog";
+import RedSensitivitySlider from "../components/RedSensitivitySlider";
+import {
+  DEFAULT_RED_SENSITIVITY,
+  sensitivityToThreshold,
+} from "../utils/redSensitivity";
 
 const typeCollection = createListCollection({
   items: [
@@ -152,6 +157,7 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
   const [mode, setMode] = useState("skip");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
   const [addPageBreak, setAddPageBreak] = useState(false);
+  const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
   const [rangeFrom, setRangeFrom] = useState(1);
   const [rangeTo, setRangeTo] = useState(project.image_count || 1);
 
@@ -297,11 +303,15 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
                         <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
                     </Checkbox.Root>
                 </Stack>
+                <RedSensitivitySlider
+                  sensitivity={redSensitivity}
+                  onSensitivityChange={setRedSensitivity}
+                />
               </Stack>
             </Dialog.Body>
             <Dialog.Footer>
               <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button colorPalette="purple" onClick={() => { setOpen(false); onStart(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak); }}>
+              <Button colorPalette="purple" onClick={() => { setOpen(false); onStart(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, sensitivityToThreshold(redSensitivity)); }}>
                 Start Transcription
               </Button>
             </Dialog.Footer>
@@ -497,7 +507,7 @@ const ProjectList = () => {
     };
   }, [transcribeJobStatuses]);
 
-  const handleStartTranscribe = async (projectId, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak) => {
+  const handleStartTranscribe = async (projectId, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold = sensitivityToThreshold(DEFAULT_RED_SENSITIVITY)) => {
     const parsedRangeFrom = Number(rangeFrom);
     const parsedRangeTo = Number(rangeTo);
     const project = [...projectData.owned, ...projectData.shared].find((entry) => entry.id === projectId);
@@ -522,7 +532,8 @@ const ProjectList = () => {
         ignoreEdges,
         mode === "range" ? parsedRangeFrom : null,
         mode === "range" ? parsedRangeTo : null,
-        addPageBreak
+        addPageBreak,
+        redThreshold
       );
       setTranscribeJobStatuses((prev) => ({
         ...prev,
@@ -673,7 +684,7 @@ const ProjectList = () => {
       <Flex justify="space-between" align="center" mb={4}>
         <Image src="/logo.svg" alt="Ritus Logo" height="40px" />
         <HStack>
-          <Text fontSize="sm" color="gray.500">v. 1.11</Text>
+          <Text fontSize="sm" color="gray.500">v. 1.12</Text>
           {currentUser && (
             <>
               <Text fontSize="sm">Welcome, {currentUser.username}</Text>
@@ -878,7 +889,7 @@ const ProjectList = () => {
                     <TranscribeProjectStatus
                       project={project}
                       jobStatus={transcribeJobStatuses[project.id]}
-                      onStart={(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak) => handleStartTranscribe(project.id, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak)}
+                      onStart={(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold) => handleStartTranscribe(project.id, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold)}
                       onCancel={() => handleCancelTranscribe(project.id)}
                     />
                     <Button

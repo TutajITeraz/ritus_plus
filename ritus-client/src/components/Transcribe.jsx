@@ -18,6 +18,11 @@ import {
 } from "@chakra-ui/react";
 import { toaster } from "@/components/ui/toaster";
 import { transcribeImage } from "../apiUtils";
+import RedSensitivitySlider from "./RedSensitivitySlider";
+import {
+  DEFAULT_RED_SENSITIVITY,
+  sensitivityToThreshold,
+} from "../utils/redSensitivity";
 
 // Utility function to sleep for a given number of milliseconds
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -52,6 +57,8 @@ const Transcribe = ({
   const [model, setModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
   const [addPageBreak, setAddPageBreak] = useState(false);
+  const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [totalLines, setTotalLines] = useState(0);
   const [stopRequested, setStopRequested] = useState(false);
@@ -90,7 +97,13 @@ const Transcribe = ({
         }
 
         try {
-          const result = await transcribeImage(imageId, model, ignoreEdges, addPageBreak);
+          const result = await transcribeImage(
+            imageId,
+            model,
+            ignoreEdges,
+            addPageBreak,
+            sensitivityToThreshold(redSensitivity)
+          );
           if (result.status === "success") {
             transcribedCount += 1;
             linesCount += result.line_count;
@@ -242,6 +255,11 @@ const Transcribe = ({
                   <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
               </Checkbox.Root>
             </Box>
+            <RedSensitivitySlider
+              sensitivity={redSensitivity}
+              onSensitivityChange={setRedSensitivity}
+              disabled={isTranscribing}
+            />
             {isTranscribing && (
               <>
                 <Progress.Root

@@ -92,7 +92,7 @@ def hsl_to_rgb(hsl):
     
     return (rgb * 255).astype(np.uint8)
 
-def split_line_boundary_by_color(color_image, line, line_index, debug_dir, window_size=80, red_threshold=2):
+def split_line_boundary_by_color(color_image, line, line_index, window_size=80, red_threshold=5.0, debug_dir=None):
     """
     Crop, preprocess with polygon mask, split line into red/black segments based on redness,
     and generate images with baseline/boundary outlines and a histogram plot.
@@ -101,9 +101,9 @@ def split_line_boundary_by_color(color_image, line, line_index, debug_dir, windo
         color_image: PIL Image in original color mode (e.g., RGB).
         line: BaselineLine object with boundary and baseline coordinates.
         line_index: Index of the line (for naming output files).
-        debug_dir: Directory to save images and histogram plot.
+        debug_dir: Optional directory to save debug images and histogram plots.
         window_size: Size of the moving average window for denoising (default: 80).
-        red_threshold: Threshold for redness score to split lines (default: 10).
+        red_threshold: Threshold for redness score to split lines (default: 5.0, ~80% UI sensitivity).
     
     Returns:
         List of new BaselineLine objects with cropped coordinates and added 'color' attribute.
@@ -121,8 +121,6 @@ def split_line_boundary_by_color(color_image, line, line_index, debug_dir, windo
         # debug_image_pil = PILImage.fromarray(cv2.cvtColor(debug_image, cv2.COLOR_BGR2RGB))
         # debug_image_path = os.path.join(debug_dir, f"line_{line_index + 1}_debug.png")
         # debug_image_pil.save(debug_image_path)
-        
-        logger.info(f"Saved debug image for line {line_index + 1} to {debug_image_path}")
         return [line]
     
     # Derive bounding box from boundary coordinates
@@ -186,10 +184,11 @@ def split_line_boundary_by_color(color_image, line, line_index, debug_dir, windo
 
     # enhanced_array_cv = cv2.cvtColor(np.array(enhanced_image), cv2.COLOR_RGB2BGR)
 
-    # Save enhanced image
-    image_path = os.path.join(debug_dir, f"line_{line_index + 1}.png")
-    #enhanced_image.save(image_path)
-    logger.info(f"Saved enhanced color image for line {line_index + 1} to {image_path}")
+    # Save enhanced image (debug only)
+    if debug_dir:
+        image_path = os.path.join(debug_dir, f"line_{line_index + 1}.png")
+        #enhanced_image.save(image_path)
+        logger.info(f"Saved enhanced color image for line {line_index + 1} to {image_path}")
 
     # Verify hsl_enhanced dimensions
     hues, saturations, lightnesses = hsl_enhanced[:, :, 0], hsl_enhanced[:, :, 1], hsl_enhanced[:, :, 2]

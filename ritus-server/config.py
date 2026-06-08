@@ -7,3 +7,6 @@ ADMIN_PASSWORD = "de$tination1SUnknown"  # Change this in production!
 
 # JWT Secret Key
 SECRET_KEY = "lfh-45-fs-4sfs-43ts-43gs-jyt5-zrqw3-gsfs"  # Change this in production!
+
+# Local Ollama model for AI Autofix (production: gemma4:26b)
+OLLAMA_MODEL = "gemma4:e4b"

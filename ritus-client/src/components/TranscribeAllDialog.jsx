@@ -14,6 +14,11 @@ import {
 } from "@chakra-ui/react";
 import { toaster } from "@/components/ui/toaster";
 import { startBatchTranscribe } from "../apiUtils";
+import RedSensitivitySlider from "./RedSensitivitySlider";
+import {
+  DEFAULT_RED_SENSITIVITY,
+  sensitivityToThreshold,
+} from "../utils/redSensitivity";
 
 const models = createListCollection({
   items: [
@@ -40,6 +45,7 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
   const [model, setModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
   const [mode, setMode] = useState("skip");
   const [addPageBreak, setAddPageBreak] = useState(false);
+  const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
   const [isStarting, setIsStarting] = useState(false);
 
   const eligible = (projects || []).filter((p) => p.image_count > 0);
@@ -52,7 +58,16 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
     await Promise.all(
       eligible.map(async (p) => {
         try {
-          await startBatchTranscribe(p.id, model, mode, true, null, null, addPageBreak);
+          await startBatchTranscribe(
+            p.id,
+            model,
+            mode,
+            true,
+            null,
+            null,
+            addPageBreak,
+            sensitivityToThreshold(redSensitivity)
+          );
           started.push(p.id);
         } catch (e) {
           failed.push(p.name);
@@ -182,6 +197,11 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
                     <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
                   </Checkbox.Root>
                 </Stack>
+
+                <RedSensitivitySlider
+                  sensitivity={redSensitivity}
+                  onSensitivityChange={setRedSensitivity}
+                />
               </Stack>
             </Dialog.Body>
             <Dialog.Footer>

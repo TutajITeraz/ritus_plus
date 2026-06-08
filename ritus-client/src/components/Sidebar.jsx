@@ -45,6 +45,11 @@ import { toaster } from "@/components/ui/toaster";
 import { ProgressBar } from "@/components/ui/progress";
 import IiifDownloader from "./IiifDownloader";
 import Transcribe from "./Transcribe";
+import RedSensitivitySlider from "./RedSensitivitySlider";
+import {
+  DEFAULT_RED_SENSITIVITY,
+  sensitivityToThreshold,
+} from "../utils/redSensitivity";
 import TranscriptionEditor from "./TranscriptionEditor";
 import AIAutoFixModal from "./AIAutoFixModal";
 
@@ -91,6 +96,7 @@ const Sidebar = ({
   const [transcribeMode, setTranscribeMode] = useState("skip");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
   const [addPageBreak, setAddPageBreak] = useState(false);
+  const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
   const [transcribeRangeFrom, setTranscribeRangeFrom] = useState(1);
   const [transcribeRangeTo, setTranscribeRangeTo] = useState(1);
   const [transcribeStarting, setTranscribeStarting] = useState(false);
@@ -445,7 +451,8 @@ const Sidebar = ({
         ignoreEdges,
         transcribeMode === "range" ? rangeFrom : null,
         transcribeMode === "range" ? rangeTo : null,
-        addPageBreak
+        addPageBreak,
+        sensitivityToThreshold(redSensitivity)
       );
       setTranscribeJob({
         status: "running",
@@ -910,6 +917,10 @@ const Sidebar = ({
                           <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
                       </Checkbox.Root>
                   </Stack>
+                  <RedSensitivitySlider
+                    sensitivity={redSensitivity}
+                    onSensitivityChange={setRedSensitivity}
+                  />
                 </Stack>
               </Dialog.Body>
               <Dialog.Footer>

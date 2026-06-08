@@ -11,6 +11,7 @@ no longer used (Ollama runs locally).
 """
 
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -20,8 +21,39 @@ from prompt_template import SYSTEM_PROMPT
 OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
 
-# Default model and generation parameters.
-DEFAULT_MODEL = "gemma4:26b"
+# Production default; override locally via config.py (OLLAMA_MODEL) or env OLLAMA_MODEL.
+_PRODUCTION_DEFAULT_MODEL = "gemma4:12b-it-qat" # "gemma4:26b"
+
+
+def get_ollama_model():
+    """Resolve Ollama model: config.py > OLLAMA_MODEL env > domain_config.json > default."""
+    try:
+        import config
+
+        model = getattr(config, "OLLAMA_MODEL", None)
+        if model:
+            return str(model).strip()
+    except ImportError:
+        pass
+
+    env_model = os.environ.get("OLLAMA_MODEL", "").strip()
+    if env_model:
+        return env_model
+
+    config_path = os.path.join(os.path.dirname(__file__), "domain_config.json")
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                model = json.load(f).get("ollama_model", "").strip()
+            if model:
+                return model
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return _PRODUCTION_DEFAULT_MODEL
+
+
+DEFAULT_MODEL = get_ollama_model()
 DEFAULT_TEMPERATURE = 0.08
 DEFAULT_TIMEOUT = 600  # seconds, hard cap on a single request
 THINK_MODE = False     # no-think: disable Qwen/DeepSeek-style reasoning tokens
@@ -195,9 +227,11 @@ def gpt_autofix(question, user_api_key=None, cache=None):
         print(f"Error in gpt_autofix: {response['error']}")
         return response
 
+    model = get_ollama_model()
+
     try:
         result = _run_ollama_chat(
-            model=DEFAULT_MODEL,
+            model=model,
             ocr_text=question,
             system_prompt=SYSTEM_PROMPT,
             temperature=DEFAULT_TEMPERATURE,
@@ -215,7 +249,7 @@ def gpt_autofix(question, user_api_key=None, cache=None):
         print(
             "Ollama autofix: model={model} total={total:.2f}s "
             "tokens={tok} tps={tps} thinking={think}".format(
-                model=DEFAULT_MODEL,
+                model=model,
                 total=result.get("total_time", 0),
                 tok=result.get("tokens_generated", 0),
                 tps=result.get("tokens_per_sec", 0),
@@ -231,4 +265,4 @@ def gpt_autofix(question, user_api_key=None, cache=None):
     return response
 
 
-__all__ = ["gpt_autofix", "get_ollama_models", "DEFAULT_MODEL", "SYSTEM_PROMPT"]
+__all__ = ["gpt_autofix", "get_ollama_models", "get_ollama_model", "DEFAULT_MODEL"]

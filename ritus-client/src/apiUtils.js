@@ -271,12 +271,13 @@ export const updateImage = async (imageId, data) => {
   }
 };
 
-export const transcribeImage = async (imageId, modelName, ignoreEdges = true, addPageBreak = false) => {
+export const transcribeImage = async (imageId, modelName, ignoreEdges = true, addPageBreak = false, redThreshold = 5.0) => {
   try {
     const formData = new FormData();
     formData.append("modelName", modelName);
     formData.append("ignoreEdges", ignoreEdges);
     formData.append("addPageBreak", addPageBreak);
+    formData.append("redThreshold", redThreshold);
     const response = await apiRequest(`${SERVER_URL}/api/transcribe/${imageId}`, {
       method: "POST",
       body: formData,
@@ -740,6 +741,8 @@ export const resetIiifJob = async (projectId) => {
  * @param {boolean} ignoreEdges
  * @param {number|null} rangeFrom
  * @param {number|null} rangeTo
+ * @param {boolean} addPageBreak
+ * @param {number} redThreshold
  */
 export const startBatchTranscribe = async (
   projectId,
@@ -748,9 +751,10 @@ export const startBatchTranscribe = async (
   ignoreEdges = true,
   rangeFrom = null,
   rangeTo = null,
-  addPageBreak = false
+  addPageBreak = false,
+  redThreshold = 5.0
 ) => {
-  const payload = { model_name: modelName, mode, ignore_edges: ignoreEdges, add_page_break: addPageBreak };
+  const payload = { model_name: modelName, mode, ignore_edges: ignoreEdges, add_page_break: addPageBreak, red_threshold: redThreshold };
   if (mode === "range") {
     payload.range_from = rangeFrom;
     payload.range_to = rangeTo;
