@@ -96,6 +96,7 @@ const Sidebar = ({
   const [transcribeMode, setTranscribeMode] = useState("skip");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
   const [addPageBreak, setAddPageBreak] = useState(false);
+  const [enhancedMultiColumn, setEnhancedMultiColumn] = useState(false);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
   const [transcribeRangeFrom, setTranscribeRangeFrom] = useState(1);
   const [transcribeRangeTo, setTranscribeRangeTo] = useState(1);
@@ -452,7 +453,8 @@ const Sidebar = ({
         transcribeMode === "range" ? rangeFrom : null,
         transcribeMode === "range" ? rangeTo : null,
         addPageBreak,
-        sensitivityToThreshold(redSensitivity)
+        sensitivityToThreshold(redSensitivity),
+        enhancedMultiColumn
       );
       setTranscribeJob({
         status: "running",
@@ -915,6 +917,15 @@ const Sidebar = ({
                               <Checkbox.Indicator />
                           </Checkbox.Control>
                           <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
+                      </Checkbox.Root>
+                  </Stack>
+                  <Stack>
+                      <Checkbox.Root checked={enhancedMultiColumn} onCheckedChange={(e) => setEnhancedMultiColumn(e.checked)}>
+                          <Checkbox.HiddenInput />
+                          <Checkbox.Control>
+                              <Checkbox.Indicator />
+                          </Checkbox.Control>
+                          <Checkbox.Label>Enhanced multi column detection</Checkbox.Label>
                       </Checkbox.Root>
                   </Stack>
                   <RedSensitivitySlider

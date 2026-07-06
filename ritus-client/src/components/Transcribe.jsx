@@ -57,6 +57,7 @@ const Transcribe = ({
   const [model, setModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
   const [addPageBreak, setAddPageBreak] = useState(false);
+  const [enhancedMultiColumn, setEnhancedMultiColumn] = useState(false);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
@@ -102,7 +103,8 @@ const Transcribe = ({
             model,
             ignoreEdges,
             addPageBreak,
-            sensitivityToThreshold(redSensitivity)
+            sensitivityToThreshold(redSensitivity),
+            enhancedMultiColumn
           );
           if (result.status === "success") {
             transcribedCount += 1;
@@ -253,6 +255,15 @@ const Transcribe = ({
                       <Checkbox.Indicator />
                   </Checkbox.Control>
                   <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
+              </Checkbox.Root>
+            </Box>
+            <Box>
+              <Checkbox.Root checked={enhancedMultiColumn} onCheckedChange={(e) => setEnhancedMultiColumn(e.checked)} disabled={isTranscribing}>
+                  <Checkbox.HiddenInput />
+                  <Checkbox.Control>
+                      <Checkbox.Indicator />
+                  </Checkbox.Control>
+                  <Checkbox.Label>Enhanced multi column detection</Checkbox.Label>
               </Checkbox.Root>
             </Box>
             <RedSensitivitySlider

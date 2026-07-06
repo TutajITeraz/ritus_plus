@@ -271,13 +271,14 @@ export const updateImage = async (imageId, data) => {
   }
 };
 
-export const transcribeImage = async (imageId, modelName, ignoreEdges = true, addPageBreak = false, redThreshold = 5.0) => {
+export const transcribeImage = async (imageId, modelName, ignoreEdges = true, addPageBreak = false, redThreshold = 5.0, enhancedMultiColumn = false) => {
   try {
     const formData = new FormData();
     formData.append("modelName", modelName);
     formData.append("ignoreEdges", ignoreEdges);
     formData.append("addPageBreak", addPageBreak);
     formData.append("redThreshold", redThreshold);
+    formData.append("enhancedMultiColumn", enhancedMultiColumn);
     const response = await apiRequest(`${SERVER_URL}/api/transcribe/${imageId}`, {
       method: "POST",
       body: formData,
@@ -743,6 +744,7 @@ export const resetIiifJob = async (projectId) => {
  * @param {number|null} rangeTo
  * @param {boolean} addPageBreak
  * @param {number} redThreshold
+ * @param {boolean} enhancedMultiColumn
  */
 export const startBatchTranscribe = async (
   projectId,
@@ -752,9 +754,10 @@ export const startBatchTranscribe = async (
   rangeFrom = null,
   rangeTo = null,
   addPageBreak = false,
-  redThreshold = 5.0
+  redThreshold = 5.0,
+  enhancedMultiColumn = false
 ) => {
-  const payload = { model_name: modelName, mode, ignore_edges: ignoreEdges, add_page_break: addPageBreak, red_threshold: redThreshold };
+  const payload = { model_name: modelName, mode, ignore_edges: ignoreEdges, add_page_break: addPageBreak, red_threshold: redThreshold, enhanced_multi_column: enhancedMultiColumn };
   if (mode === "range") {
     payload.range_from = rangeFrom;
     payload.range_to = rangeTo;

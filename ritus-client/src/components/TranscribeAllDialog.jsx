@@ -45,6 +45,7 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
   const [model, setModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
   const [mode, setMode] = useState("skip");
   const [addPageBreak, setAddPageBreak] = useState(false);
+  const [enhancedMultiColumn, setEnhancedMultiColumn] = useState(false);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
   const [isStarting, setIsStarting] = useState(false);
 
@@ -66,7 +67,8 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
             null,
             null,
             addPageBreak,
-            sensitivityToThreshold(redSensitivity)
+            sensitivityToThreshold(redSensitivity),
+            enhancedMultiColumn
           );
           started.push(p.id);
         } catch (e) {
@@ -195,6 +197,16 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
                       <Checkbox.Indicator />
                     </Checkbox.Control>
                     <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
+                  </Checkbox.Root>
+                </Stack>
+
+                <Stack>
+                  <Checkbox.Root checked={enhancedMultiColumn} onCheckedChange={(e) => setEnhancedMultiColumn(e.checked)}>
+                    <Checkbox.HiddenInput />
+                    <Checkbox.Control>
+                      <Checkbox.Indicator />
+                    </Checkbox.Control>
+                    <Checkbox.Label>Enhanced multi column detection</Checkbox.Label>
                   </Checkbox.Root>
                 </Stack>
 

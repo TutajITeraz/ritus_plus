@@ -109,6 +109,25 @@ else
     print_and_log "Skipping PyTorch installation."
 fi
 
+# Optional: LayoutParser, used by "Enhanced multi column detection" to
+# properly detect titles/columns/figures on complex manuscript pages. This
+# is intentionally NOT run through run_cmd (which exits the whole install on
+# failure) since it's an optional nice-to-have, not a hard dependency - if
+# it fails to install or isn't installed at all, that feature just falls
+# back to a built-in geometric heuristic that needs no extra packages.
+read -p "Do you want to install optional LayoutParser support for better multi-column/title detection (uses the EfficientDet backend, no compiler needed)? (y/n): " layoutparser_choice
+if [[ "$layoutparser_choice" == "y" || "$layoutparser_choice" == "Y" ]]; then
+    print_and_log "Installing layoutparser[effdet]..."
+    pip install "layoutparser[effdet]" >> "$LOGFILE" 2>&1
+    if [[ $? -ne 0 ]]; then
+        print_and_log "WARNING: layoutparser[effdet] failed to install. Enhanced multi column detection will still work using the built-in geometric fallback. See $LOGFILE for details."
+    else
+        print_and_log "layoutparser[effdet] installed. The PubLayNet model weights will download automatically the first time it's used."
+    fi
+else
+    print_and_log "Skipping optional LayoutParser install."
+fi
+
 # Download and install models using Kraken
 print_and_log "Fetching Kraken models..."
 

@@ -124,6 +124,8 @@ def _promote_waiting_domain(domain):
                 return
 from batch_analysis import batch_process_project
 from image_processing import split_line_boundary_by_color
+from multi_column_layout import reorder_lines_for_multi_column
+import layout_parser_preprocessing
 from ai_tools import gpt_autofix
 from secret_user_api_key import user_api_key
 from cache_config import cache, init_cache
@@ -293,7 +295,7 @@ if not NO_KRAKEN:
         
         return is_short and near_edge
 
-    def transcribe_image(image_file, model_name, ignore_edges=False):
+    def transcribe_image(image_file, model_name, ignore_edges=False, enhanced_multi_column=False):
         global baseline_model, last_ocr_model_name, ocr_model, selected_device
 
         import time
@@ -343,7 +345,14 @@ if not NO_KRAKEN:
             return "Baseline model is not loaded", 500
 
         seg = blla.segment(image, model=baseline_model, device=selected_device)
-        
+
+        # Optionally re-sort lines so a centered title is followed by the
+        # left column top-to-bottom, then the right column top-to-bottom.
+        # This is a no-op when no confident two-column layout is detected.
+        if enhanced_multi_column:
+            page_width, page_height = image.size
+            seg.lines = reorder_lines_for_multi_column(seg.lines, page_width, page_height)
+
         # Filter lines based on width/edge proximity
         if ignore_edges:
             width, _ = image.size
@@ -486,7 +495,7 @@ def hsl_to_rgb(hsl):
     return (rgb * 255).astype(np.uint8)
 
 
-def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0):
+def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0, enhanced_multi_column=False):
     global baseline_model, last_ocr_model_name, ocr_model, selected_device
     model_path = MODEL_PATHS.get(model_name)
     if not model_path:
@@ -546,6 +555,38 @@ def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_br
         return "Baseline model is not loaded", 500
         
     seg = blla.segment(ocr_image, model=baseline_model, device=selected_device, text_direction='horizontal-tb')
+
+    # Optionally re-sort lines into a sensible reading order for multi-
+    # column pages (title/subtitle, then each column top-to-bottom). blla
+    # tends to interleave column lines when a title or a marginalia strip
+    # confuses its own column-detection heuristics.
+    #
+    # Preferred path: run LayoutParser on the page to actually detect the
+    # title/column/figure regions and use those (see
+    # layout_parser_preprocessing.py) - this is the only approach that can
+    # correctly keep a column's reading order intact when an inline
+    # illustration splits it into a "before" and "after" piece, since it
+    # sees the illustration as a region even though kraken never produces
+    # OCR lines over it.
+    #
+    # Fallback path: if layoutparser (or its model) isn't installed/usable,
+    # fall back to the purely geometric line-based heuristic in
+    # multi_column_layout.py, which needs no extra dependencies.
+    if enhanced_multi_column:
+        reordered_lines = None
+        try:
+            reordered_lines = layout_parser_preprocessing.reorder_lines_using_layout_parser(
+                seg.lines, color_image
+            )
+        except Exception:
+            logger.exception("LayoutParser-based reordering raised unexpectedly")
+            reordered_lines = None
+
+        if reordered_lines is not None:
+            seg.lines = reordered_lines
+        else:
+            page_width, page_height = ocr_image.size
+            seg.lines = reorder_lines_for_multi_column(seg.lines, page_width, page_height)
 
     # Filter lines based on width/edge proximity
     if ignore_edges:
@@ -1155,6 +1196,7 @@ def run_batch_transcribe(
     range_to=None,
     add_page_break=False,
     red_threshold=5.0,
+    enhanced_multi_column=False,
 ):
     """
     Transcribe all images in a project in a background thread.
@@ -1241,6 +1283,7 @@ def run_batch_transcribe(
                             ignore_edges=ignore_edges,
                             add_page_break=add_page_break,
                             red_threshold=red_threshold,
+                            enhanced_multi_column=enhanced_multi_column,
                         )
                         if isinstance(result, tuple):
                             logger.error(f"Transcription failed for image {image_id}: {result[0]}")
@@ -1353,16 +1396,23 @@ def start_batch_transcribe(project_id):
         return jsonify({"error": "red_threshold must be a number"}), 400
     red_threshold = max(0.0, min(25.0, red_threshold))
 
+    enhanced_multi_column = body.get("enhanced_multi_column", False)
+    if isinstance(enhanced_multi_column, str):
+        enhanced_multi_column = enhanced_multi_column.lower() == "true"
+    else:
+        enhanced_multi_column = bool(enhanced_multi_column)
+
     Thread(
         target=run_batch_transcribe,
-        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges, range_from, range_to, add_page_break, red_threshold),
+        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges, range_from, range_to, add_page_break, red_threshold, enhanced_multi_column),
         daemon=True,
     ).start()
 
     logger.info(
         f"Started batch transcription for project {project_id} "
         f"(mode={mode}, model={model_name}, ignore_edges={ignore_edges}, add_page_break={add_page_break}, "
-        f"red_threshold={red_threshold}, range_from={range_from}, range_to={range_to})"
+        f"red_threshold={red_threshold}, range_from={range_from}, range_to={range_to}, "
+        f"enhanced_multi_column={enhanced_multi_column})"
     )
     return jsonify({"message": "Transcription started", "job_id": job_id}), 202
 
@@ -1974,9 +2024,11 @@ if not NO_KRAKEN:
         # Checkbox often sends "true" string or nothing
         ignore_edges_str = request.form.get("ignoreEdges", "false")
         ignore_edges = (ignore_edges_str.lower() == 'true')
+        enhanced_multi_column_str = request.form.get("enhancedMultiColumn", "false")
+        enhanced_multi_column = (enhanced_multi_column_str.lower() == 'true')
 
         try:
-            transcribed_results = transcribe_image(temp_path, model_name, ignore_edges=ignore_edges)
+            transcribed_results = transcribe_image(temp_path, model_name, ignore_edges=ignore_edges, enhanced_multi_column=enhanced_multi_column)
             if isinstance(transcribed_results, tuple):
                 logger.error(f"Error in transcribe: {transcribed_results[0]}")
                 return jsonify({"status": "error", "text": transcribed_results[0]}), transcribed_results[1]
@@ -2008,14 +2060,23 @@ def transcribe_by_id(image_id):
     ignore_edges = (ignore_edges_str.lower() == 'true')
     add_page_break_str = request.form.get("addPageBreak", "false")
     add_page_break = (add_page_break_str.lower() == 'true')
+    enhanced_multi_column_str = request.form.get("enhancedMultiColumn", "false")
+    enhanced_multi_column = (enhanced_multi_column_str.lower() == 'true')
     try:
         red_threshold = float(request.form.get("redThreshold", 5.0))
     except (TypeError, ValueError):
         return jsonify({"status": "error", "message": "redThreshold must be a number", "line_count": 0}), 400
     red_threshold = max(0.0, min(25.0, red_threshold))
-    
+
     try:
-        result = transcribe_image_by_id(image_id, model_name, ignore_edges=ignore_edges, add_page_break=add_page_break, red_threshold=red_threshold)
+        result = transcribe_image_by_id(
+            image_id,
+            model_name,
+            ignore_edges=ignore_edges,
+            add_page_break=add_page_break,
+            red_threshold=red_threshold,
+            enhanced_multi_column=enhanced_multi_column,
+        )
         if isinstance(result, tuple):
             logger.error(f"Error in transcribe_by_id for ID {image_id}: {result[0]}")
             return jsonify({"status": "error", "message": result[0], "line_count": 0}), result[1]
