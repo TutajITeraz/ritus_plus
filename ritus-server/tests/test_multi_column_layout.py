@@ -11,8 +11,17 @@ library, so they can be run directly with plain python3:
 )
 """
 
+import os
+import sys
 from dataclasses import dataclass, field
 from typing import List, Tuple
+
+# This file lives in tests/, but multi_column_layout.py lives one directory
+# up (ritus-server/). Make sure that directory is on sys.path so the import
+# below works no matter what the current working directory is when this is
+# run (plain `python3 tests/test_multi_column_layout.py`, `pytest` from
+# ritus-server/, or `pytest` from inside tests/ all work).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from multi_column_layout import reorder_lines_for_multi_column
 

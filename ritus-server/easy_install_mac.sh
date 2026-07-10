@@ -55,21 +55,24 @@ run_cmd ".venv/bin/pip cache purge"
 #print_and_log "Uninstalling any existing packages to avoid conflicts..."
 #run_cmd ".venv/bin/pip uninstall -y flask flask-cors kraken lightning lightning-utilities matplotlib numpy opencv-python pillow python-bidi pytorch-lightning scikit-image scipy shapely torch torchmetrics torchvision torchaudio backports.tarfile httpx openai flask-caching flask-migrate flask-sqlalchemy rapidfuzz || true"
 
-# Pin versions compatible with kraken
-print_and_log "Installing numpy==1.23.0..."
-run_cmd ".venv/bin/pip install numpy==1.23.0 --quiet"
+# Pin versions compatible with kraken==6.0.3 (validated together in this
+# repo's local dev venv: numpy 2.2.6, torch 2.5.1). Keep these updated
+# together as a set - kraken's own metadata (`pip show kraken`) lists its
+# exact required ranges if you need to bump further.
+print_and_log "Installing numpy==2.2.6..."
+run_cmd ".venv/bin/pip install numpy==2.2.6 --quiet"
 
-print_and_log "Installing scikit-image==0.21.0..."
-run_cmd ".venv/bin/pip install scikit-image==0.21.0 --quiet"
+print_and_log "Installing scikit-image==0.24.0..."
+run_cmd ".venv/bin/pip install scikit-image==0.24.0 --quiet"
 
-print_and_log "Installing scipy==1.10.1..."
-run_cmd ".venv/bin/pip install scipy==1.10.1 --quiet"
+print_and_log "Installing scipy==1.13.1..."
+run_cmd ".venv/bin/pip install scipy==1.13.1 --quiet"
 
 print_and_log "Installing torchmetrics==1.4.3..."
 run_cmd ".venv/bin/pip install torchmetrics==1.4.3 --quiet"
 
-print_and_log "Installing lightning==2.2.5..."
-run_cmd ".venv/bin/pip install lightning==2.2.5 --quiet"
+print_and_log "Installing lightning==2.4.0..."
+run_cmd ".venv/bin/pip install lightning==2.4.0 --quiet"
 
 print_and_log "Installing pytorch-lightning==2.4.0..."
 run_cmd ".venv/bin/pip install pytorch-lightning==2.4.0 --quiet"
@@ -77,19 +80,27 @@ run_cmd ".venv/bin/pip install pytorch-lightning==2.4.0 --quiet"
 print_and_log "Installing lightning-utilities==0.11.7..."
 run_cmd ".venv/bin/pip install lightning-utilities==0.11.7 --quiet"
 
-print_and_log "Installing python-bidi==0.4.2..."
-run_cmd ".venv/bin/pip install python-bidi==0.4.2 --quiet"
+print_and_log "Installing python-bidi==0.6.7..."
+run_cmd ".venv/bin/pip install python-bidi==0.6.7 --quiet"
 
-print_and_log "Installing shapely==1.8.5.post1..."
-run_cmd ".venv/bin/pip install shapely==1.8.5.post1 --quiet"
+print_and_log "Installing shapely==2.0.7..."
+run_cmd ".venv/bin/pip install shapely==2.0.7 --quiet"
 
-# Install Kraken without dependencies to avoid pulling in incompatible versions
-print_and_log "Installing kraken==5.2.7..."
-run_cmd ".venv/bin/pip install kraken==5.2.7 --quiet"
+# Install Kraken WITHOUT --no-deps was the original intent here, but that's
+# exactly what let kraken silently drift from 5.2.7 to 6.0.3 on this machine
+# in the first place: a later step (`pip install git+.../party.git`, which
+# requires torch~=2.5.0) forced torch forward, and because nothing pinned
+# kraken as --no-deps, pip's resolver was free to swap kraken for a
+# torch-2.5-compatible release with no explicit command ever saying so (see
+# install.log). Now that we're deliberately targeting kraken==6.0.3, install
+# it with --no-deps so this can't happen again silently - its dependencies
+# are pinned explicitly above/below instead.
+print_and_log "Installing kraken==6.0.3..."
+run_cmd ".venv/bin/pip install kraken==6.0.3 --no-deps --quiet"
 
 # Install kraken dependencies explicitly
 print_and_log "Installing kraken dependencies..."
-run_cmd ".venv/bin/pip install coremltools~=6.0 importlib-resources>=1.3.0 jsonschema lxml protobuf>=3.0.0 pyarrow regex rich scikit-learn~=1.2.1 threadpoolctl~=3.4.0 --quiet"
+run_cmd ".venv/bin/pip install coremltools==8.3.0 jsonschema lxml protobuf pyarrow regex rich==14.0.0 scikit-learn==1.5.2 threadpoolctl==3.5.0 jinja2 htrmopo iso639-lang platformdirs click --quiet"
 
 print_and_log "Installing flask..."
 run_cmd ".venv/bin/pip install flask --quiet"
@@ -130,30 +141,32 @@ run_cmd ".venv/bin/pip install git+https://github.com/mittagessen/party.git --qu
 print_and_log "Installing optional dependencies (backports.tarfile, httpx, openai)..."
 run_cmd ".venv/bin/pip install backports.tarfile httpx openai --force-reinstall --quiet"
 
-print_and_log "Reinstalling numpy==1.23.0 to ensure compatibility..."
-run_cmd ".venv/bin/pip install --force-reinstall numpy==1.23.0 --quiet"
+print_and_log "Reinstalling numpy==2.2.6 to ensure compatibility (party/openai reinstalls above can pull in a different numpy)..."
+run_cmd ".venv/bin/pip install --force-reinstall numpy==2.2.6 --quiet"
 
 # Check if user wants to install Torch for acceleration
 read -p "Do you want to install PyTorch for GPU/CPU acceleration (this can take up to 10GB)? (y/n): " accel_choice
 
+# kraken==6.0.3 requires torch>=2.4.0,<=2.9. torch==2.5.1 is what's
+# validated locally alongside it.
 if [[ "$accel_choice" == "y" || "$accel_choice" == "Y" ]]; then
     if [[ "$(uname)" == "Darwin" ]]; then
         print_and_log "Checking for M1/M2 chip compatibility..."
         if [[ $(sysctl -n machdep.cpu.brand_string) == *"Apple M1"* || $(sysctl -n machdep.cpu.brand_string) == *"Apple M2"* ]]; then
-            print_and_log "Installing torch==2.1.2 with MPS support (for Apple Silicon)..."
-            run_cmd ".venv/bin/pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --quiet"
+            print_and_log "Installing torch==2.5.1 with MPS support (for Apple Silicon)..."
+            run_cmd ".venv/bin/pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --quiet"
         else
-            print_and_log "Installing CPU-only version of torch==2.1.2..."
-            run_cmd ".venv/bin/pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --quiet"
+            print_and_log "Installing CPU-only version of torch==2.5.1..."
+            run_cmd ".venv/bin/pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --quiet"
         fi
     else
         read -p "Do you have CUDA or ROCm installed? (y/n): " gpu_choice
         if [[ "$gpu_choice" == "y" || "$gpu_choice" == "Y" ]]; then
-            print_and_log "Installing torch==2.1.2 with GPU support..."
-            run_cmd ".venv/bin/pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --quiet"
+            print_and_log "Installing torch==2.5.1 with GPU support..."
+            run_cmd ".venv/bin/pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --quiet"
         else
-            print_and_log "Installing CPU-only version of torch==2.1.2..."
-            run_cmd ".venv/bin/pip install torch==2.1.2+cpu torchvision==0.16.2+cpu torchaudio==2.1.2+cpu -f https://download.pytorch.org/whl/cpu.html --quiet"
+            print_and_log "Installing CPU-only version of torch==2.5.1..."
+            run_cmd ".venv/bin/pip install torch==2.5.1+cpu torchvision==0.20.1+cpu torchaudio==2.5.1+cpu -f https://download.pytorch.org/whl/cpu.html --quiet"
         fi
     fi
 else

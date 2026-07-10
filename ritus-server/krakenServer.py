@@ -1,7 +1,9 @@
 import sys
 import argparse
 import os
+import hashlib
 import logging
+import logging.handlers
 import json
 import re
 import cv2
@@ -131,8 +133,66 @@ from secret_user_api_key import user_api_key
 from cache_config import cache, init_cache
 
 # --- KONFIGURACJA LOGOWANIA ---
-logging.basicConfig(level=logging.INFO)
+# When running under `python3 krakenServer.py` directly, basicConfig's
+# default StreamHandler is enough (you see it in the terminal). But when
+# this runs as a background service (e.g. via run_server.sh with no
+# attached terminal, or under Gunicorn), stdout/stderr is often not
+# captured anywhere, which is why "there is no log in the directory of the
+# software" - nothing was ever writing one. This adds a rotating log file
+# (ritus-server/logs/server.log) in addition to the console, so logs always
+# land somewhere on disk regardless of how the process is started.
+_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+_LOG_FILE = os.path.join(_LOG_DIR, "server.log")
+
+_log_formatter = logging.Formatter(
+    "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+)
+_file_handler = logging.handlers.RotatingFileHandler(
+    _LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5
+)
+_file_handler.setFormatter(_log_formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(), _file_handler])
 logger = logging.getLogger(__name__)
+logger.info("Logging to console and to %s", _LOG_FILE)
+
+# Log, once at startup, exactly which reordering strategy is available in
+# *this* environment. "Enhanced multi column detection" prefers
+# layout_parser_preprocessing (a real layout-detection model) and only
+# falls back to the pure-geometry heuristic in multi_column_layout.py if
+# layoutparser isn't importable or its model can't load. If local and
+# production give different results for the same image, this line is the
+# first thing to compare between the two environments' logs.
+logger.info(
+    "LayoutParser available: %s (import_error=%r); LAYOUT_MODEL_CONFIG=%s; "
+    "RITUS_ENABLE_LAYOUTPARSER=%s (opt-in, defaults to off - geometric "
+    "fallback is used unless this is set)",
+    layout_parser_preprocessing.LAYOUTPARSER_AVAILABLE,
+    layout_parser_preprocessing._import_error,
+    layout_parser_preprocessing.LAYOUT_MODEL_CONFIG,
+    layout_parser_preprocessing.ENABLE_LAYOUTPARSER,
+)
+
+# Log the exact dependency versions this process is running with. kraken's
+# blla segmentation (region/baseline post-processing, default thresholds)
+# has changed across major versions, so if local and production disagree on
+# segmentation/reading order despite identical code and an identical
+# blla.mlmodel file, a version mismatch here is the next thing to check -
+# see easy_install.sh/easy_install_mac.sh, which pin kraken==5.2.7 at
+# install time, but `pip install git+.../party.git` (also run by those
+# scripts) can silently pull in a newer kraken as a transitive dependency
+# and override that pin (this is exactly what install.log shows happening
+# on this machine).
+try:
+    from importlib.metadata import version as _pkg_version
+    _kraken_version = _pkg_version("kraken")
+except Exception as _kraken_version_exc:
+    _kraken_version = f"not importable ({_kraken_version_exc!r})"
+logger.info(
+    "Dependency versions: kraken=%s, torch=%s, numpy=%s, cv2=%s",
+    _kraken_version, torch.__version__, np.__version__, cv2.__version__,
+)
 
 # --- PARSOWANIE ARGUMENTÓW ---
 parser = argparse.ArgumentParser()
@@ -235,7 +295,21 @@ if not NO_KRAKEN:
     # lub użyć preload_app w Gunicorn, aby nie dublować RAM-u
     baseline_model_path = MODEL_PATHS.get("blla.mlmodel")
     logger.info(f"Baseline model path: {baseline_model_path}")
-    
+    if baseline_model_path and os.path.exists(baseline_model_path):
+        # models/ is gitignored, so this file isn't version-controlled -
+        # nothing guarantees local and production have the same bytes here.
+        # Log its fingerprint so the two environments can be diffed directly.
+        try:
+            _stat = os.stat(baseline_model_path)
+            with open(baseline_model_path, "rb") as _f:
+                _sha256 = hashlib.sha256(_f.read()).hexdigest()
+            logger.info(
+                "blla.mlmodel fingerprint: size=%d sha256=%s mtime=%s",
+                _stat.st_size, _sha256, _stat.st_mtime,
+            )
+        except Exception:
+            logger.exception("Failed to fingerprint baseline model file")
+
     if baseline_model_path:
         try:
             temp_model = vgsl.TorchVGSLModel.load_model(baseline_model_path)
@@ -351,6 +425,10 @@ if not NO_KRAKEN:
         # This is a no-op when no confident two-column layout is detected.
         if enhanced_multi_column:
             page_width, page_height = image.size
+            logger.info(
+                "enhanced_multi_column: using geometric heuristic (multi_column_layout.py) "
+                "on %d lines, page=%dx%d", len(seg.lines), page_width, page_height,
+            )
             seg.lines = reorder_lines_for_multi_column(seg.lines, page_width, page_height)
 
         # Filter lines based on width/edge proximity
@@ -574,6 +652,19 @@ def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_br
     # multi_column_layout.py, which needs no extra dependencies.
     if enhanced_multi_column:
         reordered_lines = None
+        if not layout_parser_preprocessing.ENABLE_LAYOUTPARSER:
+            logger.info(
+                "enhanced_multi_column: LayoutParser is disabled by default "
+                "(set RITUS_ENABLE_LAYOUTPARSER=1 to opt in) - using geometric "
+                "fallback (multi_column_layout.py) on %d lines", len(seg.lines),
+            )
+        elif not layout_parser_preprocessing.LAYOUTPARSER_AVAILABLE:
+            logger.info(
+                "enhanced_multi_column: layoutparser not importable in this "
+                "environment (import_error=%r) - using geometric fallback "
+                "(multi_column_layout.py) on %d lines",
+                layout_parser_preprocessing._import_error, len(seg.lines),
+            )
         try:
             reordered_lines = layout_parser_preprocessing.reorder_lines_using_layout_parser(
                 seg.lines, color_image
@@ -583,8 +674,19 @@ def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_br
             reordered_lines = None
 
         if reordered_lines is not None:
+            logger.info(
+                "enhanced_multi_column: used LayoutParser-based reordering "
+                "(layout_parser_preprocessing.py) on %d lines", len(seg.lines),
+            )
             seg.lines = reordered_lines
         else:
+            if layout_parser_preprocessing.ENABLE_LAYOUTPARSER and layout_parser_preprocessing.LAYOUTPARSER_AVAILABLE:
+                logger.info(
+                    "enhanced_multi_column: LayoutParser returned no usable "
+                    "result (model unavailable, or fewer than 2 regions "
+                    "detected) - using geometric fallback (multi_column_layout.py) "
+                    "on %d lines", len(seg.lines),
+                )
             page_width, page_height = ocr_image.size
             seg.lines = reorder_lines_for_multi_column(seg.lines, page_width, page_height)
 

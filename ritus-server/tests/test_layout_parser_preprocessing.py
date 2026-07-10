@@ -12,8 +12,15 @@ whatever `layoutparser` model.detect() returns. Run with:
     python3 test_layout_parser_preprocessing.py
 """
 
+import os
+import sys
 from dataclasses import dataclass, field
 from typing import List, Tuple
+
+# This file lives in tests/, but layout_parser_preprocessing.py lives one
+# directory up (ritus-server/). Make sure that directory is on sys.path so
+# the import below works no matter what the current working directory is.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from layout_parser_preprocessing import (
     Region,

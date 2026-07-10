@@ -91,6 +91,19 @@ logger = logging.getLogger(__name__)
 # documents and should be a better match for manuscripts.
 LAYOUT_MODEL_CONFIG = os.environ.get("RITUS_LAYOUT_MODEL", "lp://efficientdet/PubLayNet")
 
+# LayoutParser-based reordering is opt-in, OFF by default, even if the
+# package is installed and a model loads fine. Reason: the default
+# PubLayNet model is trained on modern scientific-journal layouts (Text,
+# Title, List, Table, Figure) - it can misdetect regions on historical /
+# liturgical manuscript pages, in which case the geometric heuristic in
+# multi_column_layout.py (which reasons purely about where kraken's own OCR
+# lines actually sit, no model involved) gives a more reliable reading
+# order. Set RITUS_ENABLE_LAYOUTPARSER=1 (or "true") in the environment
+# before starting the server to opt in and use it.
+ENABLE_LAYOUTPARSER = os.environ.get("RITUS_ENABLE_LAYOUTPARSER", "").strip().lower() in (
+    "1", "true", "yes",
+)
+
 try:
     import layoutparser as lp  # noqa: N813
     LAYOUTPARSER_AVAILABLE = True
@@ -177,6 +190,7 @@ def detect_layout_regions(image, score_threshold=0.5):
     """
     model = _get_model()
     if model is None:
+        logger.debug("detect_layout_regions: no model loaded, returning None")
         return None
     try:
         pil_image = image.convert("RGB") if hasattr(image, "convert") else image
@@ -186,6 +200,7 @@ def detect_layout_regions(image, score_threshold=0.5):
         return None
 
     regions = []
+    dropped_for_score = 0
     for block in layout:
         try:
             x1, y1, x2, y2 = block.coordinates
@@ -193,8 +208,14 @@ def detect_layout_regions(image, score_threshold=0.5):
             continue
         score = getattr(block, "score", None)
         if score is not None and score_threshold is not None and score < score_threshold:
+            dropped_for_score += 1
             continue
         regions.append(Region(x1, y1, x2, y2, label=getattr(block, "type", None), score=score))
+    logger.info(
+        "detect_layout_regions: model returned %d raw block(s), %d kept "
+        "(score_threshold=%s), %d dropped for low score: %s",
+        len(layout), len(regions), score_threshold, dropped_for_score, regions,
+    )
     return regions
 
 
@@ -318,15 +339,41 @@ def reorder_lines_using_layout_parser(lines, image, score_threshold=0.5):
     caller to fall back to
     ``multi_column_layout.reorder_lines_for_multi_column`` instead.
     """
+    if not ENABLE_LAYOUTPARSER:
+        logger.debug(
+            "reorder_lines_using_layout_parser: disabled by default - set "
+            "RITUS_ENABLE_LAYOUTPARSER=1 to opt in - using geometric fallback"
+        )
+        return None
     if not LAYOUTPARSER_AVAILABLE:
+        logger.debug(
+            "reorder_lines_using_layout_parser: layoutparser package not "
+            "importable (import_error=%r) - returning None so caller falls "
+            "back to the geometric heuristic", _import_error,
+        )
         return None
     if not lines:
         return []
     try:
         regions = detect_layout_regions(image, score_threshold=score_threshold)
         if regions is None:
+            logger.info(
+                "reorder_lines_using_layout_parser: no regions detected "
+                "(model unavailable or detection failed) - returning None"
+            )
             return None
-        return order_lines_by_regions(lines, regions)
+        if len(regions) < 2:
+            logger.info(
+                "reorder_lines_using_layout_parser: only %d region(s) detected "
+                "(need >= 2) - order_lines_by_regions will return lines unchanged",
+                len(regions),
+            )
+        result = order_lines_by_regions(lines, regions)
+        logger.info(
+            "reorder_lines_using_layout_parser: reordered %d line(s) using %d region(s)",
+            len(lines), len(regions),
+        )
+        return result
     except Exception:
         logger.exception("Layout-parser based reordering failed unexpectedly")
         return None

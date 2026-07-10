@@ -26,9 +26,10 @@ print_and_log "Installation script started."
 print_and_log "Ensuring Python package manager is installed..."
 run_cmd "python -m ensurepip --upgrade"
 
-# 2. Install a Python 3.11 compatible NumPy version (1.26.4 is highly recommended)
+# 2. NumPy version required by kraken==6.0.3 (numpy~=2.0.0 per its metadata;
+# validated locally as numpy==2.2.6 alongside kraken 6.0.3/torch 2.5.1).
 print_and_log "Installing numpy..."
-run_cmd "pip install numpy==1.26.4"
+run_cmd "pip install numpy==2.2.6"
 
 print_and_log "Installing sqllite..."
 run_cmd "pip install flask_sqlalchemy"
@@ -36,9 +37,25 @@ run_cmd "pip install flask_sqlalchemy"
 print_and_log "Installing backports.tarfile==1.2"
 run_cmd "pip install backports.tarfile==1.2"
 
-# Install Kraken and its required dependencies
-print_and_log "Installing Kraken version 5.2.7..."
-run_cmd "pip install kraken==5.2.7 --no-deps"
+# Install Kraken and its required dependencies.
+# NOTE: kraken is pinned here via --no-deps deliberately, so that later
+# steps (in particular `pip install git+.../party.git`, which requires
+# torch~=2.5.0) can never silently upgrade kraken to a different version
+# out from under this pin - that's exactly what happened on a machine that
+# installed kraken *without* --no-deps (see easy_install_mac.sh history /
+# install.log): pip's resolver bumped kraken from 5.2.7 to 6.0.3 mid-install
+# once torch got bumped, with no explicit command ever saying so. Since
+# --no-deps means kraken's own dependency list is never installed
+# automatically, they're listed explicitly below instead.
+print_and_log "Installing Kraken version 6.0.3..."
+run_cmd "pip install kraken==6.0.3 --no-deps"
+
+# Kraken 6.0.3's own dependencies (from its packaging metadata), pinned to
+# the versions validated locally alongside it. torch/torchvision are
+# installed further below since the right build (CPU/CUDA/MPS) depends on
+# the target machine.
+print_and_log "Installing kraken dependencies..."
+run_cmd "pip install click==8.2.1 jsonschema lxml requests regex pyarrow protobuf jinja2==3.1.6 python-bidi==0.6.7 scipy==1.13.1 scikit-learn==1.5.2 scikit-image==0.24.0 shapely==2.0.7 threadpoolctl==3.5.0 coremltools==8.3.0 rich==14.0.0 lightning==2.4.0 torchmetrics==1.4.3 htrmopo iso639-lang platformdirs"
 
 # Install server libraries
 print_and_log "Installing Flask..."
@@ -83,26 +100,32 @@ run_cmd ".venv/bin/pip install flask_jwt_extended --quiet"
 # Check if user wants to install Torch for acceleration
 read -p "Do you want to install PyTorch for GPU/CPU acceleration (this can take up to 10GB)? (y/n): " accel_choice
 
+# kraken==6.0.3 requires torch>=2.4.0,<=2.9. torch==2.5.1 below is the
+# version validated locally alongside kraken 6.0.3/numpy 2.2.6. If you have
+# CUDA installed, pick the --index-url matching your driver's CUDA version
+# (cu121 here matches what this server's GPU box was already running before
+# this upgrade - check `nvidia-smi` and adjust cu121 -> cu124/cu128/etc. if
+# your driver supports a newer one).
 if [[ "$accel_choice" == "y" || "$accel_choice" == "Y" ]]; then
     if [[ "$(uname)" == "Darwin" ]]; then
         # For macOS, checking for M1 chip and installing the proper PyTorch version
         print_and_log "Checking for M1/M2 chip compatibility..."
         if [[ $(sysctl -n machdep.cpu.brand_string) == *"Apple M1"* || $(sysctl -n machdep.cpu.brand_string) == *"Apple M2"* ]]; then
-            print_and_log "Installing torch with MPS support (for Apple Silicon)..."
-            run_cmd "pip install torch==2.0.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu"
+            print_and_log "Installing torch==2.5.1 with MPS support (for Apple Silicon)..."
+            run_cmd "pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1"
         else
-            print_and_log "Installing CPU-only version of torch..."
-            run_cmd "pip install torch"
+            print_and_log "Installing CPU-only version of torch==2.5.1..."
+            run_cmd "pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu"
         fi
     else
         # For Linux, prompt the user to install CUDA or ROCm if applicable
         read -p "Do you have CUDA or ROCm installed? (y/n): " gpu_choice
         if [[ "$gpu_choice" == "y" || "$gpu_choice" == "Y" ]]; then
-            print_and_log "Installing torch with GPU support..."
-            run_cmd "pip install torch"
+            print_and_log "Installing torch==2.5.1 with GPU support (cu121 - adjust to match your driver)..."
+            run_cmd "pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121"
         else
-            print_and_log "Installing CPU-only version of torch..."
-            run_cmd "pip install torch==2.0.1+cpu -f https://download.pytorch.org/whl/cpu.html"
+            print_and_log "Installing CPU-only version of torch==2.5.1..."
+            run_cmd "pip install torch==2.5.1+cpu torchvision==0.20.1+cpu torchaudio==2.5.1+cpu -f https://download.pytorch.org/whl/cpu.html"
         fi
     fi
 else

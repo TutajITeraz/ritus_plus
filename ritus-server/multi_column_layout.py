@@ -243,6 +243,12 @@ def reorder_lines_for_multi_column(lines, page_width, page_height,
     """
     if not lines:
         return []
+    logger.debug(
+        "reorder_lines_for_multi_column: %d input lines, page=%sx%s, "
+        "row_gap_ratio=%s, column_gap_ratio=%s, envelope_tolerance_ratio=%s",
+        len(lines), page_width, page_height, row_gap_ratio, column_gap_ratio,
+        envelope_tolerance_ratio,
+    )
     try:
         return _reorder_lines_for_multi_column(
             lines, page_width, row_gap_ratio, column_gap_ratio, envelope_tolerance_ratio
@@ -268,16 +274,31 @@ def _reorder_lines_for_multi_column(lines, page_width, row_gap_ratio,
     # Need a reasonable number of geometrically-valid lines to even attempt
     # column detection.
     if len(bboxes) < 4:
+        logger.debug(
+            "Only %d/%d lines had a usable bbox (need >= 4) - skipping "
+            "column detection, returning original order", len(bboxes), len(lines),
+        )
         return list(lines)
 
     rows = _group_into_rows(bboxes, row_gap_ratio)
     multi_line_rows = [row for row in rows if len(row) > 1]
+    logger.debug(
+        "Grouped %d lines into %d row(s), %d of which have 2+ lines",
+        len(bboxes), len(rows), len(multi_line_rows),
+    )
 
     bands = _find_column_bands(multi_line_rows, bboxes, page_width, column_gap_ratio)
     if not bands:
         # No confident multi-column layout detected - leave order untouched.
+        logger.debug(
+            "No confident column bands found (fewer than 2) - returning original order"
+        )
         return list(lines)
     bands.sort(key=lambda b: b.center)
+    logger.debug(
+        "Detected %d column band(s): %s",
+        len(bands), [(round(b.left), round(b.right)) for b in bands],
+    )
 
     band_of = {}
     for band_no, band in enumerate(bands):
