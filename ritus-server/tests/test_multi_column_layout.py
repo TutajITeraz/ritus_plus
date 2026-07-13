@@ -228,6 +228,91 @@ def test_empty_and_degenerate_input():
     print("PASS: test_empty_and_degenerate_input")
 
 
+def test_interior_line_not_misclassified_as_spanning():
+    """
+    Regression test for a real-world bug: a line that fails to pair with a
+    same-row sibling (columns' line pitch can drift by a fraction of a line
+    height) but clearly continues its own column's text at that column's
+    normal line spacing - sandwiched between two ordinarily row-paired
+    lines of the same column, both before and after it - must NOT be
+    treated as a spanning title/subtitle.
+
+    Before the fix, such a line was classified as spanning purely for being
+    alone in its row and positioned within the combined column envelope.
+    That forced a premature flush of both column queues at that point,
+    splicing whatever had accumulated in the *other* column into the
+    middle of this column's text (here: R1-R3 appearing between L3 and Lx,
+    with R4-R6 stranded at the very end) - reading as if the two columns
+    had been merged into one, instead of the correct column-major order.
+    """
+    lines = [
+        make_line("L1", 100, 100, 450, 140),
+        make_line("R1", 550, 105, 900, 145),
+        make_line("L2", 100, 150, 450, 190),
+        make_line("R2", 550, 155, 900, 195),
+        make_line("L3", 100, 200, 450, 240),
+        make_line("R3", 550, 205, 900, 245),
+        make_line("Lx", 100, 250, 450, 290),   # fails to pair with a right sibling this row
+        make_line("L4", 100, 300, 450, 340),
+        make_line("R4", 550, 305, 900, 345),
+        make_line("L5", 100, 350, 450, 390),
+        make_line("R5", 550, 355, 900, 395),
+        make_line("L6", 100, 400, 450, 440),
+        make_line("R6", 550, 405, 900, 445),
+    ]
+    result = reorder_lines_for_multi_column(lines, PAGE_W, PAGE_H)
+    order = [l.id for l in result]
+    assert order == [
+        "L1", "L2", "L3", "Lx", "L4", "L5", "L6",
+        "R1", "R2", "R3", "R4", "R5", "R6",
+    ], order
+    print("PASS: test_interior_line_not_misclassified_as_spanning ->", order)
+
+
+def test_column_sensitivity_changes_narrow_gutter_decision():
+    """The slider's min/max values must make different layout decisions."""
+    lines = [
+        make_line("R1", 405, 50, 455, 90),
+        make_line("L1", 350, 50, 400, 90),
+        make_line("R2", 405, 100, 455, 140),
+        make_line("L2", 350, 100, 400, 140),
+    ]
+
+    # At 0% the 30px centre gap is too small to be a gutter (165px
+    # required); at 100% it clears the 15px threshold and becomes two bands.
+    insensitive = reorder_lines_for_multi_column(
+        lines, PAGE_W, PAGE_H, column_gap_ratio=0.165
+    )
+    sensitive = reorder_lines_for_multi_column(
+        lines, PAGE_W, PAGE_H, column_gap_ratio=0.015
+    )
+    assert [line.id for line in insensitive] == ["R1", "L1", "R2", "L2"]
+    assert [line.id for line in sensitive] == ["L1", "L2", "R1", "R2"]
+    print("PASS: test_column_sensitivity_changes_narrow_gutter_decision")
+
+
+def test_four_bands_with_title_and_centered_subtitle():
+    """A title/subtitle must bracket each marginalia+two-column section."""
+    lines = [
+        make_line("title", 250, 10, 750, 50),
+        make_line("mL1", 20, 100, 90, 140), make_line("L1", 150, 100, 450, 140),
+        make_line("R1", 550, 100, 850, 140), make_line("mR1", 910, 100, 980, 140),
+        make_line("mL2", 20, 150, 90, 190), make_line("L2", 150, 150, 450, 190),
+        make_line("R2", 550, 150, 850, 190), make_line("mR2", 910, 150, 980, 190),
+        make_line("subtitle", 460, 230, 540, 270),
+        make_line("mL3", 20, 320, 90, 360), make_line("L3", 150, 320, 450, 360),
+        make_line("R3", 550, 320, 850, 360), make_line("mR3", 910, 320, 980, 360),
+        make_line("mL4", 20, 370, 90, 410), make_line("L4", 150, 370, 450, 410),
+        make_line("R4", 550, 370, 850, 410), make_line("mR4", 910, 370, 980, 410),
+    ]
+    result = reorder_lines_for_multi_column(lines, PAGE_W, PAGE_H)
+    assert [line.id for line in result] == [
+        "title", "mL1", "mL2", "L1", "L2", "R1", "R2", "mR1", "mR2",
+        "subtitle", "mL3", "mL4", "L3", "L4", "R3", "R4", "mR3", "mR4",
+    ]
+    print("PASS: test_four_bands_with_title_and_centered_subtitle")
+
+
 if __name__ == "__main__":
     test_title_then_two_columns_scrambled_order()
     test_single_column_untouched()
@@ -239,4 +324,7 @@ if __name__ == "__main__":
     test_isolated_marginal_note_not_treated_as_title()
     test_narrow_gap_between_two_paragraphs_not_treated_as_columns()
     test_empty_and_degenerate_input()
+    test_interior_line_not_misclassified_as_spanning()
+    test_column_sensitivity_changes_narrow_gutter_decision()
+    test_four_bands_with_title_and_centered_subtitle()
     print("\nAll tests passed.")

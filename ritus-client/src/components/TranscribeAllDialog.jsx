@@ -15,10 +15,15 @@ import {
 import { toaster } from "@/components/ui/toaster";
 import { startBatchTranscribe } from "../apiUtils";
 import RedSensitivitySlider from "./RedSensitivitySlider";
+import ColumnSensitivitySlider from "./ColumnSensitivitySlider";
 import {
   DEFAULT_RED_SENSITIVITY,
   sensitivityToThreshold,
 } from "../utils/redSensitivity";
+import {
+  DEFAULT_COLUMN_SENSITIVITY,
+  sensitivityToColumnGapRatio,
+} from "../utils/columnSensitivity";
 
 const models = createListCollection({
   items: [
@@ -26,10 +31,12 @@ const models = createListCollection({
     { label: "Cremma Generic 1.0.1", value: "cremma-generic-1.0.1.mlmodel" },
     { label: "ManuMcFondue", value: "ManuMcFondue.mlmodel" },
     { label: "Catmus Medieval", value: "catmus-medieval.mlmodel" },
+    { label: "CATMUS Print Model", value: "catmus-print-fondue-large.mlmodel" },
     { label: "McCATMuS (16th-21st c. Polyglot)", value: "McCATMuS_nfd_nofix_V1.mlmodel" },
     { label: "LECTAUREP (French Admin)", value: "lectaurep_base.mlmodel" },
     { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
     { label: "German Handwriting", value: "german_handwriting.mlmodel" },
+    { label: "Modern English Print", value: "en_best.mlmodel" },
   ],
 });
 
@@ -47,6 +54,7 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
   const [addPageBreak, setAddPageBreak] = useState(false);
   const [enhancedMultiColumn, setEnhancedMultiColumn] = useState(false);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
+  const [columnSensitivity, setColumnSensitivity] = useState(DEFAULT_COLUMN_SENSITIVITY);
   const [isStarting, setIsStarting] = useState(false);
 
   const eligible = (projects || []).filter((p) => p.image_count > 0);
@@ -68,7 +76,8 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
             null,
             addPageBreak,
             sensitivityToThreshold(redSensitivity),
-            enhancedMultiColumn
+            enhancedMultiColumn,
+            sensitivityToColumnGapRatio(columnSensitivity)
           );
           started.push(p.id);
         } catch (e) {
@@ -209,6 +218,13 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
                     <Checkbox.Label>Enhanced multi column detection</Checkbox.Label>
                   </Checkbox.Root>
                 </Stack>
+
+                {enhancedMultiColumn && (
+                  <ColumnSensitivitySlider
+                    sensitivity={columnSensitivity}
+                    onSensitivityChange={setColumnSensitivity}
+                  />
+                )}
 
                 <RedSensitivitySlider
                   sensitivity={redSensitivity}

@@ -80,6 +80,8 @@ position alone.
 """
 
 import logging
+from bisect import insort
+from dataclasses import replace
 from statistics import median
 
 logger = logging.getLogger(__name__)
@@ -176,35 +178,148 @@ def _find_column_bands(multi_line_rows, bboxes, page_width, gap_ratio=0.045):
     Returns a list of ``_Band`` sorted left-to-right, or ``[]`` if fewer
     than two bands are found (i.e. no confident multi-column layout).
     """
+    # A baseline segmenter occasionally joins the left and right text on a
+    # row into one very wide line. Such a line has its centre in the gutter,
+    # so including it here invents a third, central "column". It is useful
+    # later (we can split it once the real columns are known), but must not
+    # participate in discovering those columns.
+    max_column_width = 0.60 * page_width
     samples = []  # (index, bbox)
     for row in multi_line_rows:
         for idx in row:
-            samples.append((idx, bboxes[idx]))
+            bbox = bboxes[idx]
+            if (bbox[2] - bbox[0]) <= max_column_width:
+                samples.append((idx, bbox))
 
     if len(samples) < 2:
         return []
 
-    ordered = sorted(samples, key=lambda s: _x_center(s[1]))
+    # Do not cluster raw x-centres. Ragged right edges make otherwise
+    # identical column lines have quite different centres (particularly in
+    # narrow early-print type), which used to turn one column into several
+    # artificial bands. Lines belonging to a column instead form an
+    # overlapping chain of horizontal intervals.
+    ordered_by_left = sorted(samples, key=lambda sample: sample[1][0])
     min_gap = gap_ratio * page_width
 
     bands = []
-    first_idx, first_bbox = ordered[0]
+    first_idx, first_bbox = ordered_by_left[0]
     current = _Band(first_bbox[0], first_bbox[2])
     current.members.append(first_idx)
-    prev_center = _x_center(first_bbox)
-
-    for idx, bbox in ordered[1:]:
-        center = _x_center(bbox)
-        if (center - prev_center) > min_gap:
+    for idx, bbox in ordered_by_left[1:]:
+        # An overlap joins two samples into one candidate column. Separate
+        # interval groups are still subject to the slider below.
+        # Touching at a single x coordinate is not an overlap. In
+        # particular, halves created at the gutter share that boundary and
+        # must remain separate bands on the recursive pass.
+        if bbox[0] >= current.right:
             bands.append(current)
             current = _Band(bbox[0], bbox[2])
         else:
             current.extend(bbox)
         current.members.append(idx)
-        prev_center = center
     bands.append(current)
 
+    # The sensitivity slider is deliberately applied after forming stable
+    # interval bands: it decides whether two nearby candidates are distinct
+    # columns, without allowing uneven line lengths to fragment either one.
+    merged_bands = [bands[0]]
+    for band in bands[1:]:
+        previous = merged_bands[-1]
+        if band.center - previous.center <= min_gap:
+            previous.left = min(previous.left, band.left)
+            previous.right = max(previous.right, band.right)
+            previous.members.extend(band.members)
+        else:
+            merged_bands.append(band)
+    bands = merged_bands
+
     return bands if len(bands) >= 2 else []
+
+
+def detect_column_bands(lines, page_width, row_gap_ratio=0.55,
+                        column_gap_ratio=0.045):
+    """Return detected horizontal bands as ``(left, right)`` pairs.
+
+    This small public entry point lets the OCR pipeline segment each body
+    column independently when post-processing line order is too late.
+    """
+    bboxes = {i: bbox for i, line in enumerate(lines)
+              if (bbox := _line_bbox(line)) is not None}
+    if len(bboxes) < 4 or not page_width or page_width <= 0:
+        return []
+    rows = _group_into_rows(bboxes, row_gap_ratio)
+    bands = _find_column_bands(
+        [row for row in rows if len(row) > 1], bboxes, page_width,
+        column_gap_ratio,
+    )
+    return [(band.left, band.right) for band in sorted(bands, key=lambda band: band.center)]
+
+
+def _split_merged_column_lines(lines, bboxes, bands, page_width):
+    """Split blla lines which span the two detected main columns.
+
+    CATMUS recognition cannot recover reading order after blla has made one
+    crop containing both columns.  Crop such a baseline at the detected
+    gutter before recognition, producing independent left/right lines.
+    A line must reach both outer edges of the main columns; this deliberately
+    leaves a centred title or a wide subtitle intact.
+    """
+    # Marginalia may be detected as narrow bands too. Main text columns are
+    # materially wider, so use the two widest bands to establish this split.
+    main_bands = sorted(bands, key=lambda band: band.right - band.left, reverse=True)[:2]
+    if len(main_bands) != 2:
+        return None
+    left_band, right_band = sorted(main_bands, key=lambda band: band.center)
+    if right_band.center <= left_band.center:
+        return None
+
+    gutter = (left_band.right + right_band.left) / 2.0
+    # Use typical line edges rather than a band's extreme bounds. Marginal
+    # labels and ragged line endings can otherwise make a genuine merged
+    # line appear not to reach a column, or make a centred title look like
+    # it does.
+    left_start = median(bboxes[idx][0] for idx in left_band.members)
+    right_end = median(bboxes[idx][2] for idx in right_band.members)
+    edge_tolerance = 0.10 * min(
+        left_band.right - left_band.left,
+        right_band.right - right_band.left,
+    )
+    split_indices = set()
+    for idx, bbox in bboxes.items():
+        x0, _y0, x1, _y1 = bbox
+        if (
+            x0 <= left_start + edge_tolerance
+            and x1 >= right_end - edge_tolerance
+            and x0 < gutter < x1
+        ):
+            split_indices.add(idx)
+
+    if not split_indices:
+        return None
+
+    split_lines = []
+    for idx, line in enumerate(lines):
+        if idx not in split_indices:
+            split_lines.append(line)
+            continue
+        x0, y0, x1, y1 = bboxes[idx]
+        # Rectangles are intentional: recognition uses the line polygon as
+        # its crop, and a simple half-line crop is more robust than trying to
+        # clip blla's irregular outline at the gutter.
+        left_boundary = [(x0, y0), (gutter, y0), (gutter, y1), (x0, y1), (x0, y0)]
+        right_boundary = [(gutter, y0), (x1, y0), (x1, y1), (gutter, y1), (gutter, y0)]
+        baseline_y = _y_center(bboxes[idx])
+        try:
+            split_lines.extend((
+                replace(line, id=f"{line.id}:left", baseline=[(x0, baseline_y), (gutter, baseline_y)], boundary=left_boundary),
+                replace(line, id=f"{line.id}:right", baseline=[(gutter, baseline_y), (x1, baseline_y)], boundary=right_boundary),
+            ))
+        except (TypeError, AttributeError):
+            # This helper is intentionally generic; if a caller supplies an
+            # immutable/non-dataclass line type, leave it untouched.
+            split_lines.append(line)
+    return split_lines
 
 
 def reorder_lines_for_multi_column(lines, page_width, page_height,
@@ -294,6 +409,19 @@ def _reorder_lines_for_multi_column(lines, page_width, row_gap_ratio,
             "No confident column bands found (fewer than 2) - returning original order"
         )
         return list(lines)
+
+    split_lines = _split_merged_column_lines(lines, bboxes, bands, page_width)
+    if split_lines is not None:
+        logger.info(
+            "Split %d merged line(s) at detected column gutter before reordering",
+            len(split_lines) - len(lines),
+        )
+        # Recompute rows and bands from the individual half-lines. This also
+        # prevents the newly created line halves from being split again.
+        return _reorder_lines_for_multi_column(
+            split_lines, page_width, row_gap_ratio, column_gap_ratio,
+            envelope_tolerance_ratio,
+        )
     bands.sort(key=lambda b: b.center)
     logger.debug(
         "Detected %d column band(s): %s",
@@ -306,9 +434,70 @@ def _reorder_lines_for_multi_column(lines, page_width, row_gap_ratio,
             band_of[idx] = band_no
 
     tolerance = envelope_tolerance_ratio * page_width
-    envelope_left = min(b.left for b in bands) - tolerance
-    envelope_right = max(b.right for b in bands) + tolerance
+    # The envelope should reflect the main text column(s), not marginalia
+    # strips. A marginalia band (folio signature, gloss column) typically
+    # has far fewer members than a real text column; if it's allowed to
+    # widen the envelope, its own extremal left/right edge can push the
+    # envelope out to nearly the full page width. That makes an isolated
+    # marginal note anywhere on the page look "within the envelope" and
+    # get misclassified as a spanning title/subtitle - which forces a
+    # premature flush of whatever's queued so far, stranding later lines
+    # from the same column until the next flush (or the final one),
+    # displacing them after content from other bands. Bands with at least
+    # half as many members as the largest band are treated as "main"
+    # columns for this calculation; if that excludes everything (e.g. all
+    # bands are similarly sized), fall back to all bands.
+    max_members = max(len(b.members) for b in bands)
+    core_bands = [b for b in bands if len(b.members) >= max_members / 2.0] or bands
+    envelope_left = min(b.left for b in core_bands) - tolerance
+    envelope_right = max(b.right for b in core_bands) + tolerance
 
+    # y-centers of each band's already-paired (2+-per-row) members, used
+    # below to tell a genuine page-wide break from a line that simply
+    # failed to pair with a same-row sibling (columns' line pitch can drift
+    # by a fraction of a line height) but still clearly sits in the middle
+    # of that band's ongoing text at its normal line spacing.
+    band_ys = {b: sorted(_y_center(bboxes[i]) for i in band.members) for b, band in enumerate(bands)}
+
+    def _best_fitting_band(idx):
+        """Return the band this lone line fits into at that band's own
+        normal line pitch (closest such band by x-distance if more than
+        one qualifies), or None if it doesn't fit any band's flow.
+
+        Checked across *all* bands, not just the x-nearest one: the
+        x-nearest band can be a spurious single-member band (e.g. a stray
+        fragment) with no pitch of its own to judge by, while the line
+        actually continues a real column's text at that column's normal
+        spacing - just a bit further from that column's typical x-center
+        than most of its lines (a row-pairing miss, not a section break,
+        which would instead show as an abnormally large gap relative to
+        the column's typical line spacing)."""
+        y = _y_center(bboxes[idx])
+        fitting = []
+        for b, ys in band_ys.items():
+            if len(ys) < 2:
+                continue
+            before = [o for o in ys if o < y]
+            after = [o for o in ys if o > y]
+            if not before or not after:
+                continue
+            gap = min(after) - max(before)
+            diffs = [y2 - y1 for y1, y2 in zip(ys, ys[1:]) if y2 > y1]
+            pitch = median(diffs) if diffs else None
+            if pitch and pitch > 0 and gap <= 2.0 * pitch:
+                fitting.append(b)
+        if not fitting:
+            return None
+        center = _x_center(bboxes[idx])
+        return min(fitting, key=lambda b: abs(center - bands[b].center))
+
+    # rows is already in top-to-bottom (y) order, so lone rows are visited
+    # in that order below. Each lone line resolved into a band is folded
+    # into band_ys immediately (not just at the end), so a short run of
+    # several consecutive lone lines in the same column (e.g. a stretch
+    # where the columns' line pitch drifts apart for a few lines) can still
+    # confirm continuity against each other, not only against the
+    # originally row-paired members.
     spanning = set()
     for row in rows:
         if len(row) != 1:
@@ -316,16 +505,44 @@ def _reorder_lines_for_multi_column(lines, page_width, row_gap_ratio,
         idx = row[0]
         if idx in band_of:
             continue
+        # A column can legitimately have a line without a same-height peer
+        # when the other column contains an illustration, initial, or blank
+        # space. If this line is materially contained by one band, it is
+        # column text rather than a section break. This is especially common
+        # in early-print pages with decorated initials.
+        x0, _y0, x1, _y1 = bboxes[idx]
+        line_width = x1 - x0
+        containing = []
+        if line_width > 0:
+            for b, band in enumerate(bands):
+                overlap = max(0.0, min(x1, band.right) - max(x0, band.left))
+                if overlap >= 0.65 * line_width:
+                    containing.append(b)
+        if containing:
+            center = _x_center(bboxes[idx])
+            fitted = min(containing, key=lambda b: abs(center - bands[b].center))
+            band_of[idx] = fitted
+            insort(band_ys[fitted], _y_center(bboxes[idx]))
+            continue
+        fitting = _best_fitting_band(idx)
+        if fitting is not None:
+            # Continues some band's text at that band's normal line
+            # spacing - a row-pairing miss, not a real break.
+            band_of[idx] = fitting
+            insort(band_ys[fitting], _y_center(bboxes[idx]))
+            continue
         center = _x_center(bboxes[idx])
         if envelope_left <= center <= envelope_right:
-            # Sits over/between the columns with nothing beside it -> a
-            # title/heading/subtitle, regardless of how narrow it is.
+            # Sits over/between the columns with nothing beside it, and
+            # doesn't fit any band's normal flow -> a title/heading/
+            # subtitle, regardless of how narrow it is.
             spanning.add(idx)
         else:
             # Off to the side (e.g. an isolated marginal note not lined up
             # with a body line this time) -> nearest band.
             nearest = min(range(len(bands)), key=lambda b: abs(center - bands[b].center))
             band_of[idx] = nearest
+            insort(band_ys[nearest], _y_center(bboxes[idx]))
 
     # Defensive: any bbox-having line still unclassified gets the nearest band.
     for idx, bbox in bboxes.items():

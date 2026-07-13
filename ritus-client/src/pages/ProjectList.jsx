@@ -141,10 +141,12 @@ const transcribeModels = createListCollection({
     { label: "Cremma Generic 1.0.1", value: "cremma-generic-1.0.1.mlmodel" },
     { label: "ManuMcFondue", value: "ManuMcFondue.mlmodel" },
     { label: "Catmus Medieval", value: "catmus-medieval.mlmodel" },
+    { label: "CATMUS Print Model", value: "catmus-print-fondue-large.mlmodel" },
     { label: "McCATMuS (16th-21st c. Polyglot)", value: "McCATMuS_nfd_nofix_V1.mlmodel" },
     { label: "LECTAUREP (French Admin)", value: "lectaurep_base.mlmodel" },
     { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
     { label: "German Handwriting", value: "german_handwriting.mlmodel" },
+    { label: "Modern English Print", value: "en_best.mlmodel" },
   ],
 });
 

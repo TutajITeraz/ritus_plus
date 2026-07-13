@@ -6,6 +6,7 @@ import logging
 import logging.handlers
 import json
 import re
+from dataclasses import replace
 import cv2
 import torch
 import numpy as np
@@ -126,7 +127,7 @@ def _promote_waiting_domain(domain):
                 return
 from batch_analysis import batch_process_project
 from image_processing import split_line_boundary_by_color
-from multi_column_layout import reorder_lines_for_multi_column
+from multi_column_layout import reorder_lines_for_multi_column, detect_column_bands
 import layout_parser_preprocessing
 from ai_tools import gpt_autofix
 from secret_user_api_key import user_api_key
@@ -284,11 +285,13 @@ if not NO_KRAKEN:
         "cremma-generic-1.0.1.mlmodel": get_model_path("cremma-generic-1.0.1.mlmodel"),
         "ManuMcFondue.mlmodel": get_model_path("ManuMcFondue.mlmodel"),
         "catmus-medieval.mlmodel": get_model_path("catmus-medieval.mlmodel"),
+        "catmus-print-fondue-large.mlmodel": get_model_path("catmus-print-fondue-large.mlmodel"),
         
         "McCATMuS_nfd_nofix_V1.mlmodel": get_model_path("McCATMuS_nfd_nofix_V1.mlmodel"),
         "lectaurep_base.mlmodel": get_model_path("lectaurep_base.mlmodel"),
         "peraire2_ft_MMCFR.mlmodel": get_model_path("peraire2_ft_MMCFR.mlmodel"),
         "german_handwriting.mlmodel": get_model_path("german_handwriting.mlmodel"),
+        "en_best.mlmodel": get_model_path("en_best.mlmodel"),
         "blla.mlmodel": get_model_path("blla.mlmodel"),
     }
     # Uwaga: Ładowanie ciężkich modeli lepiej robić wewnątrz pierwszej prośby 
@@ -333,6 +336,60 @@ if not NO_KRAKEN:
 
 # Only define kraken-dependent functions if not NO_KRAKEN
 if not NO_KRAKEN:
+    def segment_detected_columns_independently(image, initial_lines, column_gap_ratio=0.045):
+        """Re-run blla on two body-column crops when it joined their text.
+
+        Line reordering cannot undo an OCR crop that already contains both
+        columns.  This keeps a centred title from the full-page pass, then
+        segments the body in independent left/right image crops.
+        """
+        bands = detect_column_bands(initial_lines, image.width, column_gap_ratio=column_gap_ratio)
+        if len(bands) != 2:
+            return None
+        (left_edge, left_right), (right_left, right_edge) = bands
+        gutter = int(round((left_right + right_left) / 2.0))
+        if gutter <= 0 or gutter >= image.width:
+            return None
+
+        def bbox(line):
+            points = getattr(line, "boundary", None) or getattr(line, "baseline", None)
+            xs = [point[0] for point in points]
+            ys = [point[1] for point in points]
+            return min(xs), min(ys), max(xs), max(ys)
+
+        first = min(initial_lines, key=lambda line: bbox(line)[1])
+        x0, _y0, x1, title_bottom = bbox(first)
+        # Preserve only a genuinely centred header. A normal first body line
+        # should not be removed before column segmentation.
+        is_centered_header = (
+            x0 > left_edge + 0.15 * (left_right - left_edge)
+            and x1 < right_edge - 0.15 * (right_edge - right_left)
+            and x0 < gutter < x1
+        )
+        body_top = max(0, int(title_bottom) - 2) if is_centered_header else 0
+        result = [first] if is_centered_header else []
+
+        for side, crop_box, offset in (
+            ("left", (0, body_top, gutter, image.height), (0, body_top)),
+            ("right", (gutter, body_top, image.width, image.height), (gutter, body_top)),
+        ):
+            column_segmentation = blla.segment(
+                image.crop(crop_box), model=baseline_model, device=selected_device,
+                text_direction="horizontal-tb",
+            )
+            for line in sorted(column_segmentation.lines, key=lambda item: bbox(item)[1]):
+                result.append(replace(
+                    line,
+                    id=f"{line.id}:{side}",
+                    baseline=[(x + offset[0], y + offset[1]) for x, y in line.baseline],
+                    boundary=[(x + offset[0], y + offset[1]) for x, y in line.boundary],
+                ))
+        logger.info(
+            "Segmented two detected body columns independently: %d -> %d lines",
+            len(initial_lines), len(result),
+        )
+        return result
+
     def serialize_segmentation(segmentation):
         serialized_lines = []
         if segmentation is None:
@@ -354,6 +411,34 @@ if not NO_KRAKEN:
             })
         return serialized_lines
 
+    # The recognition models mark a genuine end-of-line word-wrap (a word
+    # broken across a physical printed line) with a trailing "¬". That's a
+    # print-layout artifact, not part of the word, so fold it back into a
+    # single continuous word rather than showing it in the transcription.
+    LINE_WRAP_HYPHEN = "¬"
+
+    def dehyphenate_line_texts(texts):
+        """Merge consecutive line texts split by a genuine line-wrap hyphen.
+
+        ``texts`` must already be in reading order. Returns a new list
+        where any text ending in LINE_WRAP_HYPHEN has that mark dropped and
+        is glued directly (no space) onto the following text.
+        """
+        merged = []
+        pending = None
+        for text in texts:
+            if pending is not None:
+                text = pending + text.lstrip()
+                pending = None
+            stripped = text.rstrip()
+            if stripped.endswith(LINE_WRAP_HYPHEN):
+                pending = stripped[:-1]
+            else:
+                merged.append(text)
+        if pending is not None:
+            merged.append(pending)
+        return merged
+
     def should_ignore_line(line, width, ignore_edges):
         if not ignore_edges:
             return False
@@ -369,7 +454,7 @@ if not NO_KRAKEN:
         
         return is_short and near_edge
 
-    def transcribe_image(image_file, model_name, ignore_edges=False, enhanced_multi_column=False):
+    def transcribe_image(image_file, model_name, ignore_edges=False, enhanced_multi_column=False, column_gap_ratio=0.045):
         global baseline_model, last_ocr_model_name, ocr_model, selected_device
 
         import time
@@ -427,9 +512,9 @@ if not NO_KRAKEN:
             page_width, page_height = image.size
             logger.info(
                 "enhanced_multi_column: using geometric heuristic (multi_column_layout.py) "
-                "on %d lines, page=%dx%d", len(seg.lines), page_width, page_height,
+                "on %d lines, page=%dx%d, column_gap_ratio=%s", len(seg.lines), page_width, page_height, column_gap_ratio,
             )
-            seg.lines = reorder_lines_for_multi_column(seg.lines, page_width, page_height)
+            seg.lines = reorder_lines_for_multi_column(seg.lines, page_width, page_height, column_gap_ratio=column_gap_ratio)
 
         # Filter lines based on width/edge proximity
         if ignore_edges:
@@ -449,10 +534,9 @@ if not NO_KRAKEN:
 
         logger.info("Recognition...")
         predictions = rpred.rpred(ocr_model, image, seg)
-        transcribed_text = ""
-        for record in predictions:
-            if len(str(record)) > 2:
-                transcribed_text += str(record) + "\n"
+        line_texts = [str(record) for record in predictions if len(str(record)) > 2]
+        line_texts = dehyphenate_line_texts(line_texts)
+        transcribed_text = "".join(text + "\n" for text in line_texts)
 
         elapsed = time.time() - start_time
         logger.info(f"Transcription operation took {elapsed:.2f} seconds on device: {selected_device}")
@@ -573,7 +657,7 @@ def hsl_to_rgb(hsl):
     return (rgb * 255).astype(np.uint8)
 
 
-def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0, enhanced_multi_column=False):
+def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0, enhanced_multi_column=False, column_gap_ratio=0.045):
     global baseline_model, last_ocr_model_name, ocr_model, selected_device
     model_path = MODEL_PATHS.get(model_name)
     if not model_path:
@@ -651,14 +735,20 @@ def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_br
     # fall back to the purely geometric line-based heuristic in
     # multi_column_layout.py, which needs no extra dependencies.
     if enhanced_multi_column:
-        reordered_lines = None
-        if not layout_parser_preprocessing.ENABLE_LAYOUTPARSER:
+        independently_segmented = segment_detected_columns_independently(
+            ocr_image, seg.lines, column_gap_ratio
+        )
+        if independently_segmented is not None:
+            seg.lines = independently_segmented
+        else:
+            reordered_lines = None
+        if independently_segmented is None and not layout_parser_preprocessing.ENABLE_LAYOUTPARSER:
             logger.info(
                 "enhanced_multi_column: LayoutParser is disabled by default "
                 "(set RITUS_ENABLE_LAYOUTPARSER=1 to opt in) - using geometric "
                 "fallback (multi_column_layout.py) on %d lines", len(seg.lines),
             )
-        elif not layout_parser_preprocessing.LAYOUTPARSER_AVAILABLE:
+        elif independently_segmented is None and not layout_parser_preprocessing.LAYOUTPARSER_AVAILABLE:
             logger.info(
                 "enhanced_multi_column: layoutparser not importable in this "
                 "environment (import_error=%r) - using geometric fallback "
@@ -666,18 +756,28 @@ def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_br
                 layout_parser_preprocessing._import_error, len(seg.lines),
             )
         try:
+            if independently_segmented is not None:
+                raise RuntimeError("independent column segmentation already used")
             reordered_lines = layout_parser_preprocessing.reorder_lines_using_layout_parser(
                 seg.lines, color_image
             )
+        except RuntimeError:
+            reordered_lines = seg.lines
         except Exception:
             logger.exception("LayoutParser-based reordering raised unexpectedly")
             reordered_lines = None
 
         if reordered_lines is not None:
-            logger.info(
-                "enhanced_multi_column: used LayoutParser-based reordering "
-                "(layout_parser_preprocessing.py) on %d lines", len(seg.lines),
-            )
+            if independently_segmented is not None:
+                logger.info(
+                    "enhanced_multi_column: used independent body-column segmentation "
+                    "on %d lines", len(seg.lines),
+                )
+            else:
+                logger.info(
+                    "enhanced_multi_column: used LayoutParser-based reordering "
+                    "(layout_parser_preprocessing.py) on %d lines", len(seg.lines),
+                )
             seg.lines = reordered_lines
         else:
             if layout_parser_preprocessing.ENABLE_LAYOUTPARSER and layout_parser_preprocessing.LAYOUTPARSER_AVAILABLE:
@@ -688,7 +788,7 @@ def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_br
                     "on %d lines", len(seg.lines),
                 )
             page_width, page_height = ocr_image.size
-            seg.lines = reorder_lines_for_multi_column(seg.lines, page_width, page_height)
+            seg.lines = reorder_lines_for_multi_column(seg.lines, page_width, page_height, column_gap_ratio=column_gap_ratio)
 
     # Filter lines based on width/edge proximity
     if ignore_edges:
@@ -709,6 +809,7 @@ def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_br
 
     previous_color = None  # Track color of previous non-whitespace record
     buffered_text = []     # Buffer for accumulating text of the same color
+    pending_hyphen = None  # Word fragment left by a genuine line-wrap hyphen
 
     for i, line in enumerate(original_lines):
         logger.info(f"Processing line {i + 1}")
@@ -731,11 +832,20 @@ def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_br
                 predictions = rpred.rpred(ocr_model, ocr_image, seg)
                 for record in predictions:
                     record_text = str(record).strip()
+                    if pending_hyphen is not None:
+                        record_text = pending_hyphen + record_text
+                        pending_hyphen = None
                     # Skip if record is empty or contains only non-letter characters
                     if not record_text or not re.search(r'[a-zA-Z]', record_text):
                         logger.debug(f"Skipping record for line {i + 1}, color {line_color}: '{record_text}' (empty or non-letter)")
                         continue
-                    
+                    if record_text.endswith(LINE_WRAP_HYPHEN):
+                        # A genuine end-of-line word-wrap - hold this fragment
+                        # back and glue it onto the next line's text instead
+                        # of emitting the print-layout hyphen mark.
+                        pending_hyphen = record_text[:-1]
+                        continue
+
                     current_color = line_color.upper()
                     if current_color == "RED":
                         if previous_color == "RED":
@@ -769,6 +879,11 @@ def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_br
                 logger.error(f"OCR failed for line {i + 1}, color {line_color}: {str(e)}")
 
         new_lines.extend(split_lines)
+
+    if pending_hyphen is not None:
+        # Nothing followed the last line-wrap hyphen (e.g. end of page) -
+        # emit the fragment rather than silently dropping it.
+        buffered_text.append(pending_hyphen)
 
     # Append any remaining buffered text
     if buffered_text:
@@ -1299,6 +1414,7 @@ def run_batch_transcribe(
     add_page_break=False,
     red_threshold=5.0,
     enhanced_multi_column=False,
+    column_gap_ratio=0.045,
 ):
     """
     Transcribe all images in a project in a background thread.
@@ -1386,6 +1502,7 @@ def run_batch_transcribe(
                             add_page_break=add_page_break,
                             red_threshold=red_threshold,
                             enhanced_multi_column=enhanced_multi_column,
+                            column_gap_ratio=column_gap_ratio,
                         )
                         if isinstance(result, tuple):
                             logger.error(f"Transcription failed for image {image_id}: {result[0]}")
@@ -1504,9 +1621,15 @@ def start_batch_transcribe(project_id):
     else:
         enhanced_multi_column = bool(enhanced_multi_column)
 
+    try:
+        column_gap_ratio = float(body.get("column_gap_ratio", 0.045))
+    except (TypeError, ValueError):
+        return jsonify({"error": "column_gap_ratio must be a number"}), 400
+    column_gap_ratio = max(0.015, min(0.165, column_gap_ratio))
+
     Thread(
         target=run_batch_transcribe,
-        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges, range_from, range_to, add_page_break, red_threshold, enhanced_multi_column),
+        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges, range_from, range_to, add_page_break, red_threshold, enhanced_multi_column, column_gap_ratio),
         daemon=True,
     ).start()
 
@@ -1514,7 +1637,7 @@ def start_batch_transcribe(project_id):
         f"Started batch transcription for project {project_id} "
         f"(mode={mode}, model={model_name}, ignore_edges={ignore_edges}, add_page_break={add_page_break}, "
         f"red_threshold={red_threshold}, range_from={range_from}, range_to={range_to}, "
-        f"enhanced_multi_column={enhanced_multi_column})"
+        f"enhanced_multi_column={enhanced_multi_column}, column_gap_ratio={column_gap_ratio})"
     )
     return jsonify({"message": "Transcription started", "job_id": job_id}), 202
 
@@ -2128,9 +2251,14 @@ if not NO_KRAKEN:
         ignore_edges = (ignore_edges_str.lower() == 'true')
         enhanced_multi_column_str = request.form.get("enhancedMultiColumn", "false")
         enhanced_multi_column = (enhanced_multi_column_str.lower() == 'true')
+        try:
+            column_gap_ratio = float(request.form.get("columnGapRatio", 0.045))
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "text": "columnGapRatio must be a number"}), 400
+        column_gap_ratio = max(0.015, min(0.165, column_gap_ratio))
 
         try:
-            transcribed_results = transcribe_image(temp_path, model_name, ignore_edges=ignore_edges, enhanced_multi_column=enhanced_multi_column)
+            transcribed_results = transcribe_image(temp_path, model_name, ignore_edges=ignore_edges, enhanced_multi_column=enhanced_multi_column, column_gap_ratio=column_gap_ratio)
             if isinstance(transcribed_results, tuple):
                 logger.error(f"Error in transcribe: {transcribed_results[0]}")
                 return jsonify({"status": "error", "text": transcribed_results[0]}), transcribed_results[1]
@@ -2169,6 +2297,11 @@ def transcribe_by_id(image_id):
     except (TypeError, ValueError):
         return jsonify({"status": "error", "message": "redThreshold must be a number", "line_count": 0}), 400
     red_threshold = max(0.0, min(25.0, red_threshold))
+    try:
+        column_gap_ratio = float(request.form.get("columnGapRatio", 0.045))
+    except (TypeError, ValueError):
+        return jsonify({"status": "error", "message": "columnGapRatio must be a number", "line_count": 0}), 400
+    column_gap_ratio = max(0.015, min(0.165, column_gap_ratio))
 
     try:
         result = transcribe_image_by_id(
@@ -2178,6 +2311,7 @@ def transcribe_by_id(image_id):
             add_page_break=add_page_break,
             red_threshold=red_threshold,
             enhanced_multi_column=enhanced_multi_column,
+            column_gap_ratio=column_gap_ratio,
         )
         if isinstance(result, tuple):
             logger.error(f"Error in transcribe_by_id for ID {image_id}: {result[0]}")

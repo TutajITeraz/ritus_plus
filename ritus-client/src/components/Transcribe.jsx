@@ -19,10 +19,15 @@ import {
 import { toaster } from "@/components/ui/toaster";
 import { transcribeImage } from "../apiUtils";
 import RedSensitivitySlider from "./RedSensitivitySlider";
+import ColumnSensitivitySlider from "./ColumnSensitivitySlider";
 import {
   DEFAULT_RED_SENSITIVITY,
   sensitivityToThreshold,
 } from "../utils/redSensitivity";
+import {
+  DEFAULT_COLUMN_SENSITIVITY,
+  sensitivityToColumnGapRatio,
+} from "../utils/columnSensitivity";
 
 // Utility function to sleep for a given number of milliseconds
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -36,10 +41,12 @@ const models = createListCollection({
     { label: "Cremma Generic 1.0.1", value: "cremma-generic-1.0.1.mlmodel" },
     { label: "ManuMcFondue", value: "ManuMcFondue.mlmodel" },
     { label: "Catmus Medieval", value: "catmus-medieval.mlmodel" },
+    { label: "CATMUS Print Model", value: "catmus-print-fondue-large.mlmodel" },
     { label: "McCATMuS (16th-21st c. Polyglot)", value: "McCATMuS_nfd_nofix_V1.mlmodel" },
     { label: "LECTAUREP (French Admin)", value: "lectaurep_base.mlmodel" },
     { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
     { label: "German Handwriting", value: "german_handwriting.mlmodel" },
+    { label: "Modern English Print", value: "en_best.mlmodel" },
   ],
 });
 
@@ -59,6 +66,7 @@ const Transcribe = ({
   const [addPageBreak, setAddPageBreak] = useState(false);
   const [enhancedMultiColumn, setEnhancedMultiColumn] = useState(false);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
+  const [columnSensitivity, setColumnSensitivity] = useState(DEFAULT_COLUMN_SENSITIVITY);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [totalLines, setTotalLines] = useState(0);
@@ -104,7 +112,8 @@ const Transcribe = ({
             ignoreEdges,
             addPageBreak,
             sensitivityToThreshold(redSensitivity),
-            enhancedMultiColumn
+            enhancedMultiColumn,
+            sensitivityToColumnGapRatio(columnSensitivity)
           );
           if (result.status === "success") {
             transcribedCount += 1;
@@ -266,6 +275,13 @@ const Transcribe = ({
                   <Checkbox.Label>Enhanced multi column detection</Checkbox.Label>
               </Checkbox.Root>
             </Box>
+            {enhancedMultiColumn && (
+              <ColumnSensitivitySlider
+                sensitivity={columnSensitivity}
+                onSensitivityChange={setColumnSensitivity}
+                disabled={isTranscribing}
+              />
+            )}
             <RedSensitivitySlider
               sensitivity={redSensitivity}
               onSensitivityChange={setRedSensitivity}

@@ -167,6 +167,9 @@ run_cmd "kraken get 10.5281/zenodo.10886224"
 print_and_log "Downloading catmus-medieval.mlmodel..."
 run_cmd "kraken get 10.5281/zenodo.12743230"
 
+print_and_log "Downloading CATMUS Print Model (catmus-print-fondue-large.mlmodel)..."
+run_cmd "kraken get 10.5281/zenodo.10592716"
+
 print_and_log "Downloading McCATMuS_nfd_nofix_V1.mlmodel..."
 run_cmd "kraken get 10.5281/zenodo.13788177"
 
@@ -178,6 +181,9 @@ run_cmd "kraken get 10.5281/zenodo.8193498"
 
 print_and_log "Downloading German Handwriting (german_handwriting.mlmodel)..."
 run_cmd "kraken get 10.5281/zenodo.7933463"
+
+print_and_log "Downloading Modern English Print Model (en_best.mlmodel)..."
+run_cmd ".venv/bin/kraken get 10.5281/zenodo.2577813"
 
 cp ~/.config/kraken/* ./models/
 

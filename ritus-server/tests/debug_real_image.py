@@ -21,7 +21,7 @@ machines, or the loaded model differs).
 
 Usage
 -----
-1. Drop a real page image into this tests/ directory, named `test_img.png`
+1. Drop a real page image into this tests/ directory, named `rest_real.png`
    (or pass a path as the first argument).
 2. Activate the server venv and run this from anywhere:
 
@@ -62,7 +62,7 @@ def _section(title):
 
 def main():
     image_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "test_img.png"
+        os.path.dirname(os.path.abspath(__file__)), "rest_real.png"
     )
 
     _section("1. Environment diagnostics")
@@ -122,7 +122,7 @@ def main():
     if not os.path.exists(image_path):
         print(f"No image found at {image_path}.")
         print(
-            "Drop a real page image at tests/test_img.png (or pass a path as "
+            "Drop a real page image at tests/rest_real.png (or pass a path as "
             "argv[1]) to exercise detect_layout_regions() against a real "
             "model on a real page - that's the one code path the synthetic "
             "unit tests can't cover."
@@ -139,7 +139,20 @@ def main():
         return
 
     _section("3. LayoutParser region detection (the environment-dependent path)")
-    if not lpp.LAYOUTPARSER_AVAILABLE:
+    if not lpp.ENABLE_LAYOUTPARSER:
+        print(
+            "RITUS_ENABLE_LAYOUTPARSER is not set (defaults to off) - this "
+            "matches the live server, which never loads the LayoutParser "
+            "model in this configuration. Skipping the model-loading probe "
+            "below by default, since loading it has been observed to "
+            "segfault the whole process on at least one machine (likely a "
+            "torch/effdet native-extension ABI mismatch) - that crash would "
+            "kill this script before it reaches section 4, which is usually "
+            "the part you actually want. Set RITUS_ENABLE_LAYOUTPARSER=1 "
+            "before running this script if you specifically want to probe "
+            "the LayoutParser model-loading path."
+        )
+    elif not lpp.LAYOUTPARSER_AVAILABLE:
         print(
             "layoutparser is not importable in this environment - "
             "'enhanced multi column detection' will use ONLY the geometric "
@@ -204,7 +217,13 @@ def main():
         for line in geometric_order[:10]:
             print(f"  id={getattr(line, 'id', '?')}")
 
-        if lpp.LAYOUTPARSER_AVAILABLE:
+        if not lpp.ENABLE_LAYOUTPARSER:
+            print(
+                "Skipping LayoutParser-based order: RITUS_ENABLE_LAYOUTPARSER "
+                "is off (see section 3) - the live server only ever uses the "
+                "geometric heuristic order above in this configuration."
+            )
+        elif lpp.LAYOUTPARSER_AVAILABLE:
             # Note: this calls detect_layout_regions()/order_lines_by_regions()
             # directly, bypassing the RITUS_ENABLE_LAYOUTPARSER opt-in gate in
             # reorder_lines_using_layout_parser(), so this diagnostic always
