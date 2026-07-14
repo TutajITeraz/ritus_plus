@@ -343,6 +343,7 @@ const TableEditor = () => {
                 sequence_in_ms: sequenceCounter,
                 formula_text_from_ms: currentFormulaText,
                 rite_name_from_ms: "",
+                subrite_name_from_ms: "",
                 function_id: "",
               });
               currentFormulaText = "";
@@ -356,6 +357,7 @@ const TableEditor = () => {
                 sequence_in_ms: sequenceCounter,
                 formula_text_from_ms: "",
                 rite_name_from_ms: redContent,
+                subrite_name_from_ms: "",
                 function_id: "",
               });
               i = endIndex + 6;
@@ -365,6 +367,7 @@ const TableEditor = () => {
                 sequence_in_ms: sequenceCounter,
                 formula_text_from_ms: currentFormulaText,
                 rite_name_from_ms: "",
+                subrite_name_from_ms: "",
                 function_id: "",
               });
               currentFormulaText = "";
@@ -378,15 +381,41 @@ const TableEditor = () => {
                 sequence_in_ms: sequenceCounter,
                 formula_text_from_ms: "",
                 rite_name_from_ms: "",
+                subrite_name_from_ms: "",
                 function_id: funcContent,
               });
               i = endIndex + 7;
+            } else if (text.slice(i, i + 8) === "<subrub>") {
+              sequenceCounter += pushIfNotEmpty({
+                id: sequenceCounter,
+                sequence_in_ms: sequenceCounter,
+                formula_text_from_ms: currentFormulaText,
+                rite_name_from_ms: "",
+                subrite_name_from_ms: "",
+                function_id: "",
+              });
+              currentFormulaText = "";
+
+              i += 8;
+              const endIndex = text.indexOf("</subrub>", i);
+              if (endIndex === -1) break;
+              const subrubContent = text.slice(i, endIndex).trim();
+              sequenceCounter += pushIfNotEmpty({
+                id: sequenceCounter,
+                sequence_in_ms: sequenceCounter,
+                formula_text_from_ms: "",
+                rite_name_from_ms: "",
+                subrite_name_from_ms: subrubContent,
+                function_id: "",
+              });
+              i = endIndex + 9;
             } else if (text[i] === "⏎") {
               sequenceCounter += pushIfNotEmpty({
                 id: sequenceCounter,
                 sequence_in_ms: sequenceCounter,
                 formula_text_from_ms: currentFormulaText,
                 rite_name_from_ms: "",
+                subrite_name_from_ms: "",
                 function_id: "",
               });
               currentFormulaText = "";
@@ -402,6 +431,7 @@ const TableEditor = () => {
             sequence_in_ms: sequenceCounter,
             formula_text_from_ms: currentFormulaText,
             rite_name_from_ms: "",
+            subrite_name_from_ms: "",
             function_id: "",
           });
 
@@ -433,6 +463,7 @@ const TableEditor = () => {
           const nextRow = allParsedRows[i + 1];
           currentRow.formula_text_from_ms += nextRow.formula_text_from_ms;
           if (!currentRow.rite_name_from_ms) currentRow.rite_name_from_ms = nextRow.rite_name_from_ms;
+          if (!currentRow.subrite_name_from_ms) currentRow.subrite_name_from_ms = nextRow.subrite_name_from_ms;
           if (!currentRow.function_id) currentRow.function_id = nextRow.function_id;
           toImg = nextRow._img;
           i++;
@@ -445,6 +476,7 @@ const TableEditor = () => {
           where_in_ms_to: toImg.name || "",
           formula_text_from_ms: currentRow.formula_text_from_ms,
           rite_name_from_ms: currentRow.rite_name_from_ms,
+          subrite_name_from_ms: currentRow.subrite_name_from_ms,
           function_id: currentRow.function_id,
           sequence_in_ms: currentRow.sequence_in_ms,
           digital_page_number: fromImg.page_number || 1,

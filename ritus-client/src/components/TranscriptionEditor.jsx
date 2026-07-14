@@ -22,7 +22,7 @@ const TranscriptionEditor = ({
       .replace(/<br\s*\/?>/gi, "<br>")
       .trim();
 
-  // Convert <red> tags to <b> and <func> to <i> for display
+  // Convert <red> tags to <b>, <func> to <i>, and <subrub> to <u> for display
   const parseToHtml = (text) => {
     console.debug("Parsing transcriptionText to HTML:", text);
     const result = text
@@ -31,6 +31,8 @@ const TranscriptionEditor = ({
         .replace(/<\/red>/gi, "</b>")
         .replace(/<func>/gi, "<i>")
         .replace(/<\/func>/gi, "</i>")
+        .replace(/<subrub>/gi, "<u>")
+        .replace(/<\/subrub>/gi, "</u>")
         .replace(/\n/g, "<br>")
       : "";
     console.debug("Parsed HTML:", result);
@@ -46,6 +48,8 @@ const TranscriptionEditor = ({
       .replace(/<\/b>|<\/strong>/gi, "</red>")
       .replace(/<i>/gi, "<func>")
       .replace(/<\/i>/gi, "</func>")
+      .replace(/<u>/gi, "<subrub>")
+      .replace(/<\/u>/gi, "</subrub>")
       .replace(/<br>/gi, "\n")
       .replace(/&nbsp;/g, " ");
     console.debug("Parsed tagged text:", normalizedHtml);
@@ -91,7 +95,7 @@ const TranscriptionEditor = ({
   // Clean editor
   function cleanEditor() {
     const editor = editorRef.current;
-    const allowedTags = ["I", "B", "STRONG", "DIV", "BR"];
+    const allowedTags = ["I", "B", "STRONG", "U", "DIV", "BR"];
     console.debug("Cleaning editor, initial HTML:", editor.innerHTML);
 
     function clean(node) {
@@ -188,6 +192,37 @@ const TranscriptionEditor = ({
       console.debug("Italic applied, updated transcriptionText:", taggedText);
     } catch (e) {
       console.debug("Error toggling italic:", e.message);
+    }
+  };
+
+  // Toggle selected text to underline (subrub)
+  const toggleUnderline = () => {
+    if (isDisabled) {
+      console.debug("Underline toggle ignored: Editor is disabled");
+      return;
+    }
+    const selection = window.getSelection();
+    if (!selection.rangeCount || selection.isCollapsed) {
+      console.debug("No text selected for underline toggle");
+      toaster.create({
+        title: "No Text Selected",
+        description: "Please select some text to change its style.",
+        type: "warning",
+        duration: 5000,
+      });
+      return;
+    }
+
+    try {
+      document.execCommand("removeFormat", false, null); // Remove all formatting
+      document.execCommand("underline", false, null); // Apply underline only
+      cleanEditor();
+      const taggedText = parseToTaggedText(editorRef.current.innerHTML).trim();
+      setLocalContent(taggedText);
+      setTranscriptionText(taggedText);
+      console.debug("Underline applied, updated transcriptionText:", taggedText);
+    } catch (e) {
+      console.debug("Error toggling underline:", e.message);
     }
   };
 
@@ -295,6 +330,10 @@ const TranscriptionEditor = ({
             color: "blue",
             fontStyle: "italic",
           },
+          "& u": {
+            color: "green",
+            textDecoration: "underline",
+          },
         }}
         suppressContentEditableWarning
       />
@@ -304,10 +343,13 @@ const TranscriptionEditor = ({
             Text
           </Button>
           <Button size="sm" colorPalette="red" onClick={toggleBold} flex="0.8">
-            Rite in a rubric
+            Rubric
+          </Button>
+          <Button size="sm" colorPalette="green" onClick={toggleUnderline} flex="0.8">
+            Subrubric
           </Button>
           <Button size="sm" colorPalette="blue" onClick={toggleItalic} flex="0.8">
-            Prayer function
+            Function
           </Button>
           <Button size="sm" onClick={insertLineBreak} flex="0.1">
             ⏎
