@@ -269,7 +269,7 @@ const TranscriptionEditor = ({
   };
 
   return (
-    <Stack spacing={2} flex="1">
+    <Stack spacing={2} flex="1" minH={0}>
       <Box
         ref={editorRef}
         id="editor"
@@ -280,8 +280,8 @@ const TranscriptionEditor = ({
         borderColor="gray.200"
         borderRadius="md"
         p={2}
-        h="350px"
-        maxH="600px"
+        flex="1"
+        minH="150px"
         overflowY="auto"
         whiteSpace="pre-wrap"
         bg="white"

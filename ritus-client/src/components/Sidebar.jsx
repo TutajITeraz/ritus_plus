@@ -11,7 +11,7 @@ import {
   Link,
   Editable,
   FileUpload,
-  Accordion,
+  Tabs,
   Portal,
   Popover,
   HStack,
@@ -22,7 +22,8 @@ import {
   Checkbox,
 } from "@chakra-ui/react";
 import { RiFileEditFill } from "react-icons/ri";
-import { LuUpload } from "react-icons/lu";
+import { LuUpload, LuFolder } from "react-icons/lu";
+import { GiFeather } from "react-icons/gi";
 import { FaRegTrashAlt, FaDownload, FaStop } from "react-icons/fa";
 import { TiArrowBack } from "react-icons/ti";
 import { useState, useEffect, useRef } from "react";
@@ -508,11 +509,20 @@ const Sidebar = ({
   };
 
   return (
-    <Box w="400px" bg="gray.50" p={4} overflowY="auto" h="100vh">
+    <Box
+      w="400px"
+      bg="gray.50"
+      p={4}
+      h="100vh"
+      display="flex"
+      flexDir="column"
+      overflow="hidden"
+    >
       <Image
         src="/logo.svg"
         alt="Logo"
-        height="40px"
+        maxHeight="60px"
+        maxWidth="160px"
         mb={4}
         cursor="pointer"
         onClick={() => navigate("/")}
@@ -527,15 +537,29 @@ const Sidebar = ({
       >
         <TiArrowBack />Back to the Projects list
       </Link>
-      <Accordion.Root collapsible defaultValue={["project-info"]}>
-        <Accordion.Item value="project-info">
-          <Accordion.ItemTrigger>
-            <Text fontWeight="bold">Project</Text>
-            <Accordion.ItemIndicator />
-          </Accordion.ItemTrigger>
-          <Accordion.ItemContent>
-            <Accordion.ItemBody>
-              {project && (
+      <Tabs.Root
+        defaultValue="project"
+        display="flex"
+        flexDir="column"
+        flex="1"
+        minH={0}
+      >
+        <Tabs.List>
+          <Tabs.Trigger value="project">
+            <LuFolder /> Project
+          </Tabs.Trigger>
+          <Tabs.Trigger value="transcription">
+            <GiFeather /> Transcription
+          </Tabs.Trigger>
+          <Tabs.Indicator />
+        </Tabs.List>
+        <Tabs.Content
+          value="project"
+          flex="1"
+          minH={0}
+          overflowY="auto"
+        >
+          {project && (
                 <Stack spacing={3}>
                   <Flex align="center">
                     <Text fontWeight="bold" minW="80px">
@@ -747,19 +771,17 @@ const Sidebar = ({
                     <FaRegTrashAlt /> Delete All Images
                   </Button>
                 </Stack>
-              )}
-            </Accordion.ItemBody>
-          </Accordion.ItemContent>
-        </Accordion.Item>
+          )}
+        </Tabs.Content>
 
-        <Accordion.Item value="transcription">
-          <Accordion.ItemTrigger>
-            <Text fontWeight="bold">Transcription</Text>
-            <Accordion.ItemIndicator />
-          </Accordion.ItemTrigger>
-          <Accordion.ItemContent>
-            <Accordion.ItemBody display="flex" flexDir="column">
-              <Stack>
+        <Tabs.Content
+          value="transcription"
+          display="flex"
+          flexDir="column"
+          flex="1"
+          minH={0}
+        >
+          <Stack flex="1" minH={0} display="flex" flexDir="column">
                 <TranscriptionEditor
                   transcriptionText={transcriptionText}
                   setTranscriptionText={setTranscriptionText}
@@ -788,11 +810,9 @@ const Sidebar = ({
                     onSave={handleAIAutoFixSave}
                   />
                 </Popover.Root>
-              </Stack>
-            </Accordion.ItemBody>
-          </Accordion.ItemContent>
-        </Accordion.Item>
-      </Accordion.Root>
+          </Stack>
+        </Tabs.Content>
+      </Tabs.Root>
       {/* Background transcribe dialog */}
       <Dialog.Root
         open={transcribeDialogOpen}
