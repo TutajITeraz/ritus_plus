@@ -89,7 +89,7 @@ const TableEditor = () => {
 
   const structureCollection = createListCollection({
     items: [
-      { label: "Content Structure", value: "content" },
+      { label: "eCatalogus Structure", value: "content" },
       { label: "Usuarium Structure", value: "usuarium" },
     ],
   });
@@ -295,7 +295,7 @@ const TableEditor = () => {
     if (structureKey !== "content") {
       toaster.create({
         title: "Error",
-        description: "Load Transcription is only supported for Content Structure",
+        description: "Load Transcription is only supported for eCatalogus Structure",
         type: "error",
         duration: 3000,
       });
@@ -570,7 +570,7 @@ const TableEditor = () => {
     if (structureKey !== "content") {
       toaster.create({
         title: "Error",
-        description: "Batch Process is only supported for Content Structure",
+        description: "Batch Process is only supported for eCatalogus Structure",
         type: "error",
         duration: 3000,
       });
@@ -724,7 +724,7 @@ const TableEditor = () => {
                 <Select.ValueText
                   placeholder={
                     structureKey === "content"
-                      ? "Content Structure"
+                      ? "eCatalogus Structure"
                       : "Usuarium Structure"
                   }
                 />
