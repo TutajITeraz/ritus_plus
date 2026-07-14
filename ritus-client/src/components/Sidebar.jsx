@@ -758,11 +758,7 @@ const Sidebar = ({
             <Accordion.ItemIndicator />
           </Accordion.ItemTrigger>
           <Accordion.ItemContent>
-            <Accordion.ItemBody
-              display="flex"
-              flexDir="column"
-              h="calc(100vh - 300px)"
-            >
+            <Accordion.ItemBody display="flex" flexDir="column">
               <Stack>
                 <TranscriptionEditor
                   transcriptionText={transcriptionText}
