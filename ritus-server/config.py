@@ -1,5 +1,5 @@
-#SERVER_URL = "https://ritus-indexer.ispan.pl" # Zmień na HTTPS
-SERVER_URL = "http://127.0.0.1:5000" # Zmień na HTTPS
+SERVER_URL = "https://ritus-indexer.ispan.pl" # Zmień na HTTPS
+#SERVER_URL = "http://127.0.0.1:5000" # Zmień na HTTPS
 
 # Admin credentials
 ADMIN_USERNAME = "admin"
