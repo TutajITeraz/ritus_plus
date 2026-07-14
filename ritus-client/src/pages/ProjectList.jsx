@@ -686,7 +686,7 @@ const ProjectList = () => {
       <Flex justify="space-between" align="center" mb={4}>
         <Image src="/logo.svg" alt="Ritus Logo" height="40px" />
         <HStack>
-          <Text fontSize="sm" color="gray.500">v. 1.13</Text>
+          <Text fontSize="sm" color="gray.500">v. 1.14</Text>
           {currentUser && (
             <>
               <Text fontSize="sm">Welcome, {currentUser.username}</Text>
