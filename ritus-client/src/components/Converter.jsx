@@ -14,7 +14,20 @@ import { toaster } from "@/components/ui/toaster";
 import {
   ContentStructure_conv,
   UsuariumStructure_conv,
+  CantusStructure_conv,
 } from "./ConversionDescription";
+
+const CONVERSION_MAPS = {
+  content: ContentStructure_conv,
+  usuarium: UsuariumStructure_conv,
+  cantus: CantusStructure_conv,
+};
+
+const STRUCTURE_NAMES = {
+  content: "ContentStructure",
+  usuarium: "UsuariumStructure",
+  cantus: "CantusStructure",
+};
 
 const Converter = ({
   open,
@@ -32,12 +45,8 @@ const Converter = ({
   const [progress, setProgress] = useState(0);
   const [mappingCache, setMappingCache] = useState(new Map());
 
-  const conversionMap =
-    sourceStructureKey === "content"
-      ? ContentStructure_conv
-      : UsuariumStructure_conv;
-  const targetStructureName =
-    targetStructureKey === "content" ? "ContentStructure" : "UsuariumStructure";
+  const conversionMap = CONVERSION_MAPS[sourceStructureKey] || {};
+  const targetStructureName = STRUCTURE_NAMES[targetStructureKey];
 
   const fetchMappingFile = useCallback(async (filePath) => {
     if (mappingCache.has(filePath)) {

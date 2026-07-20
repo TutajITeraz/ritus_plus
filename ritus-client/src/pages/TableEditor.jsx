@@ -24,6 +24,7 @@ import DataTable from "../components/DataTable";
 import Converter from "../components/Converter";
 import ContentStructure from "../utils/ContentStructure";
 import UsuariumStructure from "../utils/UsuariumStructure";
+import CantusStructure from "../utils/CantusStructure";
 import {
   fetchProjectContent,
   fetchImages,
@@ -50,6 +51,14 @@ const generateEmptyRow = (structure) => {
   return row;
 };
 
+// Structure pairs with a real field mapping defined in ConversionDescription.jsx.
+// content<->usuarium is fully bidirectional; cantus->content is currently
+// one-way only (see the Cantus Index conversion report for unmapped fields).
+const canConvertStructures = (from, to) =>
+  (["content", "usuarium"].includes(from) &&
+    ["content", "usuarium"].includes(to)) ||
+  (from === "cantus" && to === "content");
+
 const hasMeaningfulData = (data) => {
   return data.some((row) =>
     Object.entries(row).some(
@@ -67,6 +76,7 @@ const TableEditor = () => {
   const structures = {
     content: ContentStructure,
     usuarium: UsuariumStructure,
+    cantus: CantusStructure,
   };
   const [structureKey, setStructureKey] = useState("content");
   const [pendingStructureKey, setPendingStructureKey] = useState(null);
@@ -91,37 +101,11 @@ const TableEditor = () => {
     items: [
       { label: "eCatalogus Structure", value: "content" },
       { label: "Usuarium Structure", value: "usuarium" },
+      { label: "Cantus Index", value: "cantus" },
     ],
   });
 
   const navigate = useNavigate();
-
-  // Debug component types
-  useEffect(() => {
-    //console.log("Debug Component Types:");
-    //console.log("DataTable:", DataTable);
-    //console.log("Converter:", Converter);
-    //console.log("Dialog:", Dialog);
-    //console.log("Dialog.Root:", Dialog?.Root);
-    //console.log("NumberInput:", NumberInput);
-    //console.log("NumberInput.Root:", NumberInput?.Root);
-    //console.log("Progress:", Progress);
-    //console.log("Progress.Root:", Progress?.Root);
-    //console.log("ContentStructure:", ContentStructure);
-    //console.log("UsuariumStructure:", UsuariumStructure);
-    if (typeof DataTable !== "function") {
-      console.error("DataTable is not a valid component:", DataTable);
-    }
-    if (typeof Converter !== "function") {
-      console.error("Converter is not a valid component:", Converter);
-    }
-    if (typeof Dialog?.Root !== "function") {
-      console.error("Dialog.Root is not a valid component:", Dialog?.Root);
-    }
-    if (typeof Progress?.Root !== "function") {
-      console.error("Progress.Root is not a valid component:", Progress?.Root);
-    }
-  }, []);
 
   const handleStructureChange = (newKey) => {
     if (newKey === structureKey) return;
@@ -723,9 +707,9 @@ const TableEditor = () => {
               <Select.Trigger>
                 <Select.ValueText
                   placeholder={
-                    structureKey === "content"
-                      ? "eCatalogus Structure"
-                      : "Usuarium Structure"
+                    structureCollection.items.find(
+                      (item) => item.value === structureKey
+                    )?.label
                   }
                 />
               </Select.Trigger>
@@ -807,17 +791,26 @@ const TableEditor = () => {
               <Dialog.Body>
                 <Text>
                   Existing data detected. Switching to{" "}
-                  {pendingStructureKey === "usuarium" ? "Usuarium" : "Content"} Structure.
+                  {
+                    structureCollection.items.find(
+                      (item) => item.value === pendingStructureKey
+                    )?.label
+                  }
+                  .
                 </Text>
                 <Text mt={2}>
-                  You can convert the current data or drop it and start fresh.
+                  {canConvertStructures(structureKey, pendingStructureKey)
+                    ? "You can convert the current data or drop it and start fresh."
+                    : "Conversion is not supported for this structure. You can drop the current data and start fresh."}
                 </Text>
               </Dialog.Body>
               <Dialog.Footer>
                 <Button variant="outline" onClick={() => setShowSwitchDialog(false)}>Cancel</Button>
-                <Button colorScheme="blue" onClick={handleConvertAndSwitch}>
-                  Convert and Switch
-                </Button>
+                {canConvertStructures(structureKey, pendingStructureKey) && (
+                    <Button colorScheme="blue" onClick={handleConvertAndSwitch}>
+                      Convert and Switch
+                    </Button>
+                  )}
                 <Button colorScheme="red" onClick={handleDropAndSwitch}>
                   Drop Data and Switch
                 </Button>

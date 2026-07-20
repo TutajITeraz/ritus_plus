@@ -91,46 +91,65 @@ const AIAutoFixModal = ({
     <Popover.Root
       open={isOpen}
       onOpenChange={(e) => onClose()}
-      positioning={{ placement: "right" }}
+      positioning={{ placement: "right", overflowPadding: 16 }}
       lazyMount
       unmountOnExit
     >
-      <PopoverPositioner>
-        <PopoverContent maxW="500px" h="560px" borderRadius="md" boxShadow="lg">
-          <PopoverCloseTrigger asChild>
-            <Button
-              position="absolute"
-              top={2}
-              right={2}
-              size="sm"
-              variant="ghost"
-              onClick={onClose}
+      <Portal>
+        <PopoverPositioner>
+          <PopoverContent
+            maxW="380px"
+            w="380px"
+            h="calc(100vh - 32px)"
+            maxH="calc(100vh - 32px)"
+            display="flex"
+            flexDirection="column"
+            overflow="hidden"
+            borderRadius="md"
+            boxShadow="lg"
+          >
+            <PopoverCloseTrigger asChild>
+              <Button
+                position="absolute"
+                top={2}
+                right={2}
+                size="sm"
+                variant="ghost"
+                onClick={onClose}
+              >
+                <IoClose />
+              </Button>
+            </PopoverCloseTrigger>
+            <PopoverArrow>
+              <PopoverArrowTip />
+            </PopoverArrow>
+            <PopoverTitle fontWeight="bold" p={4} pb={0} flexShrink={0}>
+              Text Fixed by AI
+            </PopoverTitle>
+            <PopoverBody
+              p={4}
+              flex="1"
+              minH={0}
+              display="flex"
+              flexDirection="column"
+              overflow="hidden"
             >
-              <IoClose />
-            </Button>
-          </PopoverCloseTrigger>
-          <PopoverArrow>
-            <PopoverArrowTip />
-          </PopoverArrow>
-          <PopoverTitle fontWeight="bold" p={4} pb={0}>
-            Text Fixed by AI
-          </PopoverTitle>
-          <PopoverBody p={4} h="calc(560px - 48px)">
-            <Stack direction="column" spacing={2}>
-              {waitingForAIAnswer ? (
-                <SkeletonText noOfLines={1} spacing="4" />
-              ) : (
-                <TranscriptionEditor
-                  transcriptionText={aiFixedText}
-                  setTranscriptionText={setAiFixedText}
-                  selectedImage={selectedImage}
-                  handleTranscriptionUpdate={handleSave}
-                />
-              )}
-            </Stack>
-          </PopoverBody>
-        </PopoverContent>
-      </PopoverPositioner>
+              <Stack direction="column" spacing={2} flex="1" minH={0}>
+                {waitingForAIAnswer ? (
+                  <SkeletonText noOfLines={1} spacing="4" />
+                ) : (
+                  <TranscriptionEditor
+                    transcriptionText={aiFixedText}
+                    setTranscriptionText={setAiFixedText}
+                    selectedImage={selectedImage}
+                    handleTranscriptionUpdate={handleSave}
+                  />
+                )}
+              </Stack>
+            </PopoverBody>
+          </PopoverContent>
+        </PopoverPositioner>
+      </Portal>
     </Popover.Root>
   );
 };

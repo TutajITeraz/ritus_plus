@@ -132,3 +132,61 @@ export const UsuariumStructure_conv = {
     },
   },
 };
+
+// Cantus Index -> eCatalogus (Content) Structure.
+// Only fields with a clear, unambiguous counterpart are mapped here.
+// Fields left out (field_position, field_feast, field_mode, field_differentia,
+// field_finalis, field_differentia_database, field_image_link, field_melody,
+// field_melody_id, field_full_text) have no reliable equivalent in
+// ContentStructure - see the conversion report for details.
+export const CantusStructure_conv = {
+  field_folio: {
+    ContentStructure: "where_in_ms_from",
+  },
+  field_full_text_original: {
+    ContentStructure: "formula_text_from_ms",
+  },
+  field_rubrics: {
+    ContentStructure: "rite_name_from_ms",
+  },
+  field_notes_chant: {
+    ContentStructure: "comments",
+  },
+  field_imageref_from_chant: {
+    ContentStructure: "digital_page_number",
+  },
+  field_cantus_id: {
+    ContentStructure: "reference_to_other_items",
+    mappingFunction: (row) => {
+      const value = row.field_cantus_id;
+      return value ? `CANTUS:${value}` : "";
+    },
+  },
+  // field_office uses Cantus Database hour codes (V, C, M, L, ...) while
+  // ContentStructure's mass_hour uses a different code set (V1, C1, I, III, ...).
+  // Only the codes that are unambiguous under both vocabularies are mapped;
+  // the rest (e.g. "N" which could mean None or Nocturn) are left blank.
+  field_office: {
+    ContentStructure: "mass_hour",
+    mappingFile: "/data/mapping/cantus_office_to_mass_hour.tsv",
+  },
+  // field_genre uses Cantus Database genre codes, which only partially overlap
+  // with ContentStructure's genre/function_id vocabularies (rite-specific,
+  // e.g. Ambrosian terms like "Ingressa"/"Confractorium"). Only exact,
+  // unambiguous code matches are mapped; subfunction_id and
+  // liturgical_genre_id are left unmapped as there is no reliable source data.
+  field_genre: {
+    ContentStructure: ["genre", "function_id"],
+    mappingFile: {
+      genre: "/data/mapping/cantus_genre_to_genre.tsv",
+      function_id: "/data/mapping/cantus_genre_to_function_id.tsv",
+    },
+  },
+  // field_marginalia records physical position (Left/Right/Top/Bottom) as well
+  // as an explicit "Added" status. Only "Added" maps cleanly onto
+  // original_or_added; positional codes don't imply originality either way.
+  field_marginalia: {
+    ContentStructure: "original_or_added",
+    mappingFile: "/data/mapping/cantus_marginalia_to_original_or_added.tsv",
+  },
+};

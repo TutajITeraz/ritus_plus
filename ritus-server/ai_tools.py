@@ -12,11 +12,32 @@ no longer used (Ollama runs locally).
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
 
 from prompt_template import SYSTEM_PROMPT
+
+# Some Ollama models (e.g. gemma) fall back to per-byte tokens for rare
+# Unicode codepoints outside their vocabulary (ligatures like U+A753 "ꝓ").
+# When streamed, each byte token can arrive as its own chunk before the full
+# multi-byte sequence is complete, so llama.cpp emits it as a literal
+# "<0xHH>" placeholder instead of the decoded character. Collapse runs of
+# these placeholders back into the real UTF-8 character they represent.
+_BYTE_FALLBACK_RUN_RE = re.compile(r"(?:<0x[0-9A-Fa-f]{2}>)+")
+_BYTE_FALLBACK_TOKEN_RE = re.compile(r"<0x([0-9A-Fa-f]{2})>")
+
+
+def _fix_byte_fallback_tokens(text):
+    def _decode_run(match):
+        raw = bytes(int(h, 16) for h in _BYTE_FALLBACK_TOKEN_RE.findall(match.group()))
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return match.group()
+
+    return _BYTE_FALLBACK_RUN_RE.sub(_decode_run, text)
 
 OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
@@ -193,8 +214,8 @@ def _run_ollama_chat(
     tokens_per_sec = (eval_count / (eval_duration_ns / 1e9)) if eval_duration_ns > 0 else 0
 
     return {
-        "predicted": "".join(collected_response).strip(),
-        "thinking_text": "".join(collected_thinking).strip(),
+        "predicted": _fix_byte_fallback_tokens("".join(collected_response).strip()),
+        "thinking_text": _fix_byte_fallback_tokens("".join(collected_thinking).strip()),
         "thinking_time": thinking_time,
         "response_time": response_time,
         "total_time": total_time,

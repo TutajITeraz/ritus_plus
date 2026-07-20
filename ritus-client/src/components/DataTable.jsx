@@ -313,12 +313,31 @@ const EditableTextarea = ({ value, onChange, onBlur, rowId, setSelection }) => {
   );
 };
 
-// Function to get cell content for a column
+// Look up a dictionary entry by key in O(1) via the byValue Map built in the
+// loadDictionaries effect, instead of a linear Array.find scan. Dictionaries
+// like cantus_ids.csv have 60k+ rows, so a per-cell/per-row linear scan is
+// prohibitively slow once real data is loaded into them.
+const findDictionaryEntryByValue = (dict, rawValue) => {
+  if (!dict || rawValue == null || rawValue === "") return undefined;
+  return dict.byValue?.get(String(rawValue));
+};
+
+// Resolve a dictionary entry for a select value that may be stored either as
+// the dictionary key (normal app flow, via the dropdown) or as its label
+// (e.g. CSV imports that carry human-readable text like "Omnium Sanctorum"
+// instead of the internal code "14110100").
+const findDictionaryEntry = (dict, rawValue) => {
+  const byValue = findDictionaryEntryByValue(dict, rawValue);
+  if (byValue) return byValue;
+  if (!dict || rawValue == null || rawValue === "") return undefined;
+  return dict.byLabel?.get(String(rawValue).trim().toLowerCase());
+};
+
 const getCellContent = (row, col, dictionaries, tableStructure) => {
   if (col.computeFunction) {
     const content = tableStructure.reduce((acc, c) => {
       if (c.type === "automatic" && dictionaries[c.name] && c.parentColumn) {
-        const entry = dictionaries[c.name]?.items.find((o) => String(o.value) === String(row[c.parentColumn]));
+        const entry = findDictionaryEntryByValue(dictionaries[c.name], row[c.parentColumn]);
         acc[c.name] = entry?.label || "N/A";
       } else {
         acc[c.name] = row[c.name] ?? "";
@@ -327,7 +346,7 @@ const getCellContent = (row, col, dictionaries, tableStructure) => {
     }, {});
     return col.computeFunction(content) || "N/A";
   } else if (col.type === "automatic" && dictionaries[col.name] && col.parentColumn) {
-    const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(row[col.parentColumn]));
+    const entry = findDictionaryEntryByValue(dictionaries[col.name], row[col.parentColumn]);
     return entry?.label || "N/A";
   } else if (col.display_element) {
     return col.display_element(row[col.name] ?? "");
@@ -342,7 +361,7 @@ const getDisplayValue = (row, col, dictionaries, tableStructure) => {
   if (col.dictionary && col.type === "select") {
     const selected = row[col.name];
     if (selected) {
-      const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(selected));
+      const entry = findDictionaryEntry(dictionaries[col.name], selected);
       value = entry?.label || selected;
     } else {
       value = "";
@@ -369,7 +388,7 @@ const getExportValue = (row, col, dictionaries, tableStructure) => {
     if (col.type === "select" || (col.type === "number" && !col.parentColumn)) {
       const selected = row[col.name];
       if (selected) {
-        const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(selected));
+        const entry = findDictionaryEntry(dictionaries[col.name], selected);
         value = entry?.exportValue || selected;
       } else {
         value = "";
@@ -377,7 +396,7 @@ const getExportValue = (row, col, dictionaries, tableStructure) => {
     } else if (col.type === "automatic") {
       const selected = row[col.parentColumn];
       if (selected) {
-        const entry = dictionaries[col.name]?.items.find((o) => String(o.value) === String(selected));
+        const entry = findDictionaryEntryByValue(dictionaries[col.name], selected);
         value = entry?.exportValue || entry?.label || "N/A";
       } else {
         value = "N/A";
@@ -527,8 +546,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           value != null &&
           value !== ""
         ) {
-          const options = dictionaries[col.name]?.items || [];
-          if (!options.some((opt) => opt.value === value)) {
+          if (!findDictionaryEntry(dictionaries[col.name], value)) {
             errors.push({
               rowId: row._internalId,
               columnName: col.name,
@@ -1062,8 +1080,25 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
         skipEmptyLines: true,
         complete: (results) => {
           const csvColumns = results.meta.fields || [];
+          // Match CSV headers to columns by internal name first, falling back to
+          // a normalized display_name comparison so imports of externally
+          // generated CSVs (e.g. Cantus Index exports using human-readable
+          // headers like "Genre" instead of "field_genre") still populate.
+          const normalizeHeader = (s) =>
+            (s || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+          const matchHeader = (col) => {
+            if (csvColumns.includes(col.name)) return col.name;
+            const target = normalizeHeader(col.display_name || col.name);
+            return (
+              csvColumns.find((h) => normalizeHeader(h) === target) || null
+            );
+          };
+          const headerByColName = tableStructure.reduce((acc, col) => {
+            acc[col.name] = matchHeader(col);
+            return acc;
+          }, {});
           const newVisibleColumns = tableStructure.reduce((acc, col) => {
-            acc[col.name] = csvColumns.includes(col.name);
+            acc[col.name] = headerByColName[col.name] != null;
             return acc;
           }, {});
           setVisibleColumns(newVisibleColumns);
@@ -1071,10 +1106,13 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           const sequenceCol = tableStructure.find(
             (col) => col.type === "sequence"
           )?.name;
+          const sequenceHeader = sequenceCol
+            ? headerByColName[sequenceCol]
+            : null;
           let hasValidSequence = false;
-          if (sequenceCol && csvColumns.includes(sequenceCol)) {
+          if (sequenceHeader) {
             const sequences = results.data
-              .map((row) => row[sequenceCol])
+              .map((row) => row[sequenceHeader])
               .filter((seq) => seq != null && seq !== "");
             hasValidSequence =
               sequences.length === results.data.length &&
@@ -1088,14 +1126,16 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             const newRow = { _internalId: getUniqueId() };
             tableStructure.forEach((col) => {
               if (col.type !== "automatic" && !col.computeFunction) {
+                const header = headerByColName[col.name];
+                const rawValue = header != null ? row[header] : undefined;
                 let value;
                 if (col.type === "number") {
                   value =
-                    (row[col.name] === "" || row[col.name] == null) && col.can_be_null
+                    (rawValue === "" || rawValue == null) && col.can_be_null
                       ? null
-                      : Number(row[col.name]);
+                      : Number(rawValue);
                 } else if (col.type === "boolean") {
-                  const raw = row[col.name];
+                  const raw = rawValue;
                   if (raw === "" || raw == null) {
                     value = null;
                   } else if (
@@ -1114,7 +1154,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                     value = null; // fallback if something weird
                   }
                 } else {
-                  value = row[col.name];
+                  value = rawValue;
                 }
                 newRow[col.name] = value ?? col.value ?? "";
               }
@@ -1472,14 +1512,19 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             ? undefined
             : ({ row, onRowChange }) => {
                 if (col.dictionary && col.type === "select") {
-                  const options = (dictionaries[col.name]?.items || []).map((item) => ({
+                  const dictItems = dictionaries[col.name]?.items || [];
+                  const options = dictItems.map((item) => ({
                     value: String(item.value),
                     label: item.label,
                   }));
+                  const resolvedEntry = findDictionaryEntry(dictionaries[col.name], row[col.name]);
+                  const selectValue = resolvedEntry
+                    ? String(resolvedEntry.value)
+                    : String(row[col.name] ?? "");
                   return (
                     <select
                       className="rdg-text-editor"
-                      value={String(row[col.name] ?? "")}
+                      value={selectValue}
                       onChange={(event) => {
                         console.log("Select changed:", {
                           dataId: row.id,
@@ -1736,10 +1781,25 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
             col.type === "list") &&
           visibleColumns[col.name]
       );
+
+      // Multiple columns can reference the same dictionary file (e.g. Cantus
+      // ID and Full text both read cantus_ids.csv, a 60k+ row file) - fetch
+      // and parse each distinct file once, and fetch files concurrently
+      // instead of serially awaiting each one.
+      const uniqueFiles = [...new Set(dictionaryColumns.map((col) => col.dictionary))];
+      const parsedByFile = new Map(
+        await Promise.all(
+          uniqueFiles.map(async (file) => {
+            const response = await fetch(`/data/${file}`);
+            const csvText = await response.text();
+            const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true }).data;
+            return [file, parsed];
+          })
+        )
+      );
+
       for (const col of dictionaryColumns) {
-        const response = await fetch(`/data/${col.dictionary}`);
-        const csvText = await response.text();
-        const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true }).data;
+        const parsed = parsedByFile.get(col.dictionary);
         const keyCol = col.dictionary_key_col || (col.type === "select" || col.type === "list" ? "name" : "id");
         const displayCol = col.dictionary_display_col || (col.type === "select" || col.type === "list" ? "name" : "text");
         const exportCol = col.dictionary_export_col || (col.type === "automatic" ? displayCol : keyCol);
@@ -1752,6 +1812,12 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           }))
           .sort((a, b) => a.label.localeCompare(b.label));
         const collection = createListCollection({ items });
+        // O(1) lookup maps for findDictionaryEntry/findDictionaryEntryByValue,
+        // used instead of scanning `items` linearly on every cell render.
+        collection.byValue = new Map(items.map((item) => [String(item.value), item]));
+        collection.byLabel = new Map(
+          items.map((item) => [String(item.label).trim().toLowerCase(), item])
+        );
         newDictionaries[col.name] = collection;
       }
       setDictionaries(newDictionaries);
@@ -2172,26 +2238,6 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
               rowIdx: args.rowIdx,
             });
             setTimeout(() => {
-              if (gridRef.current) {
-                gridRef.current.selectCell({
-                  rowIdx: args.rowIdx,
-                  idx: args.column.idx,
-                });
-                gridRef.current.scrollToCell({
-                  rowIdx: args.rowIdx,
-                  idx: args.column.idx,
-                });
-                const cellElement = document.querySelector(
-                  `.rdg-cell[row-idx="${args.rowIdx}"][column-idx="${args.column.idx}"]`
-                );
-                if (cellElement) {
-                  cellElement.focus();
-                  console.log("Focused cell element:", {
-                    rowIdx: args.rowIdx,
-                    colIdx: args.column.idx,
-                  });
-                }
-              }
               setSelectedCell({
                 rowIdx: args.rowIdx,
                 columnKey: args.column.key,
