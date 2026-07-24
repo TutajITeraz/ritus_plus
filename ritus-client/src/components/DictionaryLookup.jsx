@@ -121,6 +121,16 @@ const LookupRow = React.memo(
         maxWidth="100px"
         minHeight="30px"
       >
+        {match.match_score != null
+          ? `${(match.match_score * 100).toFixed(0)}%`
+          : ""}
+      </Table.Cell>
+      <Table.Cell
+        whiteSpace="normal"
+        overflowWrap="break-word"
+        maxWidth="100px"
+        minHeight="30px"
+      >
         {match.levenstein}
       </Table.Cell>
     </Table.Row>
@@ -129,6 +139,7 @@ const LookupRow = React.memo(
     prevProps.match.id === nextProps.match.id &&
     prevProps.match.text === nextProps.match.text &&
     prevProps.match.word_count === nextProps.match.word_count &&
+    prevProps.match.match_score === nextProps.match.match_score &&
     prevProps.match.levenstein === nextProps.match.levenstein &&
     prevProps.selectedEntry?.id === nextProps.selectedEntry?.id
 );
@@ -295,6 +306,7 @@ const DictionaryLookup = ({ isOpen, onClose, row, column, updateCell }) => {
                         />
                         <Table.Column htmlWidth="10%" />
                         <Table.Column htmlWidth="10%" />
+                        <Table.Column htmlWidth="10%" />
                       </Table.ColumnGroup>
 
                       <Table.Header>
@@ -302,7 +314,8 @@ const DictionaryLookup = ({ isOpen, onClose, row, column, updateCell }) => {
                           <Table.ColumnHeader>Select</Table.ColumnHeader>
                           <Table.ColumnHeader>ID</Table.ColumnHeader>
                           <Table.ColumnHeader>Text</Table.ColumnHeader>
-                          <Table.ColumnHeader>Similar Words</Table.ColumnHeader>
+                          <Table.ColumnHeader>Matches</Table.ColumnHeader>
+                          <Table.ColumnHeader>Match Score</Table.ColumnHeader>
                           <Table.ColumnHeader>
                             Levenshtein Similarity
                           </Table.ColumnHeader>
