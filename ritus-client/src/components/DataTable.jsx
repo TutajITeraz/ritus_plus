@@ -2046,7 +2046,7 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
                     </Checkbox.Root>
                     <Text>Similarity treshold:</Text>
                     <NumberInput.Root
-                      defaultValue={50}
+                      defaultValue="50"
                       min={0}
                       max={1}
                       step={0.05}
