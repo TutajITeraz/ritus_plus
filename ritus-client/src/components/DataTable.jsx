@@ -42,6 +42,7 @@ import {
   parseCSV,
   countMatchingWords,
   calculateLevenshteinSimilarity,
+  buildLookupIndex,
 } from "../utils/lookup";
 import "react-data-grid/lib/styles.css";
 import "./DataTable.css";
@@ -1268,6 +1269,9 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
       }
       const csvText = await response.text();
       const entries = parseCSV(csvText);
+      // Built once for the whole batch instead of once per row - rebuilding
+      // it per row cost 300-800ms and dwarfed the actual matching cost.
+      const lookupIndex = buildLookupIndex(entries);
 
       setTotalRows(data.length);
 
@@ -1300,9 +1304,28 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           continue;
         }
 
-        const how_many_matches = text.length < 60 ? 9999 : 15;
+        // See DictionaryLookup.jsx for the benchmark behind this: short
+        // queries need a wide pool (inherently ambiguous), long queries need
+        // only a small one (true match reliably ranks #1-#7); a literal
+        // unbounded pool for <100 chars made ordinary medium-length queries
+        // ~80x slower for little correctness benefit.
+        const how_many_matches =
+          text.length < 30
+            ? 500
+            : text.length < 60
+            ? 300
+            : text.length < 150
+            ? 60
+            : text.length < 300
+            ? 30
+            : 20;
 
-        const matches = countMatchingWords(entries, text, how_many_matches);
+        const matches = countMatchingWords(
+          entries,
+          text,
+          how_many_matches,
+          lookupIndex
+        );
         const bestMatches = calculateLevenshteinSimilarity(
           matches,
           text,

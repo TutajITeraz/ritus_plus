@@ -42,6 +42,7 @@ import {
   parseCSV,
   countMatchingWords,
   calculateLevenshteinSimilarity,
+  buildLookupIndex,
 } from "../utils/lookup";
 
 // Debounce utility
@@ -156,6 +157,12 @@ const DictionaryLookup = ({ isOpen, onClose, row, column, updateCell }) => {
   );
   const [loadingLookup, setLoadingLookup] = useState(false);
   const levenshteinCache = useMemo(() => new Map(), []);
+  // Built once per loaded dictionary instead of once per keystroke/search -
+  // rebuilding it per call cost 300-800ms and dwarfed the actual matching.
+  const lookupIndex = useMemo(
+    () => (entries.length > 0 ? buildLookupIndex(entries) : null),
+    [entries]
+  );
 
   // Load dictionary CSV
   useEffect(() => {
@@ -188,11 +195,31 @@ const DictionaryLookup = ({ isOpen, onClose, row, column, updateCell }) => {
       }
       setLoadingLookup(true);
 
-      const how_many_matches = text.length < 60 ? 9999 : 15;
+      // Window size adapts to query length. Benchmarked against formulas.csv
+      // (150+ synthetic OCR/fragment queries, validated against the true
+      // global Levenshtein optimum): short queries are inherently ambiguous
+      // (true match can rank 300+ by trigram score alone) and need a wide
+      // pool, while queries over ~150 chars reliably rank the true match
+      // #1-#7 and need only a small one. A literal unbounded pool was tried
+      // for <100 chars but made ordinary medium-length queries ~80x slower
+      // (21ms -> 1.7s) for cases a moderate window already handles fine - the
+      // remaining hard misses need pools in the hundreds/thousands to catch
+      // (i.e. near-full search) and aren't worth chasing.
+      const how_many_matches =
+        text.length < 30
+          ? 500
+          : text.length < 60
+          ? 300
+          : text.length < 150
+          ? 60
+          : text.length < 300
+          ? 30
+          : 20;
       const wordMatches = countMatchingWords(
         entries,
         text.toLowerCase(),
-        how_many_matches
+        how_many_matches,
+        lookupIndex
       );
       const bestMatches = calculateLevenshteinSimilarity(
         wordMatches,
@@ -205,7 +232,7 @@ const DictionaryLookup = ({ isOpen, onClose, row, column, updateCell }) => {
       }
       setLoadingLookup(false);
     },
-    [selectedEntry, levenshteinCache]
+    [selectedEntry, levenshteinCache, lookupIndex]
   );
 
   // Debounced lookup

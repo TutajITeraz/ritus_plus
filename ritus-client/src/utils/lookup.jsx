@@ -82,14 +82,31 @@ export const createReverseIndex = (entries) => {
   return { index, entryGramCount };
 };
 
+// Builds the trigram index once so it can be reused across many
+// countMatchingWords calls against the same entries (e.g. once per Automatic
+// Fill batch, instead of once per row - rebuilding it per call cost
+// 300-800ms on formulas.csv/cantus_ids.csv, dwarfing the matching itself).
+export const buildLookupIndex = (entries) => {
+  const { index, entryGramCount } = createReverseIndex(entries);
+  const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+  return { index, entryGramCount, entriesById };
+};
+
 // Ranks candidates by Dice coefficient (2*matched / (queryLen + candidateLen))
 // over shared character trigrams, so a short candidate with high relative
 // overlap outranks a much longer one with more matches but low overlap, and
 // OCR typos / inflectional endings (which break exact whole-word matching)
 // still produce a meaningful similarity signal.
-export const countMatchingWords = (entries, textToFind, slice_results = 15) => {
-  const { index, entryGramCount } = createReverseIndex(entries);
-  const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+// Pass a prebuiltIndex (from buildLookupIndex) to skip rebuilding it on
+// every call; otherwise one is built from entries as before.
+export const countMatchingWords = (
+  entries,
+  textToFind,
+  slice_results = 15,
+  prebuiltIndex = null
+) => {
+  const { index, entryGramCount, entriesById } =
+    prebuiltIndex || buildLookupIndex(entries);
   const queryGrams = generateNGrams(textToFind);
   const matchCountMap = {};
 
