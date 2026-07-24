@@ -855,7 +855,7 @@ const TableEditor = () => {
                 <VStack spacing={4} align="stretch">
                   <Text>Similarity Threshold</Text>
                   <NumberInput.Root
-                    defaultValue={75}
+                    defaultValue={String(similarityThreshold * 100)}
                     step={0.01}
                     min={0}
                     max={1}
