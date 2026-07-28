@@ -1613,7 +1613,7 @@ def start_batch_transcribe(project_id):
         red_threshold = float(body.get("red_threshold", 5.0))
     except (TypeError, ValueError):
         return jsonify({"error": "red_threshold must be a number"}), 400
-    red_threshold = max(0.0, min(25.0, red_threshold))
+    red_threshold = max(0.0, min(1_000_000.0, red_threshold))
 
     enhanced_multi_column = body.get("enhanced_multi_column", False)
     if isinstance(enhanced_multi_column, str):
@@ -2296,7 +2296,7 @@ def transcribe_by_id(image_id):
         red_threshold = float(request.form.get("redThreshold", 5.0))
     except (TypeError, ValueError):
         return jsonify({"status": "error", "message": "redThreshold must be a number", "line_count": 0}), 400
-    red_threshold = max(0.0, min(25.0, red_threshold))
+    red_threshold = max(0.0, min(1_000_000.0, red_threshold))
     try:
         column_gap_ratio = float(request.form.get("columnGapRatio", 0.045))
     except (TypeError, ValueError):

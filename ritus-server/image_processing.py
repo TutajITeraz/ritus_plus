@@ -12,6 +12,11 @@ from shapely.geometry import Polygon, box
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Threshold value the frontend sends when red-detection sensitivity is 0%
+# (see ritus-client/src/utils/redSensitivity.js DISABLED_RED_THRESHOLD).
+# Any threshold at or above this means "detection is off".
+DISABLED_RED_THRESHOLD = 1_000_000
+
 def rgb_to_hsl(rgb):
     """
     Convert an RGB image (NumPy array) to HSL.
@@ -108,6 +113,11 @@ def split_line_boundary_by_color(color_image, line, line_index, window_size=80, 
     Returns:
         List of new BaselineLine objects with cropped coordinates and added 'color' attribute.
     """
+    if red_threshold >= DISABLED_RED_THRESHOLD:
+        # Sensitivity is 0%: skip the color analysis entirely rather than run
+        # it only to have every column fail the (unreachable) threshold.
+        return [line]
+
     if not hasattr(line, 'boundary') or not line.boundary or len(line.boundary) < 3:
         logger.warning(f"No valid boundary found for line {line_index + 1}, skipping image save and analysis")
         # Save debug image with original boundary
