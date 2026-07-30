@@ -53,6 +53,7 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
   const [mode, setMode] = useState("skip");
   const [addPageBreak, setAddPageBreak] = useState(false);
   const [enhancedMultiColumn, setEnhancedMultiColumn] = useState(false);
+  const [autofixErrors, setAutofixErrors] = useState(true);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
   const [columnSensitivity, setColumnSensitivity] = useState(DEFAULT_COLUMN_SENSITIVITY);
   const [isStarting, setIsStarting] = useState(false);
@@ -77,7 +78,8 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
             addPageBreak,
             sensitivityToThreshold(redSensitivity),
             enhancedMultiColumn,
-            sensitivityToColumnGapRatio(columnSensitivity)
+            sensitivityToColumnGapRatio(columnSensitivity),
+            autofixErrors
           );
           started.push(p.id);
         } catch (e) {
@@ -225,6 +227,16 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
                     onSensitivityChange={setColumnSensitivity}
                   />
                 )}
+
+                <Stack>
+                  <Checkbox.Root checked={autofixErrors} onCheckedChange={(e) => setAutofixErrors(e.checked)}>
+                    <Checkbox.HiddenInput />
+                    <Checkbox.Control>
+                      <Checkbox.Indicator />
+                    </Checkbox.Control>
+                    <Checkbox.Label>Autofix common transcription errors</Checkbox.Label>
+                  </Checkbox.Root>
+                </Stack>
 
                 <RedSensitivitySlider
                   sensitivity={redSensitivity}

@@ -26,6 +26,7 @@ from config import SERVER_URL, ADMIN_USERNAME, ADMIN_PASSWORD, SECRET_KEY
 # Importy lokalne
 from models import db, User, Project, ProjectSharing, Image, Content, BatchProcessing, IiifDownloadJob, BatchTranscribeJob
 from download_iiif import run_iiif_download
+from transcription_autofix import apply_autofix
 
 # Registry of stop events keyed by project_id for IIIF background downloads
 _iiif_stop_events = {}
@@ -657,7 +658,7 @@ def hsl_to_rgb(hsl):
     return (rgb * 255).astype(np.uint8)
 
 
-def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0, enhanced_multi_column=False, column_gap_ratio=0.045):
+def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0, enhanced_multi_column=False, column_gap_ratio=0.045, autofix_errors=True):
     global baseline_model, last_ocr_model_name, ocr_model, selected_device
     model_path = MODEL_PATHS.get(model_name)
     if not model_path:
@@ -893,6 +894,9 @@ def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_br
             transcribed_text += " ".join(buffered_text)
 
     logger.info(f"Total transcribed text: '{transcribed_text}'")
+
+    if autofix_errors:
+        transcribed_text = apply_autofix(transcribed_text)
 
     if add_page_break:
         transcribed_text += "⏎"
@@ -1415,6 +1419,7 @@ def run_batch_transcribe(
     red_threshold=5.0,
     enhanced_multi_column=False,
     column_gap_ratio=0.045,
+    autofix_errors=True,
 ):
     """
     Transcribe all images in a project in a background thread.
@@ -1503,6 +1508,7 @@ def run_batch_transcribe(
                             red_threshold=red_threshold,
                             enhanced_multi_column=enhanced_multi_column,
                             column_gap_ratio=column_gap_ratio,
+                            autofix_errors=autofix_errors,
                         )
                         if isinstance(result, tuple):
                             logger.error(f"Transcription failed for image {image_id}: {result[0]}")
@@ -1627,9 +1633,15 @@ def start_batch_transcribe(project_id):
         return jsonify({"error": "column_gap_ratio must be a number"}), 400
     column_gap_ratio = max(0.015, min(0.165, column_gap_ratio))
 
+    autofix_errors = body.get("autofix_errors", True)
+    if isinstance(autofix_errors, str):
+        autofix_errors = autofix_errors.lower() == "true"
+    else:
+        autofix_errors = bool(autofix_errors)
+
     Thread(
         target=run_batch_transcribe,
-        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges, range_from, range_to, add_page_break, red_threshold, enhanced_multi_column, column_gap_ratio),
+        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges, range_from, range_to, add_page_break, red_threshold, enhanced_multi_column, column_gap_ratio, autofix_errors),
         daemon=True,
     ).start()
 
@@ -1637,7 +1649,8 @@ def start_batch_transcribe(project_id):
         f"Started batch transcription for project {project_id} "
         f"(mode={mode}, model={model_name}, ignore_edges={ignore_edges}, add_page_break={add_page_break}, "
         f"red_threshold={red_threshold}, range_from={range_from}, range_to={range_to}, "
-        f"enhanced_multi_column={enhanced_multi_column}, column_gap_ratio={column_gap_ratio})"
+        f"enhanced_multi_column={enhanced_multi_column}, column_gap_ratio={column_gap_ratio}, "
+        f"autofix_errors={autofix_errors})"
     )
     return jsonify({"message": "Transcription started", "job_id": job_id}), 202
 
@@ -2302,6 +2315,8 @@ def transcribe_by_id(image_id):
     except (TypeError, ValueError):
         return jsonify({"status": "error", "message": "columnGapRatio must be a number", "line_count": 0}), 400
     column_gap_ratio = max(0.015, min(0.165, column_gap_ratio))
+    autofix_errors_str = request.form.get("autofixErrors", "true")
+    autofix_errors = (autofix_errors_str.lower() == 'true')
 
     try:
         result = transcribe_image_by_id(
@@ -2312,6 +2327,7 @@ def transcribe_by_id(image_id):
             red_threshold=red_threshold,
             enhanced_multi_column=enhanced_multi_column,
             column_gap_ratio=column_gap_ratio,
+            autofix_errors=autofix_errors,
         )
         if isinstance(result, tuple):
             logger.error(f"Error in transcribe_by_id for ID {image_id}: {result[0]}")
