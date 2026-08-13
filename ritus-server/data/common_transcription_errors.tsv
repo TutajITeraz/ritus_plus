@@ -5,8 +5,6 @@ FALSE	TRUE	ompc	omnipotens
 FALSE	TRUE	collacta	collecta
 FALSE	TRUE	Bla	Gloria
 FALSE	TRUE	dees	deus
-TRUE	TRUE	dies	deus
-TRUE	TRUE	quam	quoniam
 FALSE	TRUE	colla	collecta
 FALSE	TRUE	glam	gloriam
 FALSE	TRUE	viigenitus	unigenitus
@@ -22,8 +20,37 @@ FALSE	TRUE	Off.	Offertorium
 TRUE	TRUE	Decreta	Secreta
 FALSE	TRUE	Duper	Super
 FALSE	TRUE	dous	dominus
-FALSE	TRUE	Eroyae  	Et in secula seculorum amen
+FALSE	TRUE	Eroyae	Et in secula seculorum amen
 FALSE	TRUE	ompe	omnipotens
 FALSE	TRUE	deeus	deus
 FALSE	TRUE	deuus	deus
 FALSE	TRUE	poplin	populum
+FALSE	TRUE	vertute	virtute
+FALSE	TRUE	des	deus
+FALSE	TRUE	maia	maria
+FALSE	TRUE	maie	marie
+FALSE	TRUE	eteme	eterne
+FALSE	TRUE	Quae	Quia
+FALSE	TRUE	pplm	populum
+FALSE	TRUE	ppulo	populo
+FALSE	TRUE	sempitrne	sempiterne
+FALSE	FALSE	deliqu	derelequ
+FALSE	TRUE	sempitne	sempiterne
+FALSE	TRUE	crpe	eripe
+TRUE	TRUE	mihi	michi
+FALSE	TRUE	meterinum	in eternum
+FALSE	TRUE	pocrori	peccatori
+FALSE	TRUE	fremus	Oremus
+FALSE	TRUE	imprc	omnipotens
+FALSE	TRUE	peocorum	peccatorum
+FALSE	TRUE	grgo	ergo
+FALSE	TRUE	etrna	eterna
+FALSE	TRUE	corpe	corpore
+FALSE	TRUE	oes	omnes
+FALSE	TRUE	poptuli	populi
+FALSE	TRUE	Aexia	Alleluia
+FALSE	TRUE	aeria	Alleluia
+FALSE	TRUE	alla	Alleluia
+FALSE	TRUE	meteruum	in eternum
+FALSE	TRUE	officialis	Offertorium
+FALSE	TRUE	Pretatio	Prefatio

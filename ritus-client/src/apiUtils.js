@@ -271,7 +271,7 @@ export const updateImage = async (imageId, data) => {
   }
 };
 
-export const transcribeImage = async (imageId, modelName, ignoreEdges = true, addPageBreak = false, redThreshold = 5.0, enhancedMultiColumn = false, columnGapRatio = 0.045, autofixErrors = true) => {
+export const transcribeImage = async (imageId, modelName, ignoreEdges = true, addPageBreak = false, redThreshold = 5.0, enhancedMultiColumn = false, columnGapRatio = 0.045, autofixErrors = true, aiCorrect = false) => {
   try {
     const formData = new FormData();
     formData.append("modelName", modelName);
@@ -281,6 +281,7 @@ export const transcribeImage = async (imageId, modelName, ignoreEdges = true, ad
     formData.append("enhancedMultiColumn", enhancedMultiColumn);
     formData.append("columnGapRatio", columnGapRatio);
     formData.append("autofixErrors", autofixErrors);
+    formData.append("aiCorrect", aiCorrect);
     const response = await apiRequest(`${SERVER_URL}/api/transcribe/${imageId}`, {
       method: "POST",
       body: formData,
@@ -749,6 +750,7 @@ export const resetIiifJob = async (projectId) => {
  * @param {boolean} enhancedMultiColumn
  * @param {number} columnGapRatio
  * @param {boolean} autofixErrors
+ * @param {boolean} aiCorrect
  */
 export const startBatchTranscribe = async (
   projectId,
@@ -761,9 +763,10 @@ export const startBatchTranscribe = async (
   redThreshold = 5.0,
   enhancedMultiColumn = false,
   columnGapRatio = 0.045,
-  autofixErrors = true
+  autofixErrors = true,
+  aiCorrect = false
 ) => {
-  const payload = { model_name: modelName, mode, ignore_edges: ignoreEdges, add_page_break: addPageBreak, red_threshold: redThreshold, enhanced_multi_column: enhancedMultiColumn, column_gap_ratio: columnGapRatio, autofix_errors: autofixErrors };
+  const payload = { model_name: modelName, mode, ignore_edges: ignoreEdges, add_page_break: addPageBreak, red_threshold: redThreshold, enhanced_multi_column: enhancedMultiColumn, column_gap_ratio: columnGapRatio, autofix_errors: autofixErrors, ai_correct: aiCorrect };
   if (mode === "range") {
     payload.range_from = rangeFrom;
     payload.range_to = rangeTo;

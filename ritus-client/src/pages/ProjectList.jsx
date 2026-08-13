@@ -159,6 +159,8 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
   const [mode, setMode] = useState("skip");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
   const [addPageBreak, setAddPageBreak] = useState(false);
+  const [autofixErrors, setAutofixErrors] = useState(true);
+  const [aiCorrect, setAiCorrect] = useState(false);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
   const [rangeFrom, setRangeFrom] = useState(1);
   const [rangeTo, setRangeTo] = useState(project.image_count || 1);
@@ -305,6 +307,28 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
                         <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
                     </Checkbox.Root>
                 </Stack>
+                <Stack>
+                    <Checkbox.Root checked={autofixErrors} onCheckedChange={(e) => setAutofixErrors(e.checked)}>
+                        <Checkbox.HiddenInput />
+                        <Checkbox.Control>
+                            <Checkbox.Indicator />
+                        </Checkbox.Control>
+                        <Checkbox.Label>Automatically find and replace common mistakes</Checkbox.Label>
+                    </Checkbox.Root>
+                </Stack>
+                <Stack>
+                    <Checkbox.Root checked={aiCorrect} onCheckedChange={(e) => setAiCorrect(e.checked)}>
+                        <Checkbox.HiddenInput />
+                        <Checkbox.Control>
+                            <Checkbox.Indicator />
+                        </Checkbox.Control>
+                        <Checkbox.Label>Correct each page with AI</Checkbox.Label>
+                    </Checkbox.Root>
+                    <Text fontSize="xs" color="gray.600" pl="6">
+                      Always runs find and replace first. Adds roughly 30s per page; if the
+                      AI is unavailable the find/replace result is kept.
+                    </Text>
+                </Stack>
                 <RedSensitivitySlider
                   sensitivity={redSensitivity}
                   onSensitivityChange={setRedSensitivity}
@@ -313,7 +337,7 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
             </Dialog.Body>
             <Dialog.Footer>
               <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button colorPalette="purple" onClick={() => { setOpen(false); onStart(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, sensitivityToThreshold(redSensitivity)); }}>
+              <Button colorPalette="purple" onClick={() => { setOpen(false); onStart(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, sensitivityToThreshold(redSensitivity), autofixErrors, aiCorrect); }}>
                 Start Transcription
               </Button>
             </Dialog.Footer>
@@ -509,7 +533,7 @@ const ProjectList = () => {
     };
   }, [transcribeJobStatuses]);
 
-  const handleStartTranscribe = async (projectId, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold = sensitivityToThreshold(DEFAULT_RED_SENSITIVITY)) => {
+  const handleStartTranscribe = async (projectId, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold = sensitivityToThreshold(DEFAULT_RED_SENSITIVITY), autofixErrors = true, aiCorrect = false) => {
     const parsedRangeFrom = Number(rangeFrom);
     const parsedRangeTo = Number(rangeTo);
     const project = [...projectData.owned, ...projectData.shared].find((entry) => entry.id === projectId);
@@ -535,7 +559,13 @@ const ProjectList = () => {
         mode === "range" ? parsedRangeFrom : null,
         mode === "range" ? parsedRangeTo : null,
         addPageBreak,
-        redThreshold
+        redThreshold,
+        // This dialog has no multi-column controls; undefined lets the API
+        // defaults apply rather than duplicating them here.
+        undefined,
+        undefined,
+        autofixErrors,
+        aiCorrect
       );
       setTranscribeJobStatuses((prev) => ({
         ...prev,
@@ -891,7 +921,7 @@ const ProjectList = () => {
                     <TranscribeProjectStatus
                       project={project}
                       jobStatus={transcribeJobStatuses[project.id]}
-                      onStart={(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold) => handleStartTranscribe(project.id, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold)}
+                      onStart={(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold, autofixErrors, aiCorrect) => handleStartTranscribe(project.id, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold, autofixErrors, aiCorrect)}
                       onCancel={() => handleCancelTranscribe(project.id)}
                     />
                     <Button

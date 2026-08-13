@@ -106,6 +106,7 @@ const Sidebar = ({
   const [addPageBreak, setAddPageBreak] = useState(false);
   const [enhancedMultiColumn, setEnhancedMultiColumn] = useState(false);
   const [autofixErrors, setAutofixErrors] = useState(true);
+  const [aiCorrect, setAiCorrect] = useState(false);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
   const [columnSensitivity, setColumnSensitivity] = useState(DEFAULT_COLUMN_SENSITIVITY);
   const [transcribeRangeFrom, setTranscribeRangeFrom] = useState(1);
@@ -466,7 +467,8 @@ const Sidebar = ({
         sensitivityToThreshold(redSensitivity),
         enhancedMultiColumn,
         sensitivityToColumnGapRatio(columnSensitivity),
-        autofixErrors
+        autofixErrors,
+        aiCorrect
       );
       setTranscribeJob({
         status: "running",
@@ -967,8 +969,21 @@ const Sidebar = ({
                           <Checkbox.Control>
                               <Checkbox.Indicator />
                           </Checkbox.Control>
-                          <Checkbox.Label>Autofix common transcription errors</Checkbox.Label>
+                          <Checkbox.Label>Automatically find and replace common mistakes</Checkbox.Label>
                       </Checkbox.Root>
+                  </Stack>
+                  <Stack>
+                      <Checkbox.Root checked={aiCorrect} onCheckedChange={(e) => setAiCorrect(e.checked)}>
+                          <Checkbox.HiddenInput />
+                          <Checkbox.Control>
+                              <Checkbox.Indicator />
+                          </Checkbox.Control>
+                          <Checkbox.Label>Correct each page with AI</Checkbox.Label>
+                      </Checkbox.Root>
+                      <Text fontSize="xs" color="gray.600" pl="6">
+                        Always runs find and replace first. Adds roughly 30s per page; if the
+                        AI is unavailable the find/replace result is kept.
+                      </Text>
                   </Stack>
                   <RedSensitivitySlider
                     sensitivity={redSensitivity}

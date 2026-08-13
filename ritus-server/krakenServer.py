@@ -658,7 +658,33 @@ def hsl_to_rgb(hsl):
     return (rgb * 255).astype(np.uint8)
 
 
-def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0, enhanced_multi_column=False, column_gap_ratio=0.045, autofix_errors=True):
+def ai_autofix_best_effort(text):
+    """Run the AI autofix, returning `text` unchanged if it cannot run.
+
+    This sits in the transcription path, so it must never be able to lose a
+    page: if Ollama is down, times out, or answers with an error, we keep the
+    text we already have rather than propagating the failure. An empty answer
+    is also treated as a failure - some models reply with nothing when the
+    page is mostly noise, and that would silently blank the transcription.
+    """
+    if not text or not text.strip():
+        return text
+    try:
+        result = gpt_autofix(text, user_api_key, cache)
+    except Exception:
+        logger.exception("AI autofix raised; keeping find/replace result")
+        return text
+    if result.get("error"):
+        logger.warning("AI autofix unavailable (%s); keeping find/replace result", result["error"])
+        return text
+    fixed = (result.get("text") or "").strip()
+    if not fixed:
+        logger.warning("AI autofix returned empty text; keeping find/replace result")
+        return text
+    return fixed
+
+
+def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0, enhanced_multi_column=False, column_gap_ratio=0.045, autofix_errors=True, ai_correct=False):
     global baseline_model, last_ocr_model_name, ocr_model, selected_device
     model_path = MODEL_PATHS.get(model_name)
     if not model_path:
@@ -895,8 +921,15 @@ def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_br
 
     logger.info(f"Total transcribed text: '{transcribed_text}'")
 
-    if autofix_errors:
+    # The two corrections are independently switchable, but asking for the AI
+    # pass implies the find/replace: it is cheap and deterministic, and doing
+    # it first means the model only has to judge the errors that actually need
+    # context instead of the ones the TSV already covers.
+    if autofix_errors or ai_correct:
         transcribed_text = apply_autofix(transcribed_text)
+
+    if ai_correct:
+        transcribed_text = ai_autofix_best_effort(transcribed_text)
 
     if add_page_break:
         transcribed_text += "⏎"
@@ -1420,6 +1453,7 @@ def run_batch_transcribe(
     enhanced_multi_column=False,
     column_gap_ratio=0.045,
     autofix_errors=True,
+    ai_correct=False,
 ):
     """
     Transcribe all images in a project in a background thread.
@@ -1509,6 +1543,7 @@ def run_batch_transcribe(
                             enhanced_multi_column=enhanced_multi_column,
                             column_gap_ratio=column_gap_ratio,
                             autofix_errors=autofix_errors,
+                            ai_correct=ai_correct,
                         )
                         if isinstance(result, tuple):
                             logger.error(f"Transcription failed for image {image_id}: {result[0]}")
@@ -1639,9 +1674,15 @@ def start_batch_transcribe(project_id):
     else:
         autofix_errors = bool(autofix_errors)
 
+    ai_correct = body.get("ai_correct", False)
+    if isinstance(ai_correct, str):
+        ai_correct = ai_correct.lower() == "true"
+    else:
+        ai_correct = bool(ai_correct)
+
     Thread(
         target=run_batch_transcribe,
-        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges, range_from, range_to, add_page_break, red_threshold, enhanced_multi_column, column_gap_ratio, autofix_errors),
+        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges, range_from, range_to, add_page_break, red_threshold, enhanced_multi_column, column_gap_ratio, autofix_errors, ai_correct),
         daemon=True,
     ).start()
 
@@ -1650,7 +1691,7 @@ def start_batch_transcribe(project_id):
         f"(mode={mode}, model={model_name}, ignore_edges={ignore_edges}, add_page_break={add_page_break}, "
         f"red_threshold={red_threshold}, range_from={range_from}, range_to={range_to}, "
         f"enhanced_multi_column={enhanced_multi_column}, column_gap_ratio={column_gap_ratio}, "
-        f"autofix_errors={autofix_errors})"
+        f"autofix_errors={autofix_errors}, ai_correct={ai_correct})"
     )
     return jsonify({"message": "Transcription started", "job_id": job_id}), 202
 
@@ -2317,6 +2358,8 @@ def transcribe_by_id(image_id):
     column_gap_ratio = max(0.015, min(0.165, column_gap_ratio))
     autofix_errors_str = request.form.get("autofixErrors", "true")
     autofix_errors = (autofix_errors_str.lower() == 'true')
+    ai_correct_str = request.form.get("aiCorrect", "false")
+    ai_correct = (ai_correct_str.lower() == 'true')
 
     try:
         result = transcribe_image_by_id(
@@ -2328,6 +2371,7 @@ def transcribe_by_id(image_id):
             enhanced_multi_column=enhanced_multi_column,
             column_gap_ratio=column_gap_ratio,
             autofix_errors=autofix_errors,
+            ai_correct=ai_correct,
         )
         if isinstance(result, tuple):
             logger.error(f"Error in transcribe_by_id for ID {image_id}: {result[0]}")
@@ -2381,9 +2425,14 @@ def autofix():
         if not data or 'question' not in data:
             return jsonify({"error": "Missing question in request"}), 400
         
-        question = data['question']
+        # Same two layers as the transcription-time autofix: mechanical
+        # find/replace first, then the AI over its result. The find/replace is
+        # idempotent, so it is harmless on text that already went through it
+        # at transcription time, and it still applies for text that did not
+        # (checkbox off, hand-typed, or imported).
+        question = apply_autofix(data['question'])
         response = gpt_autofix(question, user_api_key, cache)
-        
+
         if response['error']:
             return jsonify({"error": response['error']}), 500
         

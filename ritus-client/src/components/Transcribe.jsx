@@ -66,6 +66,7 @@ const Transcribe = ({
   const [addPageBreak, setAddPageBreak] = useState(false);
   const [enhancedMultiColumn, setEnhancedMultiColumn] = useState(false);
   const [autofixErrors, setAutofixErrors] = useState(true);
+  const [aiCorrect, setAiCorrect] = useState(false);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
   const [columnSensitivity, setColumnSensitivity] = useState(DEFAULT_COLUMN_SENSITIVITY);
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -115,7 +116,8 @@ const Transcribe = ({
             sensitivityToThreshold(redSensitivity),
             enhancedMultiColumn,
             sensitivityToColumnGapRatio(columnSensitivity),
-            autofixErrors
+            autofixErrors,
+            aiCorrect
           );
           if (result.status === "success") {
             transcribedCount += 1;
@@ -283,8 +285,21 @@ const Transcribe = ({
                   <Checkbox.Control>
                       <Checkbox.Indicator />
                   </Checkbox.Control>
-                  <Checkbox.Label>Autofix common transcription errors</Checkbox.Label>
+                  <Checkbox.Label>Automatically find and replace common mistakes</Checkbox.Label>
               </Checkbox.Root>
+            </Box>
+            <Box>
+              <Checkbox.Root checked={aiCorrect} onCheckedChange={(e) => setAiCorrect(e.checked)} disabled={isTranscribing}>
+                  <Checkbox.HiddenInput />
+                  <Checkbox.Control>
+                      <Checkbox.Indicator />
+                  </Checkbox.Control>
+                  <Checkbox.Label>Correct each page with AI</Checkbox.Label>
+              </Checkbox.Root>
+              <Text fontSize="xs" color="gray.600" pl="6">
+                Always runs find and replace first. Adds roughly 30s per page; if the
+                AI is unavailable the find/replace result is kept.
+              </Text>
             </Box>
             {enhancedMultiColumn && (
               <ColumnSensitivitySlider
