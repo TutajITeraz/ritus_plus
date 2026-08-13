@@ -122,6 +122,16 @@ const TranscriptionEditor = ({
       openFind();
       return;
     }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      handleSave();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      insertLineBreak();
+      return;
+    }
     if (e.key === "Escape" && isFindOpen) {
       e.preventDefault();
       closeFind();
@@ -759,7 +769,13 @@ const TranscriptionEditor = ({
           <Button size="sm" colorPalette="blue" onClick={toggleItalic} flex="0.8">
             Function
           </Button>
-          <Button size="sm" onClick={insertLineBreak} flex="0.1">
+          <Button
+            size="sm"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={insertLineBreak}
+            flex="0.1"
+            title="Insert prayer separator (Ctrl+Enter)"
+          >
             ⏎
           </Button>
           <Button
@@ -777,8 +793,10 @@ const TranscriptionEditor = ({
         <Button
           size="sm"
           variant="solid"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={handleSave}
           disabled={!selectedImage}
+          title="Save (Ctrl+S)"
         >
           <FaSave />
           Save
