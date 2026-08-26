@@ -77,10 +77,41 @@ DEFAULT_DB = os.path.join(SERVER_DIR, "instance", "projects.db")
 # The full vocabularies live on the server side. They are 9 MB and only the
 # migration reads them, so they are deliberately kept out of the web build.
 DEFAULT_CACHE = os.path.join(SERVER_DIR, "data", "ecatalogus")
-# The browser gets only the compact indexes, which are served as static files.
-DEFAULT_INDEX_OUT = os.path.join(REPO_ROOT, "ritus-client", "public", "data", "ecatalogus")
 DEFAULT_MAPPING = os.path.join(SERVER_DIR, "data", "migration")
-LOCAL_DICT_DIR = os.path.join(REPO_ROOT, "ritus-client", "public", "data")
+
+# ritus's own dictionaries sit in two different places depending on where this
+# runs. In a checkout they are the client's source assets; on a deployed server
+# there is no ritus-client at all - `package.sh` copies the built client into
+# ritus-server/static, so the same files arrive under static/data. Both layouts
+# are supported, and --local-dicts overrides the guess.
+LOCAL_DICT_CANDIDATES = (
+    os.path.join(REPO_ROOT, "ritus-client", "public", "data"),   # checkout
+    os.path.join(SERVER_DIR, "static", "data"),                  # deployed server
+)
+
+# A file every layout has, used to recognise a real dictionary directory.
+LOCAL_DICT_MARKER = "formulas.csv"
+
+
+def find_local_dict_dir():
+    for candidate in LOCAL_DICT_CANDIDATES:
+        if os.path.isfile(os.path.join(candidate, LOCAL_DICT_MARKER)):
+            return candidate
+    return None
+
+
+def find_index_out():
+    """Where the browser lookups belong, for whichever layout this is.
+
+    In a checkout they go to the client's source assets and reach production
+    through `npm run build`. On a deployed server that directory does not exist;
+    static/data is served directly, so writing there takes effect immediately
+    with no rebuild.
+    """
+    local = find_local_dict_dir()
+    if local:
+        return os.path.join(local, "ecatalogus")
+    return os.path.join(LOCAL_DICT_CANDIDATES[0], "ecatalogus")
 
 # The namespace eCatalogus used when it derived uuids from the legacy primary
 # keys. Verified against live data: 4564/4564 rite names and 13228/13228 formulas
@@ -350,7 +381,7 @@ def fetch_dictionary(base, slug):
     return rows, rights
 
 
-def attach_legacy_ids(dictionary, remote_rows):
+def attach_legacy_ids(dictionary, remote_rows, local_dict_dir):
     """Give each cached entry the integer id ritus has always used for it.
 
     The id is taken from ritus's own copy of the vocabulary, not from the
@@ -365,7 +396,7 @@ def attach_legacy_ids(dictionary, remote_rows):
         stats["no_legacy_id"] = len(remote_rows)
         return {}, stats
 
-    path = os.path.join(LOCAL_DICT_DIR, dictionary.local_csv)
+    path = os.path.join(local_dict_dir, dictionary.local_csv)
     if not os.path.isfile(path):
         log("    ! ritus dictionary %s not found; cache will carry no legacy ids"
             % dictionary.local_csv)
@@ -452,7 +483,7 @@ def command_pull(args):
             fail("%s: %s\n       nothing was written; the previous cache is intact."
                  % (dictionary.slug, error))
 
-        legacy_by_uuid, stats = attach_legacy_ids(dictionary, rows)
+        legacy_by_uuid, stats = attach_legacy_ids(dictionary, rows, args.local_dicts)
 
         # `id` is the server's own autoincrement. It is instance-local, it is
         # being removed from the API, and caching it is what made the whole
@@ -921,8 +952,13 @@ def build_parser():
                              help="canonical eCatalogus instance (default: %(default)s)")
         sub.add_argument("--db", default=DEFAULT_DB, help="ritus SQLite database")
         sub.add_argument("--cache", default=DEFAULT_CACHE, help="dictionary cache directory")
-        sub.add_argument("--index-out", default=DEFAULT_INDEX_OUT,
-                         help="where the compact browser indexes are written")
+        sub.add_argument("--index-out", default=None,
+                         help="where the compact browser indexes are written "
+                              "(default: autodetected from the layout)")
+        sub.add_argument("--local-dicts", default=None,
+                         help="ritus's own dictionaries: ritus-client/public/data in a "
+                              "checkout, ritus-server/static/data on a deployed server "
+                              "(default: autodetected)")
         sub.add_argument("--mapping", default=DEFAULT_MAPPING, help="mapping output directory")
         sub.add_argument("--dry-run", action="store_true", help="report, write nothing")
 
@@ -937,12 +973,40 @@ def build_parser():
     return parser
 
 
+def resolve_layout(args):
+    """Fill in the paths that depend on where this is running, and say so.
+
+    Printing them is the point: the checkout and the deployed server put ritus's
+    dictionaries in different places, and a silent wrong guess produces a cache
+    with no legacy ids, which only surfaces later as an unresolvable `map`.
+    """
+    if not getattr(args, "local_dicts", None):
+        args.local_dicts = find_local_dict_dir()
+    if not getattr(args, "index_out", None):
+        args.index_out = (
+            os.path.join(args.local_dicts, "ecatalogus")
+            if args.local_dicts else find_index_out()
+        )
+
+    if args.command == "pull":
+        if not args.local_dicts:
+            fail(
+                "cannot find ritus's own dictionaries (looked for %s in:\n  %s\n"
+                "Pass --local-dicts with the directory holding formulas.csv and "
+                "rite_names.csv." % (
+                    LOCAL_DICT_MARKER, "\n  ".join(LOCAL_DICT_CANDIDATES))
+            )
+        log("      dictionaries: %s" % args.local_dicts)
+        log("      indexes     : %s" % args.index_out)
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
         return 2
+    resolve_layout(args)
     handler = {
         "pull": command_pull,
         "map": command_map,

@@ -119,7 +119,7 @@ display. None is in the payload.
 |---|---|---|---|---|
 | `ritus-server/data/ecatalogus/*.tsv` | Full vocabularies, keyed by `uuid`, with a `legacy_id` column. **No `id` column.** | 7.3 MB | yes | `package.sh` zip |
 | `ritus-server/data/ecatalogus/*.meta.json` | Per-file sidecar: source, `fetched_at`, row count, CC-BY rights | small | yes | `package.sh` zip |
-| `ritus-client/public/data/ecatalogus/index-*.json` | Compact browser lookups for `formulas`, `rite-names`, `text-standarization` | 1.1 MB | **no** — `public/data` is gitignored | `npm run build` → `dist` → `package.sh` |
+| `ritus-client/public/data/ecatalogus/index-*.json` | Compact browser lookups for `formulas`, `rite-names`, `text-standarization`. On a deployed server the same files live at `ritus-server/static/data/ecatalogus/` | 1.1 MB | **no** — `public/data` is gitignored | `npm run build` → `dist` → `package.sh`, or `pull` directly on the server |
 | `ritus-server/data/migration/mapping-<column>.tsv` | `legacy_value → uuid`, with method and label, for audit | small | yes | not needed at runtime |
 | `ritus-server/data/migration/unresolved.tsv` | Values with no eCatalogus counterpart — **send this to the editors** | small | yes | not needed at runtime |
 | `ritus-server/data/migration/map.log.json`, `apply.log.json` | Counts, for the record that the migration was sound | small | yes | not needed at runtime |
@@ -136,8 +136,19 @@ Provided separately, per the README. The pull script reads them to attach ritus'
 
 `rite_names.csv`, `formulas.csv`, `functions.csv`, `sections.tsv`,
 `liturgical_genres.tsv`, `layer.tsv`, `mass_hour.tsv`, `genre.tsv`,
-`season_month.tsv`, `week.tsv`, `day.tsv`, `music_notation.tsv`
-— all in `ritus-client/public/data/`.
+`season_month.tsv`, `week.tsv`, `day.tsv`, `music_notation.tsv`.
+
+They live in **two different places depending on the layout**, and the scripts
+detect which by looking for `formulas.csv`:
+
+| Layout | Dictionaries | Indexes written to |
+|---|---|---|
+| Checkout | `ritus-client/public/data/` | `ritus-client/public/data/ecatalogus/` |
+| Deployed server | `ritus-server/static/data/` | `ritus-server/static/data/ecatalogus/` |
+
+On a deployed server there is no `ritus-client` — `package.sh` copies the built
+client into `ritus-server/static`, so the dictionaries arrive under `static/data`.
+`--local-dicts <dir>` overrides the detection.
 
 ---
 

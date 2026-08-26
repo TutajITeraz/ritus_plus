@@ -36,7 +36,7 @@ while [ $# -gt 0 ]; do
     --skip-pull) SKIP_PULL=1; shift ;;
     --db)        DB="$2"; shift 2 ;;
     --source)    SOURCE="$2"; shift 2 ;;
-    --cache|--mapping|--index-out)
+    --cache|--mapping|--index-out|--local-dicts)
                  EXTRA+=("$1" "$2"); shift 2 ;;
     -h|--help)   sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)           echo "unknown option: $1" >&2; exit 2 ;;
