@@ -25,4 +25,6 @@ zip -r ../ritus_plus.zip \
   secret_user_api_key.py \
   server.py \
   transcription_autofix.py \
+  scripts \
+  data \
   static

@@ -736,6 +736,7 @@ const TableEditor = () => {
       <DataTable
         key={structureKey}
         tableStructure={currentStructure}
+        structureKey={structureKey}
         data={data}
         setData={setData}
         isLoading={isLoading || isProcessing}

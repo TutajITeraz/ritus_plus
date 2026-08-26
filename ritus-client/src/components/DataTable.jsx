@@ -38,6 +38,7 @@ import { saveAs } from "file-saver";
 import Papa from "papaparse";
 import { toaster } from "@/components/ui/toaster";
 import DictionaryLookup from "./DictionaryLookup";
+import ECatalogusUploadDialog from "./ECatalogusUploadDialog";
 import {
   parseCSV,
   countMatchingWords,
@@ -448,7 +449,7 @@ const getRowHeight = (row, tableStructure, dictionaries) => {
   return Math.max(maxLines * lineHeight, 30) + padding;
 };
 
-const DataTable = ({ tableStructure, data = [], setData }) => {
+const DataTable = ({ tableStructure, data = [], setData, structureKey = "content" }) => {
   const [selection, setSelection] = useState(null);
   const [selectedRows, setSelectedRows] = useState(() => new Set());
   const [validationErrors, setValidationErrors] = useState([]);
@@ -2178,6 +2179,12 @@ const DataTable = ({ tableStructure, data = [], setData }) => {
           <GrValidate />
           Validate
         </Button>
+        {/* The eCatalogus field mapping is written against ContentStructure, so
+            the upload is offered only while that structure is in use. */}
+        <ECatalogusUploadDialog
+          rows={data}
+          disabled={structureKey !== "content"}
+        />
         {validationErrors.length > 0 && (
           <Dialog.Root
             placement="center"

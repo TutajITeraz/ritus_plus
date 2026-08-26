@@ -1,0 +1,17 @@
+{
+  "slug": "sections",
+  "model": "indexerapp.Sections",
+  "source": "https://ecatalogus.ispan.pl/api/v1/dictionaries/sections/",
+  "site_name": "eCatalogus",
+  "fetched_at": "2026-08-26T08:19:24+00:00",
+  "row_count": 11,
+  "legacy_ids_derived": 6,
+  "legacy_ids_by_name": 0,
+  "legacy_ids_rejected": 0,
+  "rights": {
+    "license": "CC-BY-4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "attribution": "Data from eCatalogus, Instytut Sztuki Polskiej Akademii Nauk (PAN). Used under CC BY 4.0.",
+    "required_statement": "Data from eCatalogus, Instytut Sztuki Polskiej Akademii Nauk (PAN). Used under CC BY 4.0."
+  }
+}
