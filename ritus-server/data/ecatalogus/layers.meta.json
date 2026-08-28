@@ -3,11 +3,9 @@
   "model": "indexerapp.Layer",
   "source": "https://ecatalogus.ispan.pl/api/v1/dictionaries/layers/",
   "site_name": "eCatalogus",
-  "fetched_at": "2026-08-26T08:19:24+00:00",
+  "fetched_at": "2026-08-28T08:37:34+00:00",
   "row_count": 4,
-  "legacy_ids_derived": 4,
-  "legacy_ids_by_name": 0,
-  "legacy_ids_rejected": 0,
+  "rows_with_id": 0,
   "rights": {
     "license": "CC-BY-4.0",
     "license_url": "https://creativecommons.org/licenses/by/4.0/",

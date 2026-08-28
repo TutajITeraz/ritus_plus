@@ -30,6 +30,13 @@ The browser lookups live in `ritus-client/public/data/ecatalogus/index-*.json`.
 That directory is gitignored, so they reach production through `npm run build`
 and `package.sh` — re-run the pull before building.
 
+Terms added in eCatalogus do **not** appear automatically. An admin refreshes
+them under **Settings → eCatalogus Dictionaries**, which re-pulls the
+vocabularies and adds any new options to the table editor's dropdowns.
+`formulas.csv` is the one exception: the editor keys it by the ritus number,
+and eCatalogus's own numbering for formulas does not agree with ours (see
+`eCatalogus_REFERENCE.md` §5) — new formulas still need adding by hand.
+
 - `eCatalogus_REFERENCE.md` — every file, every endpoint, and what each column
   stores (name, id or UUID).
 - `eCatalogus_MIGRATION.md` — how to run the migration, and what is still blocked.

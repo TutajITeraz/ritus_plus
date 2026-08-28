@@ -25,6 +25,7 @@ import {
   saveDomainConfig,
 } from "../apiUtils";
 import { useAuth } from "../App";
+import ECatalogusDictionaries from "../components/ECatalogusDictionaries";
 
 const UserDetails = () => {
   const [users, setUsers] = useState([]);
@@ -340,6 +341,9 @@ const UserDetails = () => {
           </Dialog.Positioner>
         </Portal>
       </Dialog.Root>
+
+      {/* eCatalogus dictionaries – admin only */}
+      {currentUser?.is_admin && <ECatalogusDictionaries />}
 
       {/* Domain Config Section – admin only */}
       {currentUser?.is_admin && (

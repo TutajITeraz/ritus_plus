@@ -12,15 +12,16 @@ This document is the "what is where" list.
 
 > **Names travel. UUIDs identify. Legacy integers stay home.**
 
-eCatalogus gives every dictionary row an autoincrement `id` that is **different on
-every instance** — one rubric is id 1 on MPL Limbo, 4565 on Liturgica Poloniae,
-9129 on Corpus Liturgicum, with the same UUID on all three. So:
+eCatalogus gives every dictionary row a UUID that means the same thing on every
+instance. Two dictionaries — `rite-names` and `formulas` — also publish a plain
+numeric `id`; every other dictionary publishes `uuid` only. So:
 
 - a **name** is safe to send: the importer resolves it the same way everywhere;
 - a **UUID** is safe to store and send: it means the same thing on every instance;
 - a **legacy integer** is safe only inside ritus, as a join key to our own rows.
-  It is never sent, and never resolved against a remote `id` column. That column
-  no longer exists in the API.
+  It is never sent to eCatalogus. Whether it is safe to *read* from eCatalogus's
+  `id` field depends on the dictionary — see §5, trap 3. It agrees with ritus's
+  own numbering for `rite-names`; it does not for `formulas`.
 
 ---
 
@@ -31,33 +32,51 @@ Content rows live in `content.data` — one JSON object per row, not real column
 
 ### 2.1 Dictionary references
 
+**Migrated — an opaque id, so it must become a UUID.** These three, and only
+these three:
+
 | ritus column | Stored now | Migration adds | Sent to eCatalogus as | eCatalogus field |
 |---|---|---|---|---|
 | `rite_id` | **legacy id** (int) | `rite_id_uuid` | **UUID** (from local cache) | `rubric_id` |
 | `formula_id` | **legacy id** (int) | `formula_id_uuid` | **UUID** (from local cache) | `formula_id` |
 | `text_standarization__usu_id` | **Usuarium id** (text) | `text_standarization__usu_id_uuid` | **UUID** (from local cache) | `text_standarization` |
-| `function_id` | **name** | `function_id_uuid` | **name**, verbatim | `function_id` |
-| `subfunction_id` | **name** | `subfunction_id_uuid` | **name**, verbatim | `subfunction_id` |
-| `section_id` | **name** | `section_id_uuid` | **name**, verbatim | `section_id` |
-| `subsection_id` | **name** | `subsection_id_uuid` | **name**, verbatim | `subsection_id` |
-| `liturgical_genre_id` | **name** | `liturgical_genre_id_uuid` | **name**, verbatim | `liturgical_genre_id` |
-| `contributor_id` | **initials** | `contributor_id_uuid` | **initials**, verbatim | `contributor_id` |
-| `music_notation_id` | **name** | `music_notation_id_uuid` | **name**, verbatim | `music_notation_id` |
-| `layer` | **short name** | `layer_uuid` | **short name**, verbatim | `layer` |
-| `mass_hour` | **short name** | `mass_hour_uuid` | **short name**, verbatim | `mass_hour` |
-| `genre` | **short name** | `genre_uuid` | **short name**, verbatim | `genre` |
-| `season_month` | **short name** | `season_month_uuid` | **short name**, verbatim | `season_month` |
-| `week` | **short name** | `week_uuid` | **short name**, verbatim | `week` |
-| `day` | **short name** | `day_uuid` | **short name**, verbatim | `day` |
+
+**Kept as text — the value is already portable, so there is nothing to migrate.**
+The importer resolves these itself, case-insensitively, the same way on every
+instance:
+
+| ritus column | Stored | Sent to eCatalogus as | eCatalogus field |
+|---|---|---|---|
+| `function_id` / `subfunction_id` | **name** | name, verbatim | same |
+| `section_id` / `subsection_id` | **name** | name, verbatim | same |
+| `liturgical_genre_id` | **name** | name, verbatim | same |
+| `music_notation_id` | **name** | name, verbatim | same |
+| `contributor_id` | **initials** | initials, verbatim | same |
+| `layer`, `mass_hour`, `genre`, `season_month`, `week`, `day` | **short name** | short name, verbatim | same |
+
+**The migration deliberately does not touch these.** It could add a `*_uuid` for
+them, but that would turn ordinary data-entry noise into migration blockers: a
+`function_id` column holding `"A"`, `"AA"`, `"A11A"` is a table that needs
+correcting by the person who transcribed it, not something a script can decide.
+Those values stay exactly as they are, and are caught in two places that name the
+row: **Validate** in the table editor, and `dry_run` at upload.
+
+`map` still counts them, as a heads-up rather than a blocker:
+
+```
+kept as text, not migrated - these need correcting in the table editor:
+column                          distinct unrecognised examples
+function_id                           11            8 'A', 'A11A', 'A1A', 'AA'
+layer                                  2            1 'ZZZ'
+```
+
+`unresolved.tsv` therefore contains only genuine migration blockers — an opaque
+id with no eCatalogus counterpart — which is what makes it worth sending to the
+editors.
 
 **Legacy integer columns are kept, not deleted.** They are the provenance of the
 migration and the join key if it ever has to be re-run. They are simply never
 read for anything API-facing.
-
-**Only three columns need a UUID at upload time** — `rite_id`, `formula_id` and
-`text_standarization__usu_id` — because what ritus stores for them is not
-something the importer can match on. Everything else in the table above travels
-as the text ritus already holds.
 
 **Where a `*_uuid` exists it wins.** The upload resolves in this order: `*_uuid`
 on the row → a value that already is a UUID → a name sent verbatim → the local
@@ -109,8 +128,10 @@ display. None is in the payload.
 | `ritus-client/src/components/ECatalogusUploadDialog.jsx` | The "Send to eCatalogus" dialog |
 | `ritus-client/src/components/DataTable.jsx` | *(modified)* the toolbar button, after Validate |
 | `ritus-client/src/pages/TableEditor.jsx` | *(modified)* passes `structureKey` through |
-| `ritus-server/scripts/ecatalogus_dicts.py` | `pull` / `map` / `apply` / `verify` |
-| `ritus-server/scripts/ecatalogus_migrate.sh` | Runs all four in order, with dry runs |
+| `ritus-client/src/components/ECatalogusDictionaries.jsx` | Admin panel: refresh the vocabularies, see what changed |
+| `ritus-server/scripts/ecatalogus_dicts.py` | `pull` / `map` / `apply` / `verify` / `sync` |
+| `ritus-server/scripts/ecatalogus_migrate.sh` | Runs the migration steps in order, with dry runs |
+| `ritus-server/krakenServer.py` | *(modified)* `GET`/`POST /api/admin/dictionaries[/refresh]` |
 | `ritus-server/package.sh` | *(modified)* ships `scripts/` and `data/` in the zip |
 
 ### 3.2 Data
@@ -149,6 +170,49 @@ detect which by looking for `formulas.csv`:
 On a deployed server there is no `ritus-client` — `package.sh` copies the built
 client into `ritus-server/static`, so the dictionaries arrive under `static/data`.
 `--local-dicts <dir>` overrides the detection.
+
+---
+
+## 3.4 Keeping the dictionaries current
+
+**Settings → eCatalogus Dictionaries** (admin only, on `/users`). One button:
+*Refresh from eCatalogus*. It runs `pull` then `sync`, takes about 35 seconds,
+and reports what changed.
+
+| | |
+|---|---|
+| `pull` | Re-downloads all fourteen vocabularies into the cache and rewrites the browser indexes. **Full replace, never a merge** — `?since=` cannot report a term withdrawn upstream, so a merge would keep deleted entries forever. Nothing is written until every download has succeeded, so a failure leaves the previous cache intact. |
+| `sync` | Appends terms eCatalogus has that ritus's own dictionaries lack, so they appear in the table editor's dropdowns and stop being flagged by Validate. Existing rows, their order and their ids never move. Idempotent. |
+
+**All twelve local dictionary files are covered**, including `rite_names.csv`
+and `formulas.csv` — the table editor keys both by the ritus integer, and
+eCatalogus now publishes that same integer as `id` on both. `sync` writes it
+straight from the API response; nothing is derived or guessed.
+
+`formulas.csv` has one extra safeguard: `sync` first samples pre-existing
+entries and checks that eCatalogus's `id` actually agrees with the number
+already sitting in the local file. It does for `rite_names.csv`. It does
+**not**, reliably, for `formulas.csv` — eCatalogus's `id` there is a plain,
+unrelated autoincrement that only coincidentally matches ritus's own numbering
+for the first few rows before diverging (confirmed live: 49 of 50 sampled
+entries disagreed). When that check fails, `sync` adds nothing for that file
+and says so, rather than writing rows under a number that resolves to the
+wrong formula. Until eCatalogus's `formulas` endpoint publishes the actual
+legacy number per row (today it's only obtainable one at a time, via
+`?legacy_ids=`), `formulas.csv` stays manually maintained.
+
+The panel is deliberately not wired to the upload dialog: an upload resolves
+against whatever cache is on disk, so a refresh must never start underneath one.
+Refreshes are serialised server-side — a second one gets `409` rather than
+racing on the same files.
+
+Command line equivalent, same effect:
+
+```bash
+python3 scripts/ecatalogus_dicts.py pull
+python3 scripts/ecatalogus_dicts.py sync --dry-run   # what would be added
+python3 scripts/ecatalogus_dicts.py sync
+```
 
 ---
 
@@ -193,15 +257,17 @@ serves every target.
 
 ---
 
-## 5. Two traps, written down so nobody re-discovers them
+## 5. Three traps, written down so nobody re-discovers them
 
-**A derived UUID is not trustworthy on its own.** Legacy ids map to UUIDs by
-`uuid5(NAMESPACE, "indexerapp.Model:id")`, and it holds for 4564/4564 rite names
-and 13228/13228 formulas. But in `functions.csv`, id 81 ("Prefatio") derives to a
-UUID that exists on the server and holds **"Super oblata"**. Two more collide the
-same way. So a derived UUID is accepted only when the cached entry's name matches
-the one ritus has; otherwise it falls through to name matching, then to
-`unresolved.tsv`.
+**A derived UUID is not trustworthy on its own.** The scripts no longer derive
+one (see §3.4), but the fact remains true of the technique itself, for anyone
+tempted to reach for it again: legacy ids map to UUIDs by
+`uuid5(NAMESPACE, "indexerapp.Model:id")`, and it held for 4564/4564 rite names
+and 13228/13228 formulas at the time this was checked. But in `functions.csv`,
+id 81 ("Prefatio") derives to a UUID that exists on the server and holds
+**"Super oblata"**. Two more collide the same way. A derived UUID is only ever
+safe to accept when the cached entry's name also matches the one ritus has —
+never on its own.
 
 **`?legacy_ids=` is not universally safe.** Their `legacy_id` means *eCatalogus's*
 pre-migration primary key; our `legacy_id` column means *ritus's* dictionary id.
@@ -211,6 +277,20 @@ has Collecta=1, so `?legacy_ids=79` returns a different function entirely (3 of
 113 sampled resolved to the wrong entry, the other 110 came back unresolved). It
 costs us nothing today, because `function_id` is stored and sent as a name — but
 do not adopt `?legacy_ids=` as a general rule.
+
+**eCatalogus's plain `id` and its `?legacy_ids=`-derived `legacy_id` are not the
+same number, even for the same dictionary.** `rite-names` and `formulas` both
+publish a plain `id` on a general listing (§1). For `rite-names` that `id`
+happens to *be* the pre-migration primary key — same number either way. For
+`formulas` it is not: it is a separate, unrelated Django autoincrement that
+only coincidentally agrees with the real legacy number for the first handful of
+rows (`id: 1` ↔ legacy `1`, `id: 2` ↔ legacy `3`, `id: 3` ↔ legacy `5` …) before
+silently diverging. Live sample: 50 pre-existing `formulas.csv` entries checked
+against the plain `id` field, 49 disagreed. `sync` (§3.4) checks for exactly
+this before trusting `id` on any file, which is why `formulas.csv` stays
+manually maintained and `rite_names.csv` does not — not a hardcoded distinction,
+a measured one. Never assume a present, plausible-looking `id` field is the
+number you already hold; check a sample first.
 
 ---
 

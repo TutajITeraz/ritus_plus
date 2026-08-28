@@ -1,4 +1,5 @@
 import sys
+import subprocess
 import argparse
 import os
 import hashlib
@@ -2444,6 +2445,135 @@ def autofix():
     except Exception as e:
         logger.error(f"Error in autofix: {str(e)}")
         return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+# --------------------------------------------------------------------------- #
+# eCatalogus dictionaries - admin refresh
+# --------------------------------------------------------------------------- #
+#
+# Refreshing pulls the controlled vocabularies from the canonical eCatalogus
+# instance, rewrites the local cache and the browser lookups, and carries any
+# genuinely new terms into ritus's own dictionaries so they appear in the table
+# editor's dropdowns.
+#
+# It is a deliberate admin action, never wired to the upload dialog: an upload
+# resolves against whatever cache is on disk, so a refresh must not be able to
+# start mid-upload.
+
+DICT_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "scripts", "ecatalogus_dicts.py")
+DICT_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "data", "ecatalogus")
+
+# One refresh at a time. Two concurrent pulls would race on the same files.
+_dict_refresh_lock = threading.Lock()
+
+
+def _dict_status():
+    """Read the sidecars the pull script leaves beside each cached vocabulary."""
+    dictionaries = []
+    total = 0
+    newest = None
+    if os.path.isdir(DICT_CACHE):
+        for name in sorted(os.listdir(DICT_CACHE)):
+            if not name.endswith(".meta.json"):
+                continue
+            try:
+                with open(os.path.join(DICT_CACHE, name), encoding="utf-8") as handle:
+                    meta = json.load(handle)
+            except (ValueError, OSError):
+                continue
+            dictionaries.append({
+                "slug": meta.get("slug"),
+                "rows": meta.get("row_count", 0),
+                "fetched_at": meta.get("fetched_at"),
+            })
+            total += meta.get("row_count", 0) or 0
+            if meta.get("fetched_at") and (newest is None or meta["fetched_at"] > newest):
+                newest = meta["fetched_at"]
+    return {
+        "dictionaries": dictionaries,
+        "count": len(dictionaries),
+        "total_rows": total,
+        "last_refreshed": newest,
+        "source": "https://ecatalogus.ispan.pl",
+        "refreshing": _dict_refresh_lock.locked(),
+    }
+
+
+@app.route("/api/admin/dictionaries", methods=["GET"])
+@jwt_required()
+def dictionaries_status():
+    current_user = get_current_user()
+    if not current_user or not current_user.is_admin:
+        return jsonify({"error": "Admin access required"}), 403
+    return jsonify(_dict_status())
+
+
+@app.route("/api/admin/dictionaries/refresh", methods=["POST"])
+@jwt_required()
+def dictionaries_refresh():
+    current_user = get_current_user()
+    if not current_user or not current_user.is_admin:
+        return jsonify({"error": "Admin access required"}), 403
+
+    if not _dict_refresh_lock.acquire(blocking=False):
+        return jsonify({"error": "A refresh is already running."}), 409
+
+    try:
+        payload = request.get_json(silent=True) or {}
+        source = payload.get("source") or "https://ecatalogus.ispan.pl"
+        dry_run = bool(payload.get("dry_run"))
+
+        before = {d["slug"]: d["rows"] for d in _dict_status()["dictionaries"]}
+
+        steps = []
+        for name, argv in (
+            ("pull", ["pull", "--source", source] + (["--dry-run"] if dry_run else [])),
+            ("sync", ["sync"] + (["--dry-run"] if dry_run else [])),
+        ):
+            result = subprocess.run(
+                [sys.executable, DICT_SCRIPT] + argv,
+                capture_output=True, text=True, timeout=900,
+            )
+            steps.append({
+                "step": name,
+                "ok": result.returncode == 0,
+                "output": (result.stdout or "") + (result.stderr or ""),
+            })
+            if result.returncode != 0:
+                # pull writes nothing until every download has succeeded, so a
+                # failure here leaves the previous cache intact.
+                logger.error("Dictionary %s failed: %s", name, result.stderr)
+                return jsonify({
+                    "error": "The %s step failed; the previous dictionaries are unchanged."
+                             % name,
+                    "steps": steps,
+                }), 500
+
+        status = _dict_status()
+        changes = []
+        for entry in status["dictionaries"]:
+            was = before.get(entry["slug"])
+            if was is not None and was != entry["rows"]:
+                changes.append({"slug": entry["slug"], "before": was, "after": entry["rows"]})
+
+        logger.info("Dictionaries refreshed by %s from %s", current_user.username, source)
+        return jsonify({
+            "ok": True,
+            "dry_run": dry_run,
+            "status": status,
+            "changes": changes,
+            "steps": steps,
+        })
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "The refresh timed out; the previous dictionaries "
+                                 "are unchanged."}), 504
+    except Exception as error:
+        logger.error("Dictionary refresh failed: %s", error)
+        return jsonify({"error": "Refresh failed: %s" % error}), 500
+    finally:
+        _dict_refresh_lock.release()
 
 
 def open_browser():

@@ -1,40 +1,36 @@
 #!/usr/bin/env python3
 """
 TITLE: ecatalogus_dicts.py
-DESCRIPTION: Pulls the eCatalogus controlled vocabularies into a local cache and
-  migrates the ritus content rows off the instance-local integer ids onto UUIDs.
+DESCRIPTION: Pulls the eCatalogus controlled vocabularies into a local cache,
+  migrates the ritus content rows off the instance-local integer ids onto UUIDs,
+  and carries new eCatalogus terms into ritus's own dictionaries.
 
-  Four re-runnable subcommands, meant to be run in this order:
+  Five re-runnable subcommands. `pull` first, always; the rest in any order:
 
       pull    download the vocabularies from the canonical eCatalogus instance
       map     work out a uuid for every dictionary value ritus holds
       apply   write those uuids into the ritus database
       verify  re-check the result; exits non-zero if anything regressed
+      sync    add new eCatalogus terms to ritus's own local dictionaries
 
-  Steps 2-4 never touch the network. They read the cache written by step 1, so a
-  run on the developer's machine and a run on production against the same cache
-  produce the same mapping. That is the whole reason the steps are separate.
+  map/apply/verify/sync never touch the network. They read the cache `pull`
+  wrote, so a run on the developer's machine and a run on production against
+  the same cache produce the same result. That is the whole reason pull is
+  separate from the rest.
 
 WHY THIS EXISTS:
-  eCatalogus assigns each dictionary row an autoincrement `id` that differs per
-  instance - RiteNames "apostoli plures" is id 1 on MPL Limbo, 4565 on Liturgica
-  Poloniae and 9129 on Corpus Liturgicum, while its uuid is the same everywhere.
-  ritus stored those integers. Resolving them against whichever instance is being
-  uploaded to therefore yields a valid uuid for the wrong entry: the import
-  succeeds and the data is wrong. The uuid is the only cross-instance identifier.
+  UUIDs are the only identifier eCatalogus guarantees means the same thing on
+  every instance. Two dictionaries, `rite-names` and `formulas`, also publish a
+  plain numeric `id` straight from the canonical instance - every other
+  dictionary publishes `uuid` only. Where content columns hold a ritus integer
+  (`rite_id`, `formula_id`, a Usuarium id), `map`/`apply` resolve it to a uuid
+  via the cache before it is ever sent, so nothing ritus-local is sent to
+  eCatalogus and nothing cross-instance is trusted for identity.
 
-HOW A LEGACY ID BECOMES A UUID:
-  When the legacy database was migrated into eCatalogus every row was given a
-  uuid derived from its old primary key, and ritus's ids are that same old
-  numbering:
-
-      uuid5(NAMESPACE, "indexerapp.RiteNames:1") -> 0d6b1e87-...-a14d78895b30
-
-  Derivation alone is not enough. In functions.csv, id 81 ("Prefatio") derives to
-  a uuid that exists on the server and holds "Super oblata" - a silent
-  mis-mapping. So a derived uuid is accepted only when the cached entry it points
-  at carries the same name ritus has. Anything else falls through to matching by
-  name, and then to the unresolved report.
+  `id`, where it exists, is not automatically ritus's own numbering - see
+  id_scheme_trustworthy() below and eCatalogus_REFERENCE.md §5. It agrees with
+  ritus's numbering for `rite-names`. It does not for `formulas`, which is why
+  `sync` writes to `rite_names.csv` but refuses to write to `formulas.csv`.
 
 USAGE:
   python3 scripts/ecatalogus_dicts.py pull
@@ -43,6 +39,8 @@ USAGE:
   python3 scripts/ecatalogus_dicts.py apply  --dry-run
   python3 scripts/ecatalogus_dicts.py apply
   python3 scripts/ecatalogus_dicts.py verify
+  python3 scripts/ecatalogus_dicts.py sync   --dry-run
+  python3 scripts/ecatalogus_dicts.py sync
 
   Every subcommand takes --db, --cache and --mapping to override the defaults,
   and every subcommand is non-interactive and safe to run twice.
@@ -113,11 +111,6 @@ def find_index_out():
         return os.path.join(local, "ecatalogus")
     return os.path.join(LOCAL_DICT_CANDIDATES[0], "ecatalogus")
 
-# The namespace eCatalogus used when it derived uuids from the legacy primary
-# keys. Verified against live data: 4564/4564 rite names and 13228/13228 formulas
-# in ritus's own CSVs reproduce exactly.
-LEGACY_NAMESPACE = uuid.UUID("8e7f6f8a-cc0f-4e6f-a7af-c7a7e9d1f4e3")
-
 PAGE_SIZE = 1000
 HTTP_TIMEOUT = 180
 
@@ -128,22 +121,18 @@ class Dictionary:
     """One controlled vocabulary, and how ritus refers to it.
 
     slug          the eCatalogus dictionary endpoint
-    label         the Django model label, used for the uuid derivation
+    label         the Django model label, kept for cache sidecars
     remote_names  entry fields a ritus value may be matched against, in order
     ritus_columns the content columns that reference this vocabulary
-    local_csv     ritus's own copy, used to attach legacy ids to the cache
-    local_id      the id column in that file (None when it has none)
-    local_name    the column in that file holding the name
+    local_name    the column in ritus's own CSV holding the name, used only
+                  for the human-readable label in map's mapping-*.tsv output
     """
 
-    def __init__(self, slug, label, remote_names, ritus_columns,
-                 local_csv=None, local_id=None, local_name=None):
+    def __init__(self, slug, label, remote_names, ritus_columns, local_name=None):
         self.slug = slug
         self.label = label
         self.remote_names = remote_names
         self.ritus_columns = ritus_columns
-        self.local_csv = local_csv
-        self.local_id = local_id
         self.local_name = local_name
 
     @property
@@ -158,34 +147,34 @@ class Dictionary:
 # manuscript. See ecatalogus.js.
 DICTIONARIES = [
     Dictionary("rite-names", "indexerapp.RiteNames", ("name",),
-               ("rite_id",), "rite_names.csv", "id", "text"),
+               ("rite_id",), "text"),
     Dictionary("formulas", "indexerapp.Formulas", (),
-               ("formula_id",), "formulas.csv", "id", "text"),
+               ("formula_id",), "text"),
     Dictionary("content-functions", "indexerapp.ContentFunctions", ("name",),
-               ("function_id", "subfunction_id"), "functions.csv", "id", "name"),
+               ("function_id", "subfunction_id"), "name"),
     Dictionary("sections", "indexerapp.Sections", ("name",),
-               ("section_id", "subsection_id"), "sections.tsv", "id", "name"),
+               ("section_id", "subsection_id"), "name"),
     Dictionary("liturgical-genres", "indexerapp.LiturgicalGenres", ("title",),
-               ("liturgical_genre_id",), "liturgical_genres.tsv", "id", "name"),
+               ("liturgical_genre_id",), "name"),
     Dictionary("layers", "indexerapp.Layer", ("short_name", "name"),
-               ("layer",), "layer.tsv", "id", "name"),
+               ("layer",), "name"),
     Dictionary("mass-hours", "indexerapp.MassHour", ("short_name", "name"),
-               ("mass_hour",), "mass_hour.tsv", "id", "name"),
+               ("mass_hour",), "name"),
     Dictionary("genres", "indexerapp.Genre", ("short_name", "name"),
-               ("genre",), "genre.tsv", None, "name"),
+               ("genre",), "name"),
     Dictionary("seasons-and-months", "indexerapp.SeasonMonth", ("short_name", "name"),
-               ("season_month",), "season_month.tsv", "id", "name"),
+               ("season_month",), "name"),
     Dictionary("weeks", "indexerapp.Week", ("short_name", "name"),
-               ("week",), "week.tsv", "id", "name"),
+               ("week",), "name"),
     Dictionary("days", "indexerapp.Day", ("short_name", "name"),
-               ("day",), "day.tsv", "id", "name"),
+               ("day",), "name"),
     Dictionary("text-standarization", "indexerapp.TextStandarization",
                ("usu_id", "standard_incipit"),
-               ("text_standarization__usu_id",), None, None, None),
+               ("text_standarization__usu_id",), None),
     Dictionary("music-notation-names", "indexerapp.MusicNotationNames", ("name",),
-               ("music_notation_id",), "music_notation.tsv", "id", "name"),
+               ("music_notation_id",), "name"),
     Dictionary("contributors", "indexerapp.Contributors", ("initials",),
-               ("contributor_id",), None, None, None),
+               ("contributor_id",), None),
 ]
 
 BY_SLUG = {d.slug: d for d in DICTIONARIES}
@@ -210,6 +199,31 @@ RUNTIME_INDEX_SLUGS = ("formulas", "rite-names", "text-standarization")
 # everything in the table.
 UNMAPPABLE_COLUMNS = ("quire_id", "edition_index", "edition_subindex")
 
+# Only these three columns are migrated, and the reason is the same one that
+# decides how the upload sends them: an opaque identifier means nothing outside
+# the database that issued it, so it has to become a uuid before it can travel.
+#
+#   rite_id                      a ritus integer
+#   formula_id                   a ritus integer
+#   text_standarization__usu_id  a Usuarium id
+#
+# Every other reference column holds a NAME - "Collecta", "S/C", "Square
+# notation". Names are already portable: the importer resolves them itself, the
+# same way on every instance, so there is nothing to migrate. They stay text.
+#
+# That is deliberate, not an omission. Migrating them would turn ordinary
+# data-entry noise into migration blockers: a column full of values like "A",
+# "AA", "A11A" is a table that needs correcting by the person who transcribed
+# it, which is what Validate in the table editor is for. It is not something a
+# migration script can decide, and burying it in unresolved.tsv would hide the
+# formula ids that genuinely cannot be resolved.
+MIGRATED_COLUMNS = ("rite_id", "formula_id", "text_standarization__usu_id")
+
+# The rest: kept as text, validated in the table editor and again by dry_run.
+TEXT_REFERENCE_COLUMNS = tuple(
+    column for column in BY_COLUMN if column not in MIGRATED_COLUMNS
+)
+
 
 # --------------------------------------------------------------------------- #
 # Small helpers
@@ -233,10 +247,6 @@ def looks_like_uuid(value):
         return True
     except (ValueError, AttributeError):
         return False
-
-
-def derive_uuid(label, legacy_id):
-    return str(uuid.uuid5(LEGACY_NAMESPACE, "%s:%d" % (label, int(legacy_id))))
 
 
 def now_iso():
@@ -381,65 +391,24 @@ def fetch_dictionary(base, slug):
     return rows, rights
 
 
-def attach_legacy_ids(dictionary, remote_rows, local_dict_dir):
-    """Give each cached entry the integer id ritus has always used for it.
+def attach_source_ids(remote_rows):
+    """Take the integer id eCatalogus itself assigns, when it publishes one.
 
-    The id is taken from ritus's own copy of the vocabulary, not from the
-    server: the server's `id` is instance-local and is on its way out of the
-    API. A local id is accepted for an entry when the uuid derived from it
-    points at that entry AND the names agree; otherwise the entry is matched by
-    name. Anything left over has no legacy id, which is correct - it is an entry
-    ritus has never seen.
+    Only `rite-names` and `formulas` currently carry one - every other
+    dictionary publishes `uuid` only. Where it exists it is the canonical
+    instance's own numbering, and that numbering is exactly what ritus's own
+    `rite_names.csv` / `formulas.csv` have used since before eCatalogus
+    existed. It is taken as-is: no derivation, no local cross-check. If
+    eCatalogus ever adds `id` to another dictionary, it starts being trusted
+    here automatically.
     """
-    stats = {"derived": 0, "by_name": 0, "no_legacy_id": 0, "rejected": 0}
-    if not dictionary.local_csv or not dictionary.local_id:
-        stats["no_legacy_id"] = len(remote_rows)
-        return {}, stats
-
-    path = os.path.join(local_dict_dir, dictionary.local_csv)
-    if not os.path.isfile(path):
-        log("    ! ritus dictionary %s not found; cache will carry no legacy ids"
-            % dictionary.local_csv)
-        stats["no_legacy_id"] = len(remote_rows)
-        return {}, stats
-
-    by_uuid = {row["uuid"]: row for row in remote_rows if row.get("uuid")}
-    by_name = {}
-    for row in remote_rows:
-        for field in dictionary.remote_names or ():
-            key = normalize(row.get(field))
-            if key:
-                by_name.setdefault(key, row["uuid"])
-    # Formulas declare no name lookup on the server, but the local text is still
-    # the only way to confirm a derived uuid points at the right row.
-    confirm_fields = dictionary.remote_names or ("text",)
-
     legacy_by_uuid = {}
-    for local_row in read_delimited(path):
-        raw_id = (local_row.get(dictionary.local_id) or "").strip()
-        if not raw_id.isdigit():
-            continue
-        local_name = normalize(local_row.get(dictionary.local_name))
-
-        candidate = derive_uuid(dictionary.label, raw_id)
-        remote_row = by_uuid.get(candidate)
-        if remote_row is not None:
-            names = [normalize(remote_row.get(f)) for f in confirm_fields]
-            if local_name and local_name in names:
-                legacy_by_uuid.setdefault(candidate, raw_id)
-                stats["derived"] += 1
-                continue
-            # The derived uuid exists but describes something else. This is the
-            # silent mis-mapping the whole exercise is about - never take it.
-            stats["rejected"] += 1
-
-        matched = by_name.get(local_name) if local_name else None
-        if matched:
-            legacy_by_uuid.setdefault(matched, raw_id)
-            stats["by_name"] += 1
-
-    stats["no_legacy_id"] = len(remote_rows) - len(legacy_by_uuid)
-    return legacy_by_uuid, stats
+    for row in remote_rows:
+        row_uuid = row.get("uuid")
+        row_id = row.get("id")
+        if row_uuid and row_id is not None:
+            legacy_by_uuid[row_uuid] = str(row_id)
+    return legacy_by_uuid
 
 
 def command_pull(args):
@@ -469,12 +438,12 @@ def command_pull(args):
     # Download everything before writing anything: a refresh must never apply
     # partially, or a later upload resolves against a half-updated cache.
     staged = []
-    totals = {"rows": 0, "derived": 0, "by_name": 0, "rejected": 0}
+    totals = {"rows": 0, "with_id": 0}
     started = time.time()
 
     log("")
-    log("      %-22s %7s %8s %8s %9s" % ("dictionary", "rows", "derived", "by name", "no id"))
-    log("      " + "-" * 58)
+    log("      %-22s %7s %9s" % ("dictionary", "rows", "with id"))
+    log("      " + "-" * 40)
 
     for dictionary in wanted:
         try:
@@ -483,11 +452,11 @@ def command_pull(args):
             fail("%s: %s\n       nothing was written; the previous cache is intact."
                  % (dictionary.slug, error))
 
-        legacy_by_uuid, stats = attach_legacy_ids(dictionary, rows, args.local_dicts)
+        legacy_by_uuid = attach_source_ids(rows)
 
-        # `id` is the server's own autoincrement. It is instance-local, it is
-        # being removed from the API, and caching it is what made the whole
-        # mis-mapping look reasonable. It is dropped here deliberately.
+        # `id` (when present) is kept, but under the `legacy_id` column, never
+        # under `id` - that name is reserved for ritus's own local file, so the
+        # two are never confused with each other.
         field_order = ["uuid", "legacy_id"]
         for row in rows:
             for key in row:
@@ -509,21 +478,14 @@ def command_pull(args):
                     record[key] = ""
             out_rows.append(record)
 
-        staged.append((dictionary, field_order, out_rows, rights, stats))
+        staged.append((dictionary, field_order, out_rows, rights, len(legacy_by_uuid)))
         totals["rows"] += len(out_rows)
-        totals["derived"] += stats["derived"]
-        totals["by_name"] += stats["by_name"]
-        totals["rejected"] += stats["rejected"]
+        totals["with_id"] += len(legacy_by_uuid)
 
-        log("      %-22s %7d %8d %8d %9d"
-            % (dictionary.slug, len(out_rows), stats["derived"],
-               stats["by_name"], stats["no_legacy_id"]))
-        if stats["rejected"]:
-            log("        ^ %d local id(s) rejected: the derived uuid exists but "
-                "names a different entry" % stats["rejected"])
+        log("      %-22s %7d %9d" % (dictionary.slug, len(out_rows), len(legacy_by_uuid)))
 
-    log("      " + "-" * 58)
-    log("      %-22s %7d %8d %8d" % ("total", totals["rows"], totals["derived"], totals["by_name"]))
+    log("      " + "-" * 40)
+    log("      %-22s %7d %9d" % ("total", totals["rows"], totals["with_id"]))
     log("      %.1fs" % (time.time() - started))
 
     if args.dry_run:
@@ -531,7 +493,7 @@ def command_pull(args):
         return 0
 
     # Swap everything in at once, now that every download has succeeded.
-    for dictionary, field_order, out_rows, rights, stats in staged:
+    for dictionary, field_order, out_rows, rights, with_id in staged:
         write_tsv(os.path.join(args.cache, dictionary.filename), field_order, out_rows)
         sidecar = {
             "slug": dictionary.slug,
@@ -540,9 +502,7 @@ def command_pull(args):
             "site_name": site_name,
             "fetched_at": now_iso(),
             "row_count": len(out_rows),
-            "legacy_ids_derived": stats["derived"],
-            "legacy_ids_by_name": stats["by_name"],
-            "legacy_ids_rejected": stats["rejected"],
+            "rows_with_id": with_id,
         }
         if rights:
             # A TSV on disk has no HTTP headers left to carry the licence.
@@ -620,13 +580,14 @@ def iter_content(connection):
             yield row["id"], parsed
 
 
-def collect_values(connection):
+def collect_values(connection, columns=None):
     """Every distinct non-empty value per dictionary column, with its frequency."""
-    found = {column: {} for column in BY_COLUMN}
+    columns = tuple(columns) if columns is not None else tuple(BY_COLUMN)
+    found = {column: {} for column in columns}
     total_rows = 0
     for _, data in iter_content(connection):
         total_rows += 1
-        for column in BY_COLUMN:
+        for column in columns:
             value = data.get(column)
             if is_blank(value):
                 continue
@@ -643,10 +604,12 @@ def resolve_value(dictionary, value, cache):
     """Resolve one ritus value to a uuid. Returns (uuid, method, note).
 
     Order matters and mirrors the server's own precedence:
-      1. already a uuid            - nothing to do
-      2. an integer, derived       - only when the cached entry's name agrees
-      3. matched by name           - the same columns the server matches on
-      4. an integer, cached        - the cache's own legacy_id column
+      1. already a uuid   - nothing to do
+      2. an integer       - looked up against the cache's own legacy_id
+                             column, which for rite-names and formulas is the
+                             id eCatalogus itself returned - the source of
+                             truth, not a guess
+      3. matched by name  - the same columns the server matches on
       otherwise unresolved.
     """
     text = str(value).strip()
@@ -660,20 +623,10 @@ def resolve_value(dictionary, value, cache):
         return None, "unknown-uuid", "uuid is not in the cache"
 
     if text.isdigit():
-        candidate = derive_uuid(dictionary.label, text)
-        entry = index["by_uuid"].get(candidate)
-        if entry is not None:
-            legacy = (entry.get("legacy_id") or "").strip()
-            if legacy == text:
-                return candidate, "derived", ""
-            # Derivable but the cache attributes that id to a different entry.
-            return None, "derivation-rejected", (
-                "derived uuid holds %r, whose legacy id is %s"
-                % (cache.name_of(dictionary.slug, candidate), legacy or "unset"))
         cached = index["by_legacy"].get(text)
         if cached:
-            return cached, "cached-legacy-id", ""
-        return None, "unresolved", "no entry with legacy id %s" % text
+            return cached, "by-id", ""
+        return None, "unresolved", "no entry with id %s" % text
 
     matched = index["by_name"].get(normalize(text))
     if matched:
@@ -691,20 +644,22 @@ def command_map(args):
     cache = Cache.load(args.cache)
     connection = open_database(args.db)
     try:
-        values, total_rows = collect_values(connection)
+        values, total_rows = collect_values(connection, MIGRATED_COLUMNS)
+        text_values, _ = collect_values(connection, TEXT_REFERENCE_COLUMNS)
     finally:
         connection.close()
 
     log("      %d content rows\n" % total_rows)
     log("      %-30s %8s %9s %8s %8s %11s"
-        % ("column", "distinct", "derived", "by name", "uuid", "UNRESOLVED"))
+        % ("column", "distinct", "by id", "by name", "uuid", "UNRESOLVED"))
     log("      " + "-" * 80)
 
     mappings = {}
     unresolved_rows = []
-    grand = {"derived": 0, "by-name": 0, "already-uuid": 0, "unresolved": 0}
+    grand = {"by-id": 0, "by-name": 0, "already-uuid": 0, "unresolved": 0}
 
-    for column, dictionary in sorted(BY_COLUMN.items()):
+    for column in sorted(MIGRATED_COLUMNS):
+        dictionary = BY_COLUMN[column]
         distinct = values.get(column) or {}
         if not distinct:
             continue
@@ -734,20 +689,25 @@ def command_map(args):
 
         unresolved_here = sum(
             count for method, count in counts.items()
-            if method in ("unresolved", "unknown-uuid", "derivation-rejected", "no-cache")
+            if method in ("unresolved", "unknown-uuid", "no-cache")
         )
-        for key in ("derived", "by-name", "already-uuid"):
+        for key in ("by-id", "by-name", "already-uuid"):
             grand[key] += counts.get(key, 0)
         grand["unresolved"] += unresolved_here
 
         log("      %-30s %8d %9d %8d %8d %11d"
-            % (column, len(distinct), counts.get("derived", 0) + counts.get("cached-legacy-id", 0),
+            % (column, len(distinct), counts.get("by-id", 0),
                counts.get("by-name", 0), counts.get("already-uuid", 0), unresolved_here))
 
     log("      " + "-" * 80)
     log("      %-30s %8s %9d %8d %8d %11d"
-        % ("total", "", grand["derived"], grand["by-name"],
+        % ("total", "", grand["by-id"], grand["by-name"],
            grand["already-uuid"], grand["unresolved"]))
+
+    # The text columns are not migrated, but it is worth saying how much of the
+    # table an editor still has to correct - a count here, the row-by-row detail
+    # from Validate in the table editor.
+    report_text_columns(cache, text_values)
 
     if args.dry_run:
         log("\n      --dry-run: nothing written.")
@@ -791,11 +751,55 @@ def command_map(args):
 # apply
 # --------------------------------------------------------------------------- #
 
+def report_text_columns(cache, text_values):
+    """Count values in the kept-as-text columns that no vocabulary recognises.
+
+    These are not migration problems and never reach unresolved.tsv. They are
+    transcription noise - "A", "AA", "A11A" - that the person who entered them
+    fixes with Validate in the table editor, which names the row and column.
+    """
+    rows = []
+    for column in sorted(TEXT_REFERENCE_COLUMNS):
+        distinct = text_values.get(column) or {}
+        if not distinct:
+            continue
+        dictionary = BY_COLUMN[column]
+        index = cache.by_slug.get(dictionary.slug)
+        if index is None:
+            continue
+        unknown = {
+            value: count for value, count in distinct.items()
+            if normalize(value) not in index["by_name"]
+            and not looks_like_uuid(value)
+        }
+        rows.append((column, len(distinct), unknown))
+
+    if not rows or not any(unknown for _, _, unknown in rows):
+        return
+
+    log("")
+    log("      kept as text, not migrated - these need correcting in the table editor:")
+    log("      %-30s %9s %11s %s" % ("column", "distinct", "unrecognised", "examples"))
+    log("      " + "-" * 80)
+    for column, distinct_count, unknown in rows:
+        if not unknown:
+            continue
+        examples = ", ".join(
+            repr(value) for value, _ in
+            sorted(unknown.items(), key=lambda kv: -kv[1])[:4]
+        )
+        log("      %-30s %9d %11d %s"
+            % (column, distinct_count, len(unknown), examples[:44]))
+    log("")
+    log("      Open the table in the editor and press Validate - it names the row")
+    log("      and column for each one. They are also caught by dry_run at upload.")
+
+
 def load_mappings(directory):
     if not os.path.isdir(directory):
         fail("no mapping directory at %s - run `map` first." % directory)
     mappings = {}
-    for column in BY_COLUMN:
+    for column in MIGRATED_COLUMNS:
         path = os.path.join(directory, "mapping-%s.tsv" % column)
         if not os.path.isfile(path):
             continue
@@ -895,7 +899,8 @@ def command_verify(args):
     try:
         for _, data in iter_content(connection):
             total_rows += 1
-            for column, dictionary in BY_COLUMN.items():
+            for column in MIGRATED_COLUMNS:
+                dictionary = BY_COLUMN[column]
                 value = data.get(column)
                 if is_blank(value):
                     continue
@@ -934,6 +939,239 @@ def command_verify(args):
 
 
 # --------------------------------------------------------------------------- #
+# sync - carry new eCatalogus terms into ritus's own dictionaries
+# --------------------------------------------------------------------------- #
+
+# Every local dictionary the table editor draws its dropdowns from, and how
+# `sync` recognises a row it already has.
+#
+# Ten are keyed by NAME or SHORT NAME - a new row is just a new option, and
+# duplicates are avoided by normalized-name comparison.
+#
+# `rite_names.csv` and `formulas.csv` are keyed by `id` instead, because that
+# is how the table editor has always referenced them (`rite_id`, `formula_id`
+# are plain integer columns). eCatalogus publishes `id` for exactly these two
+# dictionaries, straight from the canonical instance, and for `rite_names.csv`
+# it is trustworthy as-is: it agrees with ritus's own numbering, no guessing.
+#
+# `formulas.csv` is listed here too, but `sync_one` will refuse to write to it:
+# eCatalogus's `id` for formulas is a plain, unrelated autoincrement that only
+# coincidentally matches ritus's numbering for the first few rows (see
+# id_scheme_trustworthy below). It stays effectively manual until eCatalogus
+# publishes the real legacy number per row, not just per queried candidate.
+SYNCABLE = {
+    "functions.csv": ("content-functions", "name", ("id", "name", "parent_function")),
+    "sections.tsv": ("sections", "name", ("id", "name")),
+    "liturgical_genres.tsv": ("liturgical-genres", "title", ("id", "name")),
+    "music_notation.tsv": ("music-notation-names", "name", ("id", "name")),
+    "layer.tsv": ("layers", "short_name", ("short_name", "name", "id")),
+    "mass_hour.tsv": ("mass-hours", "short_name", ("short_name", "name", "id", "type")),
+    "genre.tsv": ("genres", "short_name", ("name", "short_name")),
+    "season_month.tsv": ("seasons-and-months", "short_name", ("kind", "short_name", "name", "id", "types")),
+    "week.tsv": ("weeks", "short_name", ("short_name", "name", "id", "types")),
+    "day.tsv": ("days", "short_name", ("part", "short_name", "name", "id", "types")),
+    "rite_names.csv": ("rite-names", "id", ("id", "text", "english_translation", "votive", "section_id")),
+    "formulas.csv": ("formulas", "id", ("id", "co_no", "text")),
+}
+
+
+def build_id_keyed_row(filename, remote_row, legacy_id, local_dir):
+    """Build a new row for the two dictionaries the editor keys by `id`.
+
+    Both files carry fields with no equivalent column on the other, so this is
+    written per file rather than as one generic mapping.
+    """
+    if filename == "formulas.csv":
+        return {
+            "id": legacy_id,
+            "co_no": remote_row.get("co_no") or "",
+            "text": remote_row.get("text") or "",
+        }
+
+    # rite_names.csv: `section_id` is a foreign key into ritus's own
+    # sections.tsv, by ritus's local numeric id - not something eCatalogus
+    # knows. It is resolved here by name against sections.tsv directly
+    # (section_label, which every rite-names row carries), the same way every
+    # other text reference column in this file is matched. No derivation.
+    sections_by_name = {
+        normalize(row.get("name")): (row.get("id") or "").strip()
+        for row in read_delimited(os.path.join(local_dir, "sections.tsv"))
+        if row.get("name")
+    }
+    section_id = sections_by_name.get(normalize(remote_row.get("section_label")), "") or "NULL"
+    votive = "1" if normalize(remote_row.get("votive")) == "true" else "NULL"
+    return {
+        "id": legacy_id,
+        "text": remote_row.get("name") or "",
+        "english_translation": remote_row.get("english_translation") or "",
+        "votive": votive,
+        "section_id": section_id,
+    }
+
+
+# For the two `id`-keyed files: which local column and which remote field to
+# compare, to check the id scheme actually agrees before trusting it.
+ID_KEYED_CONFIRM_FIELD = {
+    "rite_names.csv": ("text", "name"),
+    "formulas.csv": ("text", "text"),
+}
+
+
+def id_scheme_trustworthy(local_rows, local_col, remote_field, remote_rows, sample_size=50):
+    """Sanity-check eCatalogus's `id` against ritus's own numbering before
+    keying new rows on it.
+
+    eCatalogus publishes `id` for exactly two dictionaries. For one of them
+    it is genuinely the same numbering ritus has always used. For the other,
+    live testing found it is not: `id` is a fresh, unrelated autoincrement
+    that only coincidentally agrees for the first few rows before silently
+    diverging - trusting it would interleave thousands of rows under the
+    wrong local id. So: before adding anything, sample local rows whose `id`
+    also appears as a cached `legacy_id`, and check the descriptive text
+    agrees. Anything less than a clean match means the id scheme cannot be
+    trusted for this file, and nothing is added.
+    """
+    by_legacy = {}
+    for row in remote_rows:
+        legacy = (row.get("legacy_id") or "").strip()
+        if legacy:
+            by_legacy.setdefault(legacy, row)
+
+    candidates = [row for row in local_rows if (row.get("id") or "").strip() in by_legacy]
+    if not candidates:
+        return True, 0, 0  # nothing to check against yet; do not block on it
+
+    sample = candidates[:sample_size]
+    agree = sum(
+        1 for local_row in sample
+        if normalize(local_row.get(local_col))
+        == normalize(by_legacy[(local_row.get("id") or "").strip()].get(remote_field))
+    )
+    return agree == len(sample), agree, len(sample)
+
+
+def sync_one(local_dir, filename, cache, dry_run):
+    """Append eCatalogus entries the local dictionary does not have yet."""
+    slug, key_source, columns = SYNCABLE[filename]
+    index = cache.by_slug.get(slug)
+    path = os.path.join(local_dir, filename)
+    if index is None or not os.path.isfile(path):
+        return None
+
+    local_rows = read_delimited(path)
+    additions = []
+
+    if key_source == "id":
+        local_col, remote_field = ID_KEYED_CONFIRM_FIELD[filename]
+        trustworthy, agree, sampled = id_scheme_trustworthy(
+            local_rows, local_col, remote_field, index["rows"])
+        if not trustworthy:
+            return {
+                "file": filename, "slug": slug, "local": len(local_rows),
+                "added": 0, "examples": [],
+                "warning": (
+                    "id scheme does not match ritus's numbering here (%d/%d "
+                    "sampled entries disagree) - nothing added, to avoid "
+                    "duplicating rows under the wrong id" % (sampled - agree, sampled)
+                ),
+            }
+        existing = {(row.get("id") or "").strip() for row in local_rows}
+        for row in index["rows"]:
+            legacy_id = (row.get("legacy_id") or "").strip()
+            if not legacy_id or legacy_id in existing:
+                continue
+            additions.append(build_id_keyed_row(filename, row, legacy_id, local_dir))
+            existing.add(legacy_id)
+    else:
+        # The editor's key column in the local file has the same meaning as
+        # key_source in the cache, whatever it is called locally.
+        local_key_col = "short_name" if key_source == "short_name" else "name"
+        existing = {normalize(row.get(local_key_col)) for row in local_rows}
+        for row in index["rows"]:
+            value = row.get(key_source)
+            if is_blank(value) or normalize(value) in existing:
+                continue
+            new_row = {column: "" for column in columns}
+            if "name" in new_row:
+                new_row["name"] = row.get("name") or row.get("title") or value
+            if "short_name" in new_row:
+                new_row["short_name"] = row.get("short_name") or value
+            additions.append(new_row)
+            existing.add(normalize(value))
+
+    if additions and not dry_run:
+        # Append rather than rewrite: existing rows, their order and their ids
+        # are what the stored data refers to, and must not move.
+        delimiter = "\t" if filename.endswith(".tsv") else ","
+        # Several of these files have no trailing newline. Appending blindly
+        # would splice the first new row onto the last existing one, corrupting
+        # both - and the corrupted key then reads as "still missing" on the next
+        # run, so it would keep appending forever.
+        needs_newline = False
+        if os.path.getsize(path):
+            with open(path, "rb") as probe:
+                probe.seek(-1, os.SEEK_END)
+                needs_newline = probe.read(1) not in (b"\n", b"\r")
+        with open(path, "a", encoding="utf-8", newline="") as handle:
+            if needs_newline:
+                handle.write("\n")
+            writer = csv.DictWriter(handle, fieldnames=columns, delimiter=delimiter,
+                                    extrasaction="ignore", lineterminator="\n")
+            for row in additions:
+                writer.writerow(row)
+
+    return {"file": filename, "slug": slug, "local": len(local_rows),
+            "added": len(additions),
+            "examples": [r.get("name") or r.get("short_name") or r.get("text")
+                         for r in additions[:4]]}
+
+
+def command_sync(args):
+    """Bring new eCatalogus terms into ritus's own dictionaries. No network."""
+    log("sync  local=%s" % args.local_dicts)
+    log("      cache=%s" % args.cache)
+    if args.dry_run:
+        log("      --dry-run: nothing will be written")
+    if not args.local_dicts:
+        fail("cannot find ritus's own dictionaries - pass --local-dicts.")
+
+    cache = Cache.load(args.cache)
+
+    log("")
+    log("      %-24s %8s %7s  %s" % ("dictionary", "local", "new", "examples"))
+    log("      " + "-" * 74)
+    total_added = 0
+    results = []
+    for filename in sorted(SYNCABLE):
+        outcome = sync_one(args.local_dicts, filename, cache, args.dry_run)
+        if outcome is None:
+            continue
+        results.append(outcome)
+        total_added += outcome["added"]
+        examples = ", ".join(str(e) for e in outcome["examples"] if e)
+        log("      %-24s %8d %7d  %s"
+            % (filename, outcome["local"], outcome["added"], examples[:34]))
+        if outcome.get("warning"):
+            log("        ! %s" % outcome["warning"])
+    log("      " + "-" * 74)
+    log("      %-24s %8s %7d" % ("total", "", total_added))
+
+    if args.dry_run:
+        log("\n      --dry-run: nothing written.")
+    elif total_added:
+        log("\n      %d new option(s) added. Rebuild the client (or reload, on a"
+            " deployed\n      server) for them to appear in the dropdowns." % total_added)
+    else:
+        log("\n      ritus dictionaries already have every eCatalogus term.")
+
+    if getattr(args, "json_out", None):
+        with open(args.json_out, "w", encoding="utf-8") as handle:
+            json.dump({"synced_at": now_iso(), "total_added": total_added,
+                       "dictionaries": results}, handle, ensure_ascii=False, indent=2)
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
 
@@ -942,7 +1180,8 @@ def build_parser():
         prog="ecatalogus_dicts.py",
         description="Pull the eCatalogus vocabularies and migrate ritus onto UUIDs.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Run in order: pull, map --dry-run, map, apply --dry-run, apply, verify.",
+        epilog="Migration: pull, map --dry-run, map, apply --dry-run, apply, verify. "
+               "Ongoing upkeep: pull, sync.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -970,6 +1209,11 @@ def build_parser():
     add_common(subparsers.add_parser("apply", help="write the uuids into the database"))
     add_common(subparsers.add_parser("verify", help="re-check; non-zero exit if incomplete"))
 
+    sync = subparsers.add_parser(
+        "sync", help="add new eCatalogus terms to ritus's own dictionaries")
+    add_common(sync)
+    sync.add_argument("--json-out", help="also write the diff as JSON")
+
     return parser
 
 
@@ -988,7 +1232,7 @@ def resolve_layout(args):
             if args.local_dicts else find_index_out()
         )
 
-    if args.command == "pull":
+    if args.command in ("pull", "sync"):
         if not args.local_dicts:
             fail(
                 "cannot find ritus's own dictionaries (looked for %s in:\n  %s\n"
@@ -1012,6 +1256,7 @@ def main(argv=None):
         "map": command_map,
         "apply": command_apply,
         "verify": command_verify,
+        "sync": command_sync,
     }[args.command]
     return handler(args)
 

@@ -851,3 +851,31 @@ export const saveDomainConfig = async (config) => {
   if (!response.ok) throw new Error("Failed to save domain config");
   return await response.json();
 };
+
+/* ------------------------------------------------------------------ *
+ * eCatalogus dictionaries (admin)
+ * ------------------------------------------------------------------ */
+
+/** What is cached right now: per-vocabulary row counts and when it was pulled. */
+export const fetchDictionaryStatus = async () => {
+  const response = await apiRequest(`${SERVER_URL}/api/admin/dictionaries`);
+  if (!response.ok) throw new Error("Failed to read the dictionary status");
+  return await response.json();
+};
+
+/**
+ * Re-pull the controlled vocabularies from eCatalogus and carry any new terms
+ * into ritus's own dictionaries. Slow by nature - the vocabularies are ~9 MB -
+ * so the caller needs a generous timeout and a progress indicator.
+ */
+export const refreshDictionaries = async ({ source, dryRun = false } = {}) => {
+  const response = await apiRequest(`${SERVER_URL}/api/admin/dictionaries/refresh`, {
+    method: "POST",
+    body: JSON.stringify({ source, dry_run: dryRun }),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(payload?.error || "The dictionary refresh failed");
+  }
+  return payload;
+};
