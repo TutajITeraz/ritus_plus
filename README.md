@@ -1,5 +1,5 @@
 # ritus+
-Interface for transcription and analysis of medieval manuscripts using kraken and chatGPT
+Interface for transcription and analysis of medieval manuscripts using kraken and LLM
 
 
 ## eCatalogus integration
