@@ -1,46 +1,5 @@
 # ritus+
-Interface for transcription and analysis of medieval manuscripts using kraken and chatGPT
-
-
-## eCatalogus integration
-
-The table editor (`/table/`) has a **Send to eCatalogus** button next to Validate.
-It picks one of the five eCatalogus instances, signs the user in with their own
-eCatalogus account (held in the page only, never stored), lists the manuscripts
-with the number of records each already holds, validates the table with a
-`dry_run` and then imports it in bulk.
-
-The rule the integration is built on: **names travel, UUIDs identify, legacy
-integers stay home.** eCatalogus numbers its dictionary rows differently on every
-instance, so ritus never resolves against a remote `id`. Thirteen reference
-fields are sent as the name ritus already holds and resolved server-side; only
-`rite_id`, `formula_id` and `text_standarization__usu_id` need a UUID, taken from
-a local cache pulled from `ecatalogus.ispan.pl`.
-
-Refresh that cache and migrate the database with the committed scripts — the same
-commands on a laptop, staging and production:
-
-```
-cd ritus-server
-./scripts/ecatalogus_migrate.sh              # check run, writes nothing
-./scripts/ecatalogus_migrate.sh --apply      # backs up the DB, applies, verifies
-```
-
-The browser lookups live in `ritus-client/public/data/ecatalogus/index-*.json`.
-That directory is gitignored, so they reach production through `npm run build`
-and `package.sh` — re-run the pull before building.
-
-Terms added in eCatalogus do **not** appear automatically. An admin refreshes
-them under **Settings → eCatalogus Dictionaries**, which re-pulls the
-vocabularies and adds any new options to the table editor's dropdowns.
-`formulas.csv` is the one exception: the editor keys it by the ritus number,
-and eCatalogus's own numbering for formulas does not agree with ours (see
-`eCatalogus_REFERENCE.md` §5) — new formulas still need adding by hand.
-
-- `eCatalogus_REFERENCE.md` — every file, every endpoint, and what each column
-  stores (name, id or UUID).
-- `eCatalogus_MIGRATION.md` — how to run the migration, and what is still blocked.
-
+Interface for transcription and analysis of medieval manuscripts using kraken and LLM
 
 ## Installation
 
@@ -159,3 +118,45 @@ set config.py
 systemctl restart kraken_flask
 ## To check LOGS from gunicorn:
 journalctl -u kraken_flask -f
+
+
+
+## eCatalogus integration
+
+The table editor (`/table/`) has a **Send to eCatalogus** button next to Validate.
+It picks one of the five eCatalogus instances, signs the user in with their own
+eCatalogus account (held in the page only, never stored), lists the manuscripts
+with the number of records each already holds, validates the table with a
+`dry_run` and then imports it in bulk.
+
+The rule the integration is built on: **names travel, UUIDs identify, legacy
+integers stay home.** eCatalogus numbers its dictionary rows differently on every
+instance, so ritus never resolves against a remote `id`. Thirteen reference
+fields are sent as the name ritus already holds and resolved server-side; only
+`rite_id`, `formula_id` and `text_standarization__usu_id` need a UUID, taken from
+a local cache pulled from `ecatalogus.ispan.pl`.
+
+Refresh that cache and migrate the database with the committed scripts — the same
+commands on a laptop, staging and production:
+
+```
+cd ritus-server
+./scripts/ecatalogus_migrate.sh              # check run, writes nothing
+./scripts/ecatalogus_migrate.sh --apply      # backs up the DB, applies, verifies
+```
+
+The browser lookups live in `ritus-client/public/data/ecatalogus/index-*.json`.
+That directory is gitignored, so they reach production through `npm run build`
+and `package.sh` — re-run the pull before building.
+
+Terms added in eCatalogus do **not** appear automatically. An admin refreshes
+them under **Settings → eCatalogus Dictionaries**, which re-pulls the
+vocabularies and adds any new options to the table editor's dropdowns.
+`formulas.csv` is the one exception: the editor keys it by the ritus number,
+and eCatalogus's own numbering for formulas does not agree with ours (see
+`eCatalogus_REFERENCE.md` §5) — new formulas still need adding by hand.
+
+- `eCatalogus_REFERENCE.md` — every file, every endpoint, and what each column
+  stores (name, id or UUID).
+- `eCatalogus_MIGRATION.md` — how to run the migration, and what is still blocked.
+
