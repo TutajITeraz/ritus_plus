@@ -6,14 +6,32 @@ DEPENDENCIES:
 NOTES:
   - Extracted from DictionaryLookup.jsx for reusability.
   - Functions: parseCSV, createReverseIndex, countMatchingWords, levenshtein, calculateLevenshteinSimilarity.
-  - countMatchingWords indexes/matches on character trigrams (not whole words) and
-    ranks candidates by Dice coefficient (match_score = 2*matched / (queryLen +
-    candidateLen)). Trigrams make the prefilter tolerant of OCR typos and Latin
-    inflectional endings that would break exact whole-word matching, while the
-    Dice score keeps overlap judged relative to both text lengths rather than
-    raw match count. Benchmarked against a full Levenshtein scan of formulas.csv
-    (13k entries) and cantus_ids.csv (62k entries): index build ~0.3-0.8s,
-    per-query prefilter ~10-30ms, vs. multi-second full scans.
+  - Matching a typed/OCR'd text against thousands of dictionary entries runs in
+    two stages, each using a different algorithm:
+
+    STAGE 1 - Trigram + Sorensen-Dice prefilter (countMatchingWords):
+    Every entry's text is chopped into overlapping 3-character chunks
+    ("trigrams"), e.g. "salis" -> "sal", "ali", "lis". The query text is
+    chopped the same way, and entries are scored by how many trigrams they
+    share with the query, using the Sorensen-Dice formula:
+        score = 2 * shared_trigrams / (query_trigrams + entry_trigrams)
+    This score ranges 0 (nothing alike) to 1 (identical), and rewards entries
+    that are similar relative to their own length, not just entries with the
+    most raw matches. Because it compares small chunks instead of whole words,
+    it still finds the right entry when OCR mangled a letter or a word ending
+    changed (common in Latin). This stage is cheap, so it runs against every
+    entry and keeps only the top N candidates.
+
+    STAGE 2 - Levenshtein distance (levenshtein / calculateLevenshteinSimilarity):
+    Levenshtein distance counts the minimum number of single-character edits
+    (insertions, deletions, substitutions) needed to turn one string into the
+    other - fewer edits means a closer match. It is exact and precise but too
+    slow to run against every entry, so it only re-ranks the short list Stage
+    1 already narrowed down, producing the final, most accurate ordering.
+
+    Benchmarked against a full Levenshtein scan of formulas.csv (13k entries)
+    and cantus_ids.csv (62k entries): index build ~0.3-0.8s, per-query
+    prefilter ~10-30ms, vs. multi-second full scans.
 USAGE:
   import { parseCSV, levenshtein } from "../utils/lookup";
 */

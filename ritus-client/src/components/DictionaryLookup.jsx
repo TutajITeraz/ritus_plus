@@ -1,6 +1,6 @@
 /*
 TITLE: DictionaryLookup.jsx
-DESCRIPTION: A modal component for looking up dictionary entries using Levenshtein similarity, with a textarea for input, a Find Text button with spinner, a scrollable table with checkbox selection and multiline word wrap for all columns, and a spinner during lookup. Allows selecting a result to update the main DataTable.
+DESCRIPTION: A modal component for looking up dictionary entries by text similarity (trigram + Sorensen-Dice prefilter, then Levenshtein distance for final ranking - see ../utils/lookup.jsx), with a textarea for input, a Find Text button with spinner, a scrollable table with checkbox selection and multiline word wrap for all columns, and a spinner during lookup. Allows selecting a result to update the main DataTable.
 DEPENDENCIES:
   - @chakra-ui/react: ^3.14.2
   - ../utils/lookup.jsx: for similarity functions

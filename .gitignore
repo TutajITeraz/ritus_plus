@@ -234,3 +234,5 @@ ritus-server/config.py
 ritus-client/src/config.js
 ritus-server/config.py
 Common transcription errors.xlsx
+/ritus-server/dbg_imgs
+/ritus-server/logs
