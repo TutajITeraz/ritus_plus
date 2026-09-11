@@ -11,6 +11,7 @@ no longer used (Ollama runs locally).
 """
 
 import json
+import logging
 import os
 import re
 import time
@@ -18,6 +19,12 @@ import urllib.error
 import urllib.request
 
 from prompt_template import SYSTEM_PROMPT
+
+# Uses the root logging config set up in krakenServer.py (console +
+# logs/server.log). Do NOT use print() in this module - print() writes
+# straight to stdout and bypasses that handler entirely, so it never shows
+# up in server.log regardless of how the server process is launched.
+logger = logging.getLogger(__name__)
 
 # Some Ollama models (e.g. gemma) fall back to per-byte tokens for rare
 # Unicode codepoints outside their vocabulary (ligatures like U+A753 "ꝓ").
@@ -74,10 +81,56 @@ def get_ollama_model():
     return _PRODUCTION_DEFAULT_MODEL
 
 
+def _get_setting(config_attr, env_name, default, cast=lambda v: v):
+    """Resolve a setting: config.py > env var > default (same precedence as get_ollama_model)."""
+    try:
+        import config
+
+        value = getattr(config, config_attr, None)
+        if value is not None:
+            return cast(value)
+    except ImportError:
+        pass
+
+    env_value = os.environ.get(env_name, "").strip()
+    if env_value:
+        try:
+            return cast(env_value)
+        except (TypeError, ValueError):
+            pass
+
+    return default
+
+
 DEFAULT_MODEL = get_ollama_model()
 DEFAULT_TEMPERATURE = 0.08
 DEFAULT_TIMEOUT = 600  # seconds, hard cap on a single request
 THINK_MODE = False     # no-think: disable Qwen/DeepSeek-style reasoning tokens
+
+# Ollama runs on a shared host (an eScriptorium GPU worker shares the same
+# card), so the model runner can still hit transient failures (e.g. a CUDA
+# OOM if the GPU worker is mid-job when Ollama needs to reload). These
+# knobs let gpt_autofix wait out a transient Ollama error instead of just
+# surfacing a bare 500 to the user.
+OLLAMA_MAX_RETRIES = _get_setting("OLLAMA_MAX_RETRIES", "OLLAMA_MAX_RETRIES", 2, int)
+OLLAMA_RETRY_DELAY = _get_setting("OLLAMA_RETRY_DELAY", "OLLAMA_RETRY_DELAY", 10, float)
+# Keep the model loaded on the GPU indefinitely (-1) rather than unloading
+# it between requests: the GPU sits idle most of the time, and Ollama has
+# no way to sense "someone else needs the GPU now" - keep_alive is a plain
+# idle timer, not adaptive - so there's no safe shorter value that actually
+# yields to other GPU work on demand. Lower this via config.py/env if VRAM
+# contention with the eScriptorium GPU worker becomes a real problem.
+#
+# Ollama's API parses a *string* keep_alive with Go's time.ParseDuration,
+# which requires a unit ("10m", "1h") and rejects a bare "-1" - -1 only
+# means "never unload" when sent as a JSON number. So a plain integer/float
+# setting is sent as-is (a number of seconds), while anything else is
+# assumed to already be a valid duration string like "10m".
+_raw_keep_alive = _get_setting("OLLAMA_KEEP_ALIVE", "OLLAMA_KEEP_ALIVE", -1)
+try:
+    OLLAMA_KEEP_ALIVE = int(_raw_keep_alive)
+except (TypeError, ValueError):
+    OLLAMA_KEEP_ALIVE = str(_raw_keep_alive)
 
 
 def get_ollama_models():
@@ -88,7 +141,7 @@ def get_ollama_models():
             data = json.loads(response.read().decode("utf-8"))
         return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as e:
-        print(f"Cannot connect to Ollama: {e}")
+        logger.warning("Cannot connect to Ollama: %s", e)
         return []
 
 
@@ -118,6 +171,9 @@ def _run_ollama_chat(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": ocr_text.strip()},
         ],
+        # Unload the model soon after answering so it doesn't sit resident in
+        # RAM competing with other services on the host between requests.
+        "keep_alive": OLLAMA_KEEP_ALIVE,
     }
     # Only attach "think" when we want to force a value; for no-think models
     # we explicitly set it to False so the server does not engage thinking.
@@ -147,10 +203,10 @@ def _run_ollama_chat(
             for line in response:
                 now = time.time()
                 if now - t_start > timeout:
-                    print(f"   HARD TIMEOUT reached ({timeout}s) - truncating response")
+                    logger.warning("Ollama HARD TIMEOUT reached (%ss) - truncating response", timeout)
                     break
                 if now - t_last_activity > 60:
-                    print(f"   STALL DETECTED (no data for 60s) - aborting sample")
+                    logger.warning("Ollama STALL DETECTED (no data for 60s) - aborting sample")
                     break
                 if not line.strip():
                     continue
@@ -185,9 +241,38 @@ def _run_ollama_chat(
                     eval_duration_ns = chunk.get("eval_duration", 0) or 0
                     break
 
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except OSError:
+            body = ""
+        try:
+            detail = json.loads(body).get("error", body) if body else str(e)
+        except json.JSONDecodeError:
+            detail = body or str(e)
+        # Ollama itself only returns 5xx when its model runner crashed or was
+        # killed (most often OOM-killed on this host - see ai_tools module
+        # docstring / server runbook), not because of anything in our
+        # request. Treat 5xx as worth retrying; 4xx means our request itself
+        # is malformed and retrying won't help.
+        transient = e.code >= 500
+        logger.error("Ollama HTTP %s: %s (transient=%s)", e.code, detail, transient)
+        return {
+            "predicted": f"[ERROR: HTTP {e.code}: {detail}]",
+            "transient": transient,
+            "thinking_text": "",
+            "thinking_time": 0,
+            "response_time": 0,
+            "total_time": 0,
+            "tokens_generated": 0,
+            "tokens_per_sec": 0,
+            "has_thinking": False,
+        }
     except (urllib.error.URLError, TimeoutError, OSError) as e:
+        logger.error("Ollama connection error: %s", e)
         return {
             "predicted": f"[ERROR: {e}]",
+            "transient": True,
             "thinking_text": "",
             "thinking_time": 0,
             "response_time": 0,
@@ -215,6 +300,7 @@ def _run_ollama_chat(
 
     return {
         "predicted": _fix_byte_fallback_tokens("".join(collected_response).strip()),
+        "transient": False,
         "thinking_text": _fix_byte_fallback_tokens("".join(collected_thinking).strip()),
         "thinking_time": thinking_time,
         "response_time": response_time,
@@ -225,11 +311,24 @@ def _run_ollama_chat(
     }
 
 
+_MEMORY_PRESSURE_MESSAGE = (
+    "The AI correction service is temporarily overloaded on the server and "
+    "could not process your request. Please try again in a minute."
+)
+
+
 def gpt_autofix(question, user_api_key=None, cache=None):
     """Correct OCR text using a local Ollama model.
 
     Backwards-compatible signature with the previous OpenAI-based
     implementation. `user_api_key` and `cache` are accepted but ignored.
+
+    Ollama runs on a GPU shared with an eScriptorium worker container, so it
+    can occasionally fail transiently (e.g. a CUDA OOM while the model
+    reloads and the other worker is mid-job) with an HTTP 500 that has
+    nothing to do with the input text. Rather than fail immediately, this
+    retries transient (5xx/connection) errors a few times before giving up
+    with a clear, user-facing message.
 
     Returns:
         dict: {"text": str, "error": str}
@@ -245,43 +344,55 @@ def gpt_autofix(question, user_api_key=None, cache=None):
         urllib.request.urlopen(OLLAMA_TAGS_URL, timeout=5).read()
     except Exception as e:
         response["error"] = f"Ollama is not reachable at {OLLAMA_TAGS_URL}: {e}"
-        print(f"Error in gpt_autofix: {response['error']}")
+        logger.error("Error in gpt_autofix: %s", response["error"])
         return response
 
     model = get_ollama_model()
+    attempts = OLLAMA_MAX_RETRIES + 1
 
-    try:
-        result = _run_ollama_chat(
-            model=model,
-            ocr_text=question,
-            system_prompt=SYSTEM_PROMPT,
-            temperature=DEFAULT_TEMPERATURE,
-            timeout=DEFAULT_TIMEOUT,
-            think=THINK_MODE,
-        )
+    for attempt in range(1, attempts + 1):
+        try:
+            result = _run_ollama_chat(
+                model=model,
+                ocr_text=question,
+                system_prompt=SYSTEM_PROMPT,
+                temperature=DEFAULT_TEMPERATURE,
+                timeout=DEFAULT_TIMEOUT,
+                think=THINK_MODE,
+            )
+        except Exception as e:
+            logger.exception("Unexpected error calling Ollama")
+            response["error"] = str(e)
+            return response
+
         predicted = result.get("predicted", "")
         if predicted.startswith("[ERROR:"):
-            response["error"] = predicted
-            print(f"Error in gpt_autofix: {response['error']}")
+            logger.error(
+                "Ollama call failed (attempt %d/%d): %s", attempt, attempts, predicted
+            )
+            if result.get("transient") and attempt < attempts:
+                time.sleep(OLLAMA_RETRY_DELAY)
+                continue
+            response["error"] = (
+                _MEMORY_PRESSURE_MESSAGE if result.get("transient") else predicted
+            )
             return response
 
         response["text"] = predicted
         # Surface a few timing details to the server logs.
-        print(
-            "Ollama autofix: model={model} total={total:.2f}s "
-            "tokens={tok} tps={tps} thinking={think}".format(
-                model=model,
-                total=result.get("total_time", 0),
-                tok=result.get("tokens_generated", 0),
-                tps=result.get("tokens_per_sec", 0),
-                think=result.get("has_thinking", False),
-            )
+        logger.info(
+            "Ollama autofix: model=%s total=%.2fs tokens=%s tps=%s thinking=%s attempt=%d/%d",
+            model,
+            result.get("total_time", 0),
+            result.get("tokens_generated", 0),
+            result.get("tokens_per_sec", 0),
+            result.get("has_thinking", False),
+            attempt,
+            attempts,
         )
         if result.get("has_thinking") and result.get("thinking_text"):
-            print("--- thinking ---\n" + result["thinking_text"][:600])
-    except Exception as e:
-        response["error"] = str(e)
-        print(f"Error in gpt_autofix: {response['error']}")
+            logger.debug("--- thinking ---\n%s", result["thinking_text"][:600])
+        return response
 
     return response
 

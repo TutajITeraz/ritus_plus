@@ -276,6 +276,25 @@ def enable_wal(app):
 
 # --- MODELE KRAKEN (Globalne ładowanie) ---
 selected_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+if selected_device == "cuda:0":
+    # Cap how much of the GPU kraken transcription can claim, so it always
+    # leaves headroom for Ollama (a separate process on the same GPU) to
+    # load its model without hitting a CUDA OOM. Configure via config.py
+    # KRAKEN_GPU_MEMORY_FRACTION or env var of the same name (0.0-1.0).
+    try:
+        import config as _config
+
+        fraction_setting = getattr(_config, "KRAKEN_GPU_MEMORY_FRACTION", None)
+        if fraction_setting is None:
+            fraction_setting = os.environ.get("KRAKEN_GPU_MEMORY_FRACTION", 0.6)
+        fraction = float(fraction_setting)
+        torch.cuda.set_per_process_memory_fraction(fraction, device=0)
+        logger.info(
+            "Capped kraken GPU memory to %.0f%% of device 0 to leave headroom for Ollama",
+            fraction * 100,
+        )
+    except (ValueError, RuntimeError) as e:
+        logger.warning("Could not cap kraken GPU memory fraction: %s", e)
 baseline_model = None
 ocr_model = None
 last_ocr_model_name = None
