@@ -1,5 +1,7 @@
 {
   "transcription_workers": 8,
+  "transcription_page_memory_mb": 2000,
+  "transcription_memory_headroom_mb": 2048,
   "digi.vatlib.it": {
     "sleep_seconds": 2,
     "timeout": 120

@@ -29,6 +29,7 @@ from config import SERVER_URL, ADMIN_USERNAME, ADMIN_PASSWORD, SECRET_KEY
 from models import db, User, Project, ProjectSharing, Image, Content, BatchProcessing, IiifDownloadJob, BatchTranscribeJob
 from download_iiif import run_iiif_download
 from transcription_autofix import apply_autofix
+from memory_governor import MemoryGovernor, available_memory_mb, process_rss_mb
 
 # Registry of stop events keyed by project_id for IIIF background downloads
 _iiif_stop_events = {}
@@ -366,6 +367,9 @@ def enable_wal(app):
 
 # --- MODELE KRAKEN (Globalne ładowanie) ---
 selected_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+# Bounds how many pages may be inside kraken at once, so a batch job cannot
+# over-commit the machine's RAM and get the whole service OOM-killed.
+_page_admission = MemoryGovernor(config_loader=_load_domain_config, device=selected_device)
 if selected_device == "cuda:0":
     # Cap how much of the GPU kraken transcription can claim, so it always
     # leaves headroom for Ollama (a separate process on the same GPU) to
@@ -794,7 +798,20 @@ def ai_autofix_best_effort(text):
     return fixed
 
 
-def transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0, enhanced_multi_column=False, column_gap_ratio=0.045, autofix_errors=True, ai_correct=False):
+def transcribe_image_by_id(image_id, model_name, **kwargs):
+    """Transcribe one page under the memory governor.
+
+    Both the batch pool and the single-page route land here, so the admission
+    limit is what actually bounds concurrent kraken work in this process.
+    """
+    with _page_admission.page(f"image {image_id}"):
+        try:
+            return _transcribe_image_by_id(image_id, model_name, **kwargs)
+        finally:
+            _page_admission.release_page_memory()
+
+
+def _transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0, enhanced_multi_column=False, column_gap_ratio=0.045, autofix_errors=True, ai_correct=False):
     global baseline_model, last_ocr_model_name, ocr_model, selected_device
     model_path = MODEL_PATHS.get(model_name)
     if not model_path:
@@ -1649,7 +1666,10 @@ def run_batch_transcribe(
             update_job(0, 0, "cancelled")
             return
 
-        workers = max(1, int(_load_domain_config().get("transcription_workers", 1)))
+        _page_admission.log_state(f"start of transcription for project {project_id}")
+        configured_workers = max(1, int(_load_domain_config().get("transcription_workers", 1)))
+        workers = _page_admission.cap_workers(configured_workers)
+        _page_admission.set_limit(workers)
 
         try:
             with flask_app.app_context():
@@ -1701,6 +1721,13 @@ def run_batch_transcribe(
                 with count_lock:
                     completed_count[0] += 1
                     cnt = completed_count[0]
+                rss = process_rss_mb()
+                available = available_memory_mb()
+                if rss is not None and available is not None:
+                    logger.info(
+                        "Page %d/%d done (image %s): rss=%.0f MB, %.0f MB free",
+                        cnt, total, image_id, rss, available,
+                    )
                 update_job(cnt, total, "running")
 
             with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -2140,6 +2167,11 @@ def jobs_diagnostics():
         "thread_count": threading.active_count(),
         "transcribe_lock_held": transcribe_lock_held,
         "transcribe_workers": _load_domain_config().get("transcription_workers", 1),
+        "page_admission": _page_admission.snapshot(),
+        "page_memory_budget_mb": _page_admission.page_memory_mb(),
+        "memory_headroom_mb": _page_admission.headroom_mb(),
+        "process_rss_mb": process_rss_mb(),
+        "available_memory_mb": available_memory_mb(),
         "live_transcribe_project_ids": sorted(_transcribe_stop_events.keys()),
         "live_download_project_ids": sorted(_iiif_stop_events.keys()),
         "iiif_running_by_domain": dict(_iiif_running_by_domain),
@@ -2788,7 +2820,11 @@ if not NO_KRAKEN:
         column_gap_ratio = max(0.015, min(0.165, column_gap_ratio))
 
         try:
-            transcribed_results = transcribe_image(temp_path, model_name, ignore_edges=ignore_edges, enhanced_multi_column=enhanced_multi_column, column_gap_ratio=column_gap_ratio)
+            with _page_admission.page("uploaded crop"):
+                try:
+                    transcribed_results = transcribe_image(temp_path, model_name, ignore_edges=ignore_edges, enhanced_multi_column=enhanced_multi_column, column_gap_ratio=column_gap_ratio)
+                finally:
+                    _page_admission.release_page_memory()
             if isinstance(transcribed_results, tuple):
                 logger.error(f"Error in transcribe: {transcribed_results[0]}")
                 return jsonify({"status": "error", "text": transcribed_results[0]}), transcribed_results[1]

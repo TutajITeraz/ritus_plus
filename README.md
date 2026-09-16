@@ -128,6 +128,16 @@ worker, a Cancel request can land on a worker that knows nothing about the job,
 and each worker's startup reconciliation would wipe the others' live jobs. Run
 `gunicorn` with `-w 1` (threads, not workers, are what give concurrency here).
 
+Two workers also double the memory bill - each process loads its own copy of
+the kraken models and runs its own transcription pool - which is how eight
+configured workers became sixteen concurrent pages and an OOM kill.
+
+`--timeout` matters for the same reason. Background download and transcription
+threads live *inside* the gunicorn worker, so if a slow request trips the
+timeout and the worker is killed, every batch job running in that process dies
+with it. Keep it well above how long one page can take (see
+`ritus-server/deploy/kraken_flask.service`).
+
 
 
 ## Background jobs: downloads and transcriptions
@@ -135,7 +145,76 @@ and each worker's startup reconciliation would wipe the others' live jobs. Run
 "Download All" and "Transcribe All" hand work to background threads and record
 progress in two tables, `iiif_download_job` and `batch_transcribe_job`. One
 project transcribes at a time; the rest queue as "pending". Pages within a
-project run in parallel, `transcription_workers` at a time (domain_config.json).
+project run in parallel - `transcription_workers` (domain_config.json) at
+most, fewer when there is not enough free RAM for that many (see below).
+
+### How many pages run at once
+
+Segmenting one page peaks at about **1.5 GB of RAM** - blla upsamples a
+per-class heatmap back to full page resolution, and that tensor, the page
+tensor and the polygonisation are all alive at the same moment (measured on a
+3280x4702 page: +1525 MB over a 528 MB baseline). Memory between pages is flat,
+so there is nothing leaking; the only thing that can kill the server is how
+many of those peaks overlap.
+
+`transcription_workers` is therefore a **ceiling, not a promise**. At the start
+of each job the server reads how much memory is actually free and lowers the
+pool to what fits:
+
+    workers = min(transcription_workers, (available_MB - headroom) / page_MB)
+
+and before admitting each page it re-checks, so a job started while the box was
+idle backs off when something else (Ollama) grows. One page always runs, so a
+busy machine transcribes slowly instead of not at all. Both figures are
+tunable in `domain_config.json`:
+
+    "transcription_page_memory_mb": 2000,      // budgeted peak per page
+    "transcription_memory_headroom_mb": 2048   // RAM left for everything else
+
+The decisions are logged - look for `Capping transcription workers 8 -> 3`,
+`Memory at start of transcription ...`, and a per-page `rss=... MB, ... MB free`
+line - and `GET /api/jobs/diagnostics` reports the live limit, how many pages
+are in flight, and current RSS.
+
+### When the server is OOM-killed
+
+Symptom in `journalctl -u kraken_flask`: a run of `Baseline segmentation...`
+lines, then
+
+    A process of this unit has been killed by the OOM killer.
+    Worker (pid:...) was sent SIGKILL! Perhaps out of memory?
+    kraken_flask.service: Failed with result 'oom-kill'.
+
+That is the machine running out of RAM, not a bug in a manuscript. Two things
+matter. The first is **not over-committing**, which the worker cap above now
+handles. The second is that systemd's default `OOMPolicy=stop` takes the
+*whole unit* down when one of its processes is killed, and without `Restart=`
+it stays down - which is why one manuscript could end a whole overnight run.
+
+`ritus-server/deploy/kraken_flask.service` is a reference unit with the right
+settings. To add them to an existing unit without replacing it, use a drop-in
+(`systemctl edit kraken_flask`):
+
+    [Service]
+    OOMPolicy=continue
+    Restart=always
+    RestartSec=10
+    MemoryHigh=7G
+    MemoryMax=8G
+
+`MemoryMax` also makes the worker cap exact: the server reads the cgroup limit
+and sizes itself against that rather than against the whole box, so an
+over-commit can no longer reach Ollama or the rest of the system.
+
+### Sharing the box with Ollama
+
+Ollama is usually the largest process on the server (~20 GB of 31 GB while a
+model is resident), which leaves roughly 8 GB for transcription - three
+concurrent pages, not eight. If swap is also full there is no cushion left at
+all and an over-commit is an immediate kill, so the server logs a warning when
+it sees that. `OLLAMA_KEEP_ALIVE` (how long a model stays resident) and
+`OLLAMA_MAX_LOADED_MODELS=1` are the levers that give the transcription pool
+more room.
 
 ### Stopping everything
 
