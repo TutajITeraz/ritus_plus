@@ -747,7 +747,7 @@ export const resetIiifJob = async (projectId) => {
  * Start a server-side batch transcription job.
  * @param {number} projectId
  * @param {string} modelName
- * @param {"skip"|"continue"|"override"} mode
+ * @param {"skip"|"continue"|"override"|"range"} mode
  * @param {boolean} ignoreEdges
  * @param {number|null} rangeFrom
  * @param {number|null} rangeTo
@@ -812,6 +812,91 @@ export const cancelBatchTranscribe = async (projectId) => {
   );
   if (!response.ok) throw new Error("Failed to cancel transcription");
   return await response.json();
+};
+
+
+// ---------------------------------------------------------------------------
+// Bulk job control ("all projects")
+// ---------------------------------------------------------------------------
+
+/**
+ * Start transcription for every owned project in a single request.
+ *
+ * One call instead of one POST per project: the server decides which projects
+ * to include and reports back what it started and what it skipped, so a
+ * partial failure is readable instead of a silent no-op.
+ *
+ * @param {object} options - same option names as startBatchTranscribe, plus
+ *   includeCompleted to re-transcribe projects that are already finished.
+ * @returns {Promise<{started: Array<{id,name}>, skipped: Array<{id,name,reason}>}>}
+ */
+export const startBatchTranscribeAll = async ({
+  modelName,
+  mode = "skip",
+  ignoreEdges = true,
+  addPageBreak = false,
+  redThreshold = 5.0,
+  enhancedMultiColumn = false,
+  columnGapRatio = 0.045,
+  autofixErrors = true,
+  aiCorrect = false,
+  includeCompleted = false,
+}) => {
+  const response = await apiRequest(`${SERVER_URL}/api/batch-transcribe/all`, {
+    method: "POST",
+    body: JSON.stringify({
+      model_name: modelName,
+      mode,
+      ignore_edges: ignoreEdges,
+      add_page_break: addPageBreak,
+      red_threshold: redThreshold,
+      enhanced_multi_column: enhancedMultiColumn,
+      column_gap_ratio: columnGapRatio,
+      autofix_errors: autofixErrors,
+      ai_correct: aiCorrect,
+      include_completed: includeCompleted,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Failed to start transcriptions");
+  return data;
+};
+
+/**
+ * Stop every running/queued transcription job the user can see.
+ * @returns {Promise<{cancelled: number[], count: number}>}
+ */
+export const cancelBatchTranscribeAll = async () => {
+  const response = await apiRequest(`${SERVER_URL}/api/batch-transcribe/all`, {
+    method: "DELETE",
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Failed to stop transcriptions");
+  return data;
+};
+
+/**
+ * Stop every running/queued IIIF download the user can see.
+ * @returns {Promise<{cancelled: number[], count: number}>}
+ */
+export const cancelIiifDownloadAll = async () => {
+  const response = await apiRequest(`${SERVER_URL}/api/iiif-download/all`, {
+    method: "DELETE",
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Failed to stop downloads");
+  return data;
+};
+
+/**
+ * Admin-only dump of every background job row next to what the server process
+ * is really running. Used by the Stuck Jobs diagnostics panel.
+ */
+export const fetchJobDiagnostics = async () => {
+  const response = await apiRequest(`${SERVER_URL}/api/jobs/diagnostics`);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Failed to load job diagnostics");
+  return data;
 };
 
 

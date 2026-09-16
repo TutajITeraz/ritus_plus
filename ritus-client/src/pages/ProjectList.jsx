@@ -36,6 +36,8 @@ import {
   startBatchTranscribe,
   getBatchTranscribeStatus,
   cancelBatchTranscribe,
+  cancelBatchTranscribeAll,
+  cancelIiifDownloadAll,
   exportTranscriptions,
 } from "../apiUtils";
 import { useAuth } from "../App";
@@ -105,11 +107,13 @@ const IiifProjectStatus = ({ project, jobStatus, onDownload, onCancel }) => {
     );
   }
 
-  if (status === "cancelled") {
+  if (status === "cancelled" || status === "interrupted") {
     return (
       <Stack spacing={1}>
         <Text fontSize="sm" color="orange.600">
-          Cancelled at page {current}/{total || "?"}
+          {status === "interrupted"
+            ? `Interrupted by a server restart at page ${current}/${total || "?"}`
+            : `Cancelled at page ${current}/${total || "?"}`}
         </Text>
         <Button size="xs" variant="subtle" onClick={() => onDownload(null)}>
           <FaDownload /> Resume
@@ -362,11 +366,15 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
     );
   }
 
-  if (status === "cancelled") {
+  if (status === "cancelled" || status === "interrupted") {
     return (
       <>
         <Stack spacing={1}>
-          <Text fontSize="sm" color="orange.600">Transcription cancelled at {current}/{total || "?"}</Text>
+          <Text fontSize="sm" color="orange.600">
+            {status === "interrupted"
+              ? `Interrupted by a server restart at ${current}/${total || "?"} — already transcribed pages are kept`
+              : `Transcription cancelled at ${current}/${total || "?"}`}
+          </Text>
           <Button size="xs" variant="subtle" colorPalette="purple" onClick={() => setOpen(true)}>
             Resume / Retry
           </Button>
@@ -418,6 +426,7 @@ const ProjectList = () => {
   const [conflictDialog, setConflictDialog] = useState({ open: false, projectId: null, imageCount: 0 });
   // Server-side transcription state
   const [transcribeJobStatuses, setTranscribeJobStatuses] = useState({});
+  const [isStoppingAll, setIsStoppingAll] = useState(false);
   const pollingRef = useRef(null);
   const transcribePollingRef = useRef(null);
   const navigate = useNavigate();
@@ -615,20 +624,71 @@ const ProjectList = () => {
     }
   };
 
-  const handleDownloadAll = () => {
+  const handleDownloadAll = async () => {
     const toDownload = projectData.owned.filter(
       (p) => p.type === "iiif" && p.iiif_url &&
         !["running", "pending", "waiting", "completed"].includes(iiifJobStatuses[p.id]?.status)
     );
-    toDownload.forEach((p) => handleServerIiifDownload(p.id, null));
     if (toDownload.length === 0) {
       toaster.create({ title: "Nothing to download", type: "info", duration: 3000 });
-    } else {
+      return;
+    }
+    toaster.create({
+      title: `Starting ${toDownload.length} download(s)`,
+      type: "success",
+      duration: 3000,
+    });
+    // Sequential on purpose: the server queues downloads per domain anyway, and
+    // firing every POST at once contended on SQLite hard enough that starts
+    // could silently fail.
+    for (const p of toDownload) {
+      await handleServerIiifDownload(p.id, null);
+    }
+  };
+
+  // Anything the user could still stop – drives the Stop All button's
+  // visibility and its confirmation text.
+  const activeDownloadCount = Object.values(iiifJobStatuses).filter((s) =>
+    ["running", "pending", "waiting"].includes(s?.status)
+  ).length;
+  const activeTranscribeCount = Object.values(transcribeJobStatuses).filter((s) =>
+    ["running", "pending"].includes(s?.status)
+  ).length;
+  const activeJobCount = activeDownloadCount + activeTranscribeCount;
+
+  const handleStopAll = async () => {
+    const parts = [];
+    if (activeTranscribeCount) parts.push(`${activeTranscribeCount} transcription job(s)`);
+    if (activeDownloadCount) parts.push(`${activeDownloadCount} download job(s)`);
+    if (!window.confirm(`Stop ${parts.join(" and ")}?\n\nWork already finished is kept — each project can be resumed later.`)) {
+      return;
+    }
+    setIsStoppingAll(true);
+    try {
+      const [tx, dl] = await Promise.all([
+        cancelBatchTranscribeAll(),
+        cancelIiifDownloadAll(),
+      ]);
       toaster.create({
-        title: `Starting ${toDownload.length} download(s)`,
+        title: "Stopping all jobs",
+        description: `Cancelled ${tx.count} transcription job(s) and ${dl.count} download job(s). A page already being processed finishes first.`,
         type: "success",
-        duration: 3000,
+        duration: 6000,
       });
+      const data = await fetchProjects();
+      setProjectData(data);
+      const statuses = {};
+      const txStatuses = {};
+      [...(data.owned || []), ...(data.shared || [])].forEach((p) => {
+        if (p.iiif_download_job) statuses[p.id] = p.iiif_download_job;
+        if (p.batch_transcribe_job) txStatuses[p.id] = p.batch_transcribe_job;
+      });
+      setIiifJobStatuses(statuses);
+      setTranscribeJobStatuses(txStatuses);
+    } catch (e) {
+      toaster.create({ title: "Stop All failed", description: e.message, type: "error", duration: 6000 });
+    } finally {
+      setIsStoppingAll(false);
     }
   };
 
@@ -855,6 +915,17 @@ const ProjectList = () => {
         <Button variant="outline" size="sm" onClick={handleExportCSV}>
           <FaFileCsv /> Export CSV
         </Button>
+        {activeJobCount > 0 && (
+          <Button
+            variant="solid"
+            colorPalette="red"
+            size="sm"
+            onClick={handleStopAll}
+            loading={isStoppingAll}
+          >
+            <FaStop /> Stop All ({activeJobCount})
+          </Button>
+        )}
       </HStack>
       
       {/* Owned Projects Section */}

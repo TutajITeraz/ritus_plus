@@ -67,7 +67,7 @@ class BatchProcessing(db.Model):
 class IiifDownloadJob(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     project_id = db.Column(db.Integer, db.ForeignKey('project.id', ondelete='CASCADE'), nullable=False, unique=True)
-    status = db.Column(db.String(20), nullable=False, default='pending')  # pending, running, completed, failed, cancelled
+    status = db.Column(db.String(20), nullable=False, default='pending')  # pending, running, waiting, completed, failed, cancelled, interrupted
     current_page = db.Column(db.Integer, default=0)
     total_pages = db.Column(db.Integer, default=0)
     start_page = db.Column(db.Integer, default=1)  # 1-based; for resuming
@@ -79,11 +79,11 @@ class IiifDownloadJob(db.Model):
 class BatchTranscribeJob(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     project_id = db.Column(db.Integer, db.ForeignKey('project.id', ondelete='CASCADE'), nullable=False, unique=True)
-    status = db.Column(db.String(20), nullable=False, default='pending')  # pending/running/completed/failed/cancelled
+    status = db.Column(db.String(20), nullable=False, default='pending')  # pending/running/completed/failed/cancelled/interrupted
     current_image = db.Column(db.Integer, default=0)
     total_images = db.Column(db.Integer, default=0)
     model_name = db.Column(db.String(100))
-    mode = db.Column(db.String(20), default='skip')  # skip/continue/override
+    mode = db.Column(db.String(20), default='skip')  # skip/continue/override/range
     error_message = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=db.func.now())
     updated_at = db.Column(db.DateTime, default=db.func.now(), onupdate=db.func.now())

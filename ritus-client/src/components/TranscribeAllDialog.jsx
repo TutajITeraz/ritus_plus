@@ -13,7 +13,7 @@ import {
   Checkbox,
 } from "@chakra-ui/react";
 import { toaster } from "@/components/ui/toaster";
-import { startBatchTranscribe } from "../apiUtils";
+import { startBatchTranscribeAll } from "../apiUtils";
 import RedSensitivitySlider from "./RedSensitivitySlider";
 import ColumnSensitivitySlider from "./ColumnSensitivitySlider";
 import {
@@ -57,56 +57,85 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
   const [aiCorrect, setAiCorrect] = useState(false);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
   const [columnSensitivity, setColumnSensitivity] = useState(DEFAULT_COLUMN_SENSITIVITY);
+  const [includeCompleted, setIncludeCompleted] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
 
   const eligible = (projects || []).filter((p) => p.image_count > 0);
+  // Fully transcribed = every downloaded page already has text. These are the
+  // projects "override" exists for; in skip/continue they would be no-ops.
+  const fullyTranscribed = eligible.filter(
+    (p) => (p.transcribed_count || 0) >= p.image_count
+  );
+  const isOverride = mode === "override";
+  // Override always re-does finished manuscripts - that is the whole point of
+  // the mode, so the checkbox is forced on and disabled there.
+  const effectiveIncludeCompleted = isOverride || includeCompleted;
+  const willStartCount = effectiveIncludeCompleted
+    ? eligible.length
+    : eligible.length - fullyTranscribed.length;
 
   const handleStart = async () => {
-    if (eligible.length === 0) return;
+    if (willStartCount === 0) return;
     setIsStarting(true);
-    const started = [];
-    const failed = [];
-    await Promise.all(
-      eligible.map(async (p) => {
-        try {
-          await startBatchTranscribe(
-            p.id,
-            model,
-            mode,
-            true,
-            null,
-            null,
-            addPageBreak,
-            sensitivityToThreshold(redSensitivity),
-            enhancedMultiColumn,
-            sensitivityToColumnGapRatio(columnSensitivity),
-            autofixErrors,
-            aiCorrect
-          );
-          started.push(p.id);
-        } catch (e) {
-          failed.push(p.name);
-        }
-      })
-    );
-    setIsStarting(false);
-    setOpen(false);
-    if (started.length > 0) {
-      toaster.create({
-        title: "Transcription started",
-        description: `Started batch transcription for ${started.length} project(s). Runs in background.`,
-        type: "success",
-        duration: 4000,
+    try {
+      // One request for all projects. Firing one POST per project in parallel
+      // used to overload SQLite and turn partial failures into a silent no-op.
+      const result = await startBatchTranscribeAll({
+        modelName: model,
+        mode,
+        ignoreEdges: true,
+        addPageBreak,
+        redThreshold: sensitivityToThreshold(redSensitivity),
+        enhancedMultiColumn,
+        columnGapRatio: sensitivityToColumnGapRatio(columnSensitivity),
+        autofixErrors,
+        aiCorrect,
+        includeCompleted: effectiveIncludeCompleted,
       });
-      onJobsStarted && onJobsStarted(started);
-    }
-    if (failed.length > 0) {
+      setOpen(false);
+      const started = result.started || [];
+      const skipped = result.skipped || [];
+
+      if (started.length > 0) {
+        toaster.create({
+          title: "Transcription started",
+          description: `Started batch transcription for ${started.length} project(s). One project runs at a time; the rest wait in the queue.`,
+          type: "success",
+          duration: 5000,
+        });
+        onJobsStarted && onJobsStarted(started.map((p) => p.id));
+      } else {
+        toaster.create({
+          title: "Nothing was started",
+          description: skipped.length
+            ? `All ${skipped.length} project(s) were skipped — see the reasons below.`
+            : "No projects matched.",
+          type: "warning",
+          duration: 6000,
+        });
+      }
+
+      if (skipped.length > 0) {
+        // Report the server's actual reason per project rather than a bare
+        // list of names, so a stuck or empty project is obvious.
+        toaster.create({
+          title: `Skipped ${skipped.length} project(s)`,
+          description: skipped
+            .map((p) => `${p.name}: ${p.reason}`)
+            .join("; "),
+          type: "info",
+          duration: 10000,
+        });
+      }
+    } catch (e) {
       toaster.create({
-        title: "Some projects failed to start",
-        description: failed.join(", "),
+        title: "Could not start transcriptions",
+        description: e.message,
         type: "error",
-        duration: 6000,
+        duration: 8000,
       });
+    } finally {
+      setIsStarting(false);
     }
   };
 
@@ -129,12 +158,19 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
             </Dialog.Header>
             <Dialog.Body>
               <Stack spacing={5}>
-                <Text fontSize="sm" color="gray.600">
-                  Will start server-side transcription for{" "}
-                  <strong>{eligible.length}</strong> project(s) with downloaded
-                  images. You can close the browser — jobs continue in the
-                  background.
-                </Text>
+                <Stack spacing={1}>
+                  <Text fontSize="sm" color="gray.600">
+                    <strong>{eligible.length}</strong> project(s) have downloaded
+                    images, of which <strong>{fullyTranscribed.length}</strong>{" "}
+                    are already fully transcribed. This run will start{" "}
+                    <strong>{willStartCount}</strong> of them. You can close the
+                    browser — jobs continue in the background.
+                  </Text>
+                  <Text fontSize="xs" color="gray.500">
+                    Projects are transcribed one at a time; the rest wait in the
+                    queue. Use Stop All on the projects page to cancel everything.
+                  </Text>
+                </Stack>
 
                 <Stack spacing={2}>
                   <Text fontWeight="bold">Model</Text>
@@ -201,6 +237,34 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
                       </HStack>
                     </Stack>
                   </RadioGroup.Root>
+                  {isOverride && (
+                    <Text fontSize="xs" color="orange.600">
+                      Existing transcriptions on every page of every project
+                      will be replaced, including the {fullyTranscribed.length}{" "}
+                      already-finished project(s).
+                    </Text>
+                  )}
+                </Stack>
+
+                <Stack>
+                  <Checkbox.Root
+                    checked={effectiveIncludeCompleted}
+                    disabled={isOverride}
+                    onCheckedChange={(e) => setIncludeCompleted(e.checked)}
+                  >
+                    <Checkbox.HiddenInput />
+                    <Checkbox.Control>
+                      <Checkbox.Indicator />
+                    </Checkbox.Control>
+                    <Checkbox.Label>
+                      Include projects that are already fully transcribed
+                    </Checkbox.Label>
+                  </Checkbox.Root>
+                  <Text fontSize="xs" color="gray.600" pl="6">
+                    {isOverride
+                      ? "Always on in Override mode."
+                      : "Off by default: in Skip and Continue mode a finished project has nothing left to do."}
+                  </Text>
                 </Stack>
 
                 <Stack>
@@ -268,9 +332,9 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
                 colorPalette="purple"
                 onClick={handleStart}
                 loading={isStarting}
-                disabled={eligible.length === 0}
+                disabled={willStartCount === 0}
               >
-                Start All ({eligible.length})
+                Start All ({willStartCount})
               </Button>
             </Dialog.Footer>
           </Dialog.Content>

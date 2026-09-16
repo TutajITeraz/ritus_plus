@@ -119,6 +119,77 @@ systemctl restart kraken_flask
 ## To check LOGS from gunicorn:
 journalctl -u kraken_flask -f
 
+### The server must run as a SINGLE worker process
+
+Downloads and transcriptions run as threads inside the server process, and the
+registries that track them (which project is downloading, which stop-event
+cancels which job) live in that process's memory. With more than one Gunicorn
+worker, a Cancel request can land on a worker that knows nothing about the job,
+and each worker's startup reconciliation would wipe the others' live jobs. Run
+`gunicorn` with `-w 1` (threads, not workers, are what give concurrency here).
+
+
+
+## Background jobs: downloads and transcriptions
+
+"Download All" and "Transcribe All" hand work to background threads and record
+progress in two tables, `iiif_download_job` and `batch_transcribe_job`. One
+project transcribes at a time; the rest queue as "pending". Pages within a
+project run in parallel, `transcription_workers` at a time (domain_config.json).
+
+### Stopping everything
+
+The projects page shows a red **Stop All (n)** button whenever any job is
+running or queued. It cancels every download and every transcription the user
+can see. A page already being processed finishes first; everything transcribed
+so far is kept, and each project offers Resume / Retry afterwards.
+
+### Re-transcribing manuscripts that are already done
+
+In the Transcribe All dialog:
+
+- **Skip** / **Continue** leave finished manuscripts alone, because there is
+  nothing left for them to do. Tick **Include projects that are already fully
+  transcribed** to send them through anyway.
+- **Override** re-transcribes every page of every project and *replaces*
+  existing text. It always includes finished manuscripts.
+
+The dialog states up front how many projects it will actually start, so
+"nothing happened" is visible before you press the button rather than after.
+
+### When a job looks stuck
+
+A job whose thread died with the server process (deploy, restart, crash, OOM
+kill) used to leave its row reading "running" forever: the progress bar never
+moved and every new start was refused with "Transcription already running".
+Restarting did not help, because nothing revisited those rows.
+
+Now the server reconciles them at startup - every row still claiming to be
+active is marked `interrupted`, keeping its progress counters, and the project
+offers Resume / Retry. Starting a job also ignores a row that no live thread
+backs, so a stale row can never block a restart again.
+
+To inspect (or rescue) a server without logging in - it reads the SQLite file
+directly, so it works even when the server is stopped or wedged:
+
+    cd ritus-server
+    python3 scripts/inspect_jobs.py            # every job row, stuck ones flagged
+    python3 scripts/inspect_jobs.py --stuck    # only the rows claiming to be active
+    python3 scripts/inspect_jobs.py --json     # machine-readable dump to attach to a bug report
+    python3 scripts/inspect_jobs.py --reset    # clear stuck rows (stop the server first)
+
+`--reset` only rewrites the status column; no transcription and no downloaded
+image is touched.
+
+Admins can get the same picture from a running server, which additionally knows
+which jobs have a live thread behind them:
+
+    GET /api/jobs/diagnostics
+
+A row with `"status": "running"` and `"live": false` is a tombstone from a dead
+process. `server_started_at` and the row's `updated_at` show which side of the
+last restart the job is on.
+
 
 
 ## Matching methods: n-gram matcher vs legacy algorithm

@@ -19,6 +19,7 @@ from flask_jwt_extended import JWTManager, jwt_required, create_access_token, ge
 from PIL import Image as PILImage
 from PIL import ImageFile
 import threading
+from datetime import datetime as _datetime
 from threading import Timer, Thread
 from concurrent.futures import ThreadPoolExecutor
 from flask_caching import Cache
@@ -40,6 +41,35 @@ _transcribe_stop_events = {}  # project_id -> threading.Event
 _transcribe_lock = threading.Lock()
 # Lock protecting OCR/baseline model loading; inference itself is read-only (thread-safe)
 _ocr_model_lock = threading.Lock()
+
+# Job status used for rows left behind by a process that died (restart, crash,
+# OOM kill). Those threads are gone, so the row is a tombstone, not a live job.
+STATUS_INTERRUPTED = "interrupted"
+# When this process came up. Reported by /api/jobs/diagnostics so a job row can
+# be compared against the lifetime of the process that supposedly owns it.
+SERVER_PROCESS_STARTED_AT = _datetime.utcnow()
+# Statuses that mean "a thread should be working on this right now"
+ACTIVE_TRANSCRIBE_STATUSES = ("running", "pending")
+ACTIVE_IIIF_STATUSES = ("running", "pending", "waiting")
+
+
+def _transcribe_job_is_live(project_id):
+    """True when *this* process still has a thread registered for the job.
+
+    The stop-event registry lives in memory, so it is the only honest answer to
+    "is something actually transcribing?". A job row saying "running" with no
+    entry here is a leftover from a previous process and must not block a
+    restart - that is what made Transcribe All permanently unstartable.
+    """
+    return project_id in _transcribe_stop_events
+
+
+def _iiif_job_is_live(project_id):
+    """True when this process still has a download thread for the project."""
+    return (
+        project_id in _iiif_stop_events
+        or project_id in _iiif_running_by_domain.values()
+    )
 
 
 def _iiif_domain(url):
@@ -261,8 +291,67 @@ def init_database():
             db.session.commit()
             logger.info("Admin user created")
 
+def reconcile_stale_jobs():
+    """Retire job rows whose worker threads died with a previous process.
+
+    Background downloads and transcriptions run as plain daemon threads, so a
+    restart (deploy, `systemctl restart kraken_flask`, crash, OOM kill) kills
+    every worker while their rows in the database still read "running",
+    "pending" or "waiting". Nothing ever revisited those rows, so:
+
+      * the UI showed a progress bar that could never move, and
+      * POST /batch-transcribe answered 409 "Transcription already running"
+        forever, which is why restarting the server did not help.
+
+    Run once at import, before any request is served, so the database agrees
+    with reality: no thread means no job. The rows keep their progress counters
+    so the user can resume where the job stopped.
+
+    NOTE: this assumes a single application process. Under Gunicorn the server
+    must run with one worker (the job threads and their registries live in
+    process memory anyway); with several workers each would wipe the others'
+    live jobs here.
+    """
+    with app.app_context():
+        transcribe_stale = BatchTranscribeJob.query.filter(
+            BatchTranscribeJob.status.in_(ACTIVE_TRANSCRIBE_STATUSES)
+        ).all()
+        for job in transcribe_stale:
+            was = job.status
+            job.status = STATUS_INTERRUPTED
+            job.error_message = (
+                "Server restarted while this job was %s - pages already "
+                "transcribed are kept, but the job must be started again." % was
+            )
+
+        iiif_stale = IiifDownloadJob.query.filter(
+            IiifDownloadJob.status.in_(ACTIVE_IIIF_STATUSES)
+        ).all()
+        for job in iiif_stale:
+            job.status = STATUS_INTERRUPTED
+            job.error_message = (
+                "Server restarted while this download was running - resume to "
+                "continue from page %s." % ((job.current_page or 0) + 1)
+            )
+
+        if transcribe_stale or iiif_stale:
+            db.session.commit()
+            logger.warning(
+                "Startup reconciliation: marked %d transcription job(s) and "
+                "%d download job(s) as interrupted (projects %s / %s). Their "
+                "worker threads did not survive the last restart.",
+                len(transcribe_stale),
+                len(iiif_stale),
+                [j.project_id for j in transcribe_stale],
+                [j.project_id for j in iiif_stale],
+            )
+        else:
+            logger.info("Startup reconciliation: no stale background jobs found")
+
+
 # Initialize database for both direct run and Gunicorn
 init_database()
+reconcile_stale_jobs()
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 if not os.path.exists(app.config["UPLOAD_FOLDER"]):
@@ -1355,10 +1444,17 @@ def start_iiif_download(project_id):
     if not project.iiif_url:
         return jsonify({"error": "Project has no IIIF URL"}), 400
 
-    # Check for an already-running job for THIS project
+    # Check for an already-running job for THIS project. As with transcription,
+    # a row whose thread died with a previous process must not block a restart.
     existing_job = IiifDownloadJob.query.filter_by(project_id=project_id).first()
-    if existing_job and existing_job.status in ("running", "waiting"):
-        return jsonify({"error": "Download already running or waiting"}), 409
+    if existing_job and existing_job.status in ACTIVE_IIIF_STATUSES:
+        if _iiif_job_is_live(project_id):
+            return jsonify({"error": "Download already running or waiting"}), 409
+        logger.warning(
+            "Project %s had a %s download job with no live worker - treating "
+            "it as stale and starting a new one",
+            project_id, existing_job.status,
+        )
 
     body = request.get_json(silent=True) or {}
     confirm = body.get("confirm")  # "append" | "restart" | None
@@ -1367,8 +1463,11 @@ def start_iiif_download(project_id):
     image_count = Image.query.filter_by(project_id=project_id).count()
 
     # Determine start_page
-    if existing_job and existing_job.status == "cancelled" and confirm is None:
-        # Resume from where we left off – no conflict dialog needed
+    resumable = existing_job and existing_job.status in ("cancelled", STATUS_INTERRUPTED)
+    if resumable and confirm is None:
+        # Resume from where we left off – no conflict dialog needed.
+        # An interrupted job (killed by a restart) resumes exactly like a
+        # cancelled one; the pages already on disk are not re-fetched.
         start_page = (existing_job.current_page or 0) + 1
     elif image_count > 0 and confirm is None:
         # Images already present – ask front-end what to do
@@ -1377,7 +1476,7 @@ def start_iiif_download(project_id):
             "image_count": image_count,
             "message": "Project already has images. Choose 'append' to add after them or 'restart' to start from page 1."
         }), 409
-    elif confirm == "append" or (existing_job and existing_job.status == "cancelled" and confirm == "append"):
+    elif confirm == "append" or (resumable and confirm == "append"):
         start_page = image_count + 1
     elif confirm == "restart":
         start_page = 1
@@ -1458,7 +1557,7 @@ def cancel_iiif_download(project_id):
     if job:
         if reset:
             db.session.delete(job)
-        elif job.status in ("running", "pending", "waiting"):
+        elif job.status in ACTIVE_IIIF_STATUSES + (STATUS_INTERRUPTED,):
             if job.status == "waiting":
                 # Not running yet – cancel immediately without touching domain registry
                 job.status = "cancelled"
@@ -1520,6 +1619,13 @@ def run_batch_transcribe(
         return
 
     def update_job(current, total, status, error=None):
+        # If the project was restarted while this run was winding down, a newer
+        # run owns the registry slot and the job row. A late write from this
+        # run (typically the final "cancelled") must not clobber it - that is
+        # what made "Stop All, then Start All again" land back on "cancelled".
+        owner = _transcribe_stop_events.get(project_id)
+        if owner is not None and owner is not stop_event:
+            return
         with flask_app.app_context():
             j = BatchTranscribeJob.query.get(job_id)
             if j is None:
@@ -1531,7 +1637,8 @@ def run_batch_transcribe(
                 j.error_message = error
             db.session.commit()
         if status in ("completed", "failed", "cancelled"):
-            _transcribe_stop_events.pop(project_id, None)
+            if _transcribe_stop_events.get(project_id) is stop_event:
+                _transcribe_stop_events.pop(project_id, None)
 
     # Sit in the queue as "pending" until the global lock is free
     update_job(0, 0, "pending")
@@ -1616,6 +1723,116 @@ def run_batch_transcribe(
 # Batch Transcription Routes
 # ---------------------------------------------------------------------------
 
+def _as_bool(value, default=False):
+    """Coerce a JSON body field that may arrive as a bool or a string."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.lower() == "true"
+    return bool(value)
+
+
+def _parse_transcribe_options(body):
+    """Validate a transcription request body.
+
+    Returns (options_dict, None) on success or (None, (json, status)) on error.
+    Validation happens before anything is written, so a bad request can no
+    longer leave a project stuck in "pending" with no worker behind it.
+    """
+    mode = body.get("mode", "skip")
+    if mode not in ("skip", "continue", "override", "range"):
+        return None, (jsonify({"error": "mode must be skip, continue, override, or range"}), 400)
+
+    range_from = body.get("range_from")
+    range_to = body.get("range_to")
+    if mode == "range":
+        if range_from is None or range_to is None:
+            return None, (jsonify({"error": "range_from and range_to are required for range mode"}), 400)
+        try:
+            range_from = int(range_from)
+            range_to = int(range_to)
+        except (TypeError, ValueError):
+            return None, (jsonify({"error": "range_from and range_to must be integers"}), 400)
+        if range_from < 1 or range_to < 1 or range_from > range_to:
+            return None, (jsonify({"error": "Invalid page range"}), 400)
+
+    try:
+        red_threshold = float(body.get("red_threshold", 5.0))
+    except (TypeError, ValueError):
+        return None, (jsonify({"error": "red_threshold must be a number"}), 400)
+
+    try:
+        column_gap_ratio = float(body.get("column_gap_ratio", 0.045))
+    except (TypeError, ValueError):
+        return None, (jsonify({"error": "column_gap_ratio must be a number"}), 400)
+
+    return {
+        "model_name": body.get("model_name", "Tridis_Medieval_EarlyModern.mlmodel"),
+        "mode": mode,
+        "range_from": range_from,
+        "range_to": range_to,
+        "ignore_edges": _as_bool(body.get("ignore_edges"), False),
+        "add_page_break": _as_bool(body.get("add_page_break"), False),
+        "red_threshold": max(0.0, min(1_000_000.0, red_threshold)),
+        "enhanced_multi_column": _as_bool(body.get("enhanced_multi_column"), False),
+        "column_gap_ratio": max(0.015, min(0.165, column_gap_ratio)),
+        "autofix_errors": _as_bool(body.get("autofix_errors"), True),
+        "ai_correct": _as_bool(body.get("ai_correct"), False),
+    }, None
+
+
+def _launch_transcribe_job(project_id, opts):
+    """Upsert the job row and start its worker thread. Returns the job id.
+
+    Caller must have validated access and checked for a live job first.
+    """
+    existing = BatchTranscribeJob.query.filter_by(project_id=project_id).first()
+    if existing:
+        job = existing
+        job.status = "pending"
+        job.current_image = 0
+        job.total_images = 0
+        job.model_name = opts["model_name"]
+        job.mode = opts["mode"]
+        job.error_message = None
+    else:
+        job = BatchTranscribeJob(
+            project_id=project_id,
+            status="pending",
+            model_name=opts["model_name"],
+            mode=opts["mode"],
+        )
+        db.session.add(job)
+    db.session.commit()
+    job_id = job.id
+
+    stop_event = threading.Event()
+    _transcribe_stop_events[project_id] = stop_event
+
+    Thread(
+        target=run_batch_transcribe,
+        args=(
+            project_id, job_id, opts["model_name"], opts["mode"], app, stop_event,
+            opts["ignore_edges"], opts["range_from"], opts["range_to"],
+            opts["add_page_break"], opts["red_threshold"],
+            opts["enhanced_multi_column"], opts["column_gap_ratio"],
+            opts["autofix_errors"], opts["ai_correct"],
+        ),
+        daemon=True,
+    ).start()
+
+    logger.info(
+        "Started batch transcription for project %s (mode=%s, model=%s, "
+        "ignore_edges=%s, add_page_break=%s, red_threshold=%s, range=%s-%s, "
+        "enhanced_multi_column=%s, column_gap_ratio=%s, autofix_errors=%s, ai_correct=%s)",
+        project_id, opts["mode"], opts["model_name"], opts["ignore_edges"],
+        opts["add_page_break"], opts["red_threshold"], opts["range_from"],
+        opts["range_to"], opts["enhanced_multi_column"], opts["column_gap_ratio"],
+        opts["autofix_errors"], opts["ai_correct"],
+    )
+    return job_id
+
+
 @app.route("/api/projects/<int:project_id>/batch-transcribe", methods=["POST"])
 @jwt_required()
 def start_batch_transcribe(project_id):
@@ -1629,112 +1846,30 @@ def start_batch_transcribe(project_id):
         return jsonify({"error": "Transcription service is not available (Kraken OCR is disabled)"}), 503
 
     existing = BatchTranscribeJob.query.filter_by(project_id=project_id).first()
-    if existing and existing.status in ("running", "pending"):
-        return jsonify({"error": "Transcription already running"}), 409
+    if existing and existing.status in ACTIVE_TRANSCRIBE_STATUSES:
+        # Only refuse when a thread in THIS process is really working on it.
+        # A row left "running" by a dead process used to block every future
+        # start, and no restart could clear it.
+        if _transcribe_job_is_live(project_id):
+            return jsonify({"error": "Transcription already running"}), 409
+        logger.warning(
+            "Project %s had a %s transcription job with no live worker - "
+            "treating it as stale and starting a new one",
+            project_id, existing.status,
+        )
 
-    body = request.get_json(silent=True) or {}
-    model_name = body.get("model_name", "Tridis_Medieval_EarlyModern.mlmodel")
-    mode = body.get("mode", "skip")
-    if mode not in ("skip", "continue", "override", "range"):
-        return jsonify({"error": "mode must be skip, continue, override, or range"}), 400
+    opts, error = _parse_transcribe_options(request.get_json(silent=True) or {})
+    if error:
+        return error
 
-    range_from = body.get("range_from")
-    range_to = body.get("range_to")
-    if mode == "range":
-        if range_from is None or range_to is None:
-            return jsonify({"error": "range_from and range_to are required for range mode"}), 400
-        try:
-            range_from = int(range_from)
-            range_to = int(range_to)
-        except (TypeError, ValueError):
-            return jsonify({"error": "range_from and range_to must be integers"}), 400
-
-        if range_from < 1 or range_to < 1 or range_from > range_to:
-            return jsonify({"error": "Invalid page range"}), 400
-
+    if opts["mode"] == "range":
         image_count = Image.query.filter_by(project_id=project_id).count()
         if image_count == 0:
             return jsonify({"error": "Project has no images"}), 400
-        if range_from > image_count or range_to > image_count:
+        if opts["range_from"] > image_count or opts["range_to"] > image_count:
             return jsonify({"error": f"Page range must be within 1-{image_count}"}), 400
 
-    if existing:
-        existing.status = "pending"
-        existing.current_image = 0
-        existing.total_images = 0
-        existing.model_name = model_name
-        existing.mode = mode
-        existing.error_message = None
-        job = existing
-    else:
-        job = BatchTranscribeJob(
-            project_id=project_id,
-            status="pending",
-            model_name=model_name,
-            mode=mode,
-        )
-        db.session.add(job)
-    db.session.commit()
-    job_id = job.id
-
-    stop_event = threading.Event()
-    _transcribe_stop_events[project_id] = stop_event
-    
-    ignore_edges = body.get("ignore_edges", False)
-    if isinstance(ignore_edges, str):
-        ignore_edges = ignore_edges.lower() == "true"
-    else:
-        ignore_edges = bool(ignore_edges)
-
-    add_page_break = body.get("add_page_break", False)
-    if isinstance(add_page_break, str):
-        add_page_break = add_page_break.lower() == "true"
-    else:
-        add_page_break = bool(add_page_break)
-
-    try:
-        red_threshold = float(body.get("red_threshold", 5.0))
-    except (TypeError, ValueError):
-        return jsonify({"error": "red_threshold must be a number"}), 400
-    red_threshold = max(0.0, min(1_000_000.0, red_threshold))
-
-    enhanced_multi_column = body.get("enhanced_multi_column", False)
-    if isinstance(enhanced_multi_column, str):
-        enhanced_multi_column = enhanced_multi_column.lower() == "true"
-    else:
-        enhanced_multi_column = bool(enhanced_multi_column)
-
-    try:
-        column_gap_ratio = float(body.get("column_gap_ratio", 0.045))
-    except (TypeError, ValueError):
-        return jsonify({"error": "column_gap_ratio must be a number"}), 400
-    column_gap_ratio = max(0.015, min(0.165, column_gap_ratio))
-
-    autofix_errors = body.get("autofix_errors", True)
-    if isinstance(autofix_errors, str):
-        autofix_errors = autofix_errors.lower() == "true"
-    else:
-        autofix_errors = bool(autofix_errors)
-
-    ai_correct = body.get("ai_correct", False)
-    if isinstance(ai_correct, str):
-        ai_correct = ai_correct.lower() == "true"
-    else:
-        ai_correct = bool(ai_correct)
-
-    Thread(
-        target=run_batch_transcribe,
-        args=(project_id, job_id, model_name, mode, app, stop_event, ignore_edges, range_from, range_to, add_page_break, red_threshold, enhanced_multi_column, column_gap_ratio, autofix_errors, ai_correct),
-        daemon=True,
-    ).start()
-
-    logger.info(
-        f"Started batch transcription for project {project_id} "
-        f"(mode={mode}, model={model_name}, ignore_edges={ignore_edges}, add_page_break={add_page_break}, "
-        f"red_threshold={red_threshold}, range_from={range_from}, range_to={range_to}, "
-        f"enhanced_multi_column={enhanced_multi_column}, column_gap_ratio={column_gap_ratio}, "
-        f"autofix_errors={autofix_errors}, ai_correct={ai_correct})"
-    )
+    job_id = _launch_transcribe_job(project_id, opts)
     return jsonify({"message": "Transcription started", "job_id": job_id}), 202
 
 
@@ -1770,17 +1905,247 @@ def cancel_batch_transcribe(project_id):
     if not check_project_access(project_id, current_user):
         return jsonify({"error": "Access denied"}), 403
 
+    reset = request.args.get("reset") == "true"
+    cancelled = _cancel_transcribe_job(project_id, reset=reset)
+    return jsonify({
+        "message": "Reset" if reset else "Cancellation requested",
+        "cancelled": cancelled,
+    })
+
+
+def _cancel_transcribe_job(project_id, reset=False):
+    """Signal a transcription job to stop and mark its row cancelled.
+
+    Returns True when a job row was actually changed. Also clears rows left
+    "interrupted" by a restart, so Stop All leaves nothing behind.
+    """
     stop_event = _transcribe_stop_events.get(project_id)
     if stop_event:
         stop_event.set()
     _transcribe_stop_events.pop(project_id, None)
 
     job = BatchTranscribeJob.query.filter_by(project_id=project_id).first()
-    if job and job.status in ("running", "pending"):
+    if not job:
+        return False
+    if reset:
+        db.session.delete(job)
+        db.session.commit()
+        return True
+    if job.status in ACTIVE_TRANSCRIBE_STATUSES + (STATUS_INTERRUPTED,):
         job.status = "cancelled"
         db.session.commit()
+        return True
+    return False
 
-    return jsonify({"message": "Cancellation requested"})
+
+def _cancel_iiif_job(project_id, reset=False):
+    """Signal an IIIF download to stop and mark its row cancelled.
+
+    Returns True when a job row was actually changed. Mirrors the per-project
+    DELETE route, including releasing the domain slot so queued downloads for
+    the same domain are not stranded.
+    """
+    stop_event = _iiif_stop_events.get(project_id)
+    if stop_event:
+        stop_event.set()
+    _iiif_stop_events.pop(project_id, None)
+
+    job = IiifDownloadJob.query.filter_by(project_id=project_id).first()
+    if not job:
+        return False
+    if reset:
+        db.session.delete(job)
+        db.session.commit()
+        return True
+    if job.status in ACTIVE_IIIF_STATUSES + (STATUS_INTERRUPTED,):
+        job.status = "cancelled"
+        db.session.commit()
+        project = Project.query.get(project_id)
+        if project and project.iiif_url:
+            domain = _iiif_domain(project.iiif_url)
+            if _iiif_running_by_domain.get(domain) == project_id:
+                _iiif_running_by_domain.pop(domain, None)
+        return True
+    return False
+
+
+def _accessible_project_ids(user):
+    """Every project the user owns or has had shared with them."""
+    owned = [p.id for p in Project.query.filter_by(owner_id=user.id).all()]
+    shared = [ps.project_id for ps in ProjectSharing.query.filter_by(user_id=user.id).all()]
+    return owned, shared
+
+
+# ---------------------------------------------------------------------------
+# Bulk ("All Projects") Routes
+# ---------------------------------------------------------------------------
+
+@app.route("/api/batch-transcribe/all", methods=["POST"])
+@jwt_required()
+def start_batch_transcribe_all():
+    """Start transcription for every owned project that has images.
+
+    One request instead of one POST per project: the old front-end fired all of
+    them in parallel, which hammered SQLite and made partial failures hard to
+    read. Body takes the same options as the per-project route, plus:
+
+        include_completed - when false (default for skip/continue), projects
+                            whose pages are all transcribed are left alone.
+                            "override" always includes them, since re-doing
+                            finished manuscripts is the point of that mode.
+    """
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+    if NO_KRAKEN:
+        return jsonify({"error": "Transcription service is not available (Kraken OCR is disabled)"}), 503
+
+    body = request.get_json(silent=True) or {}
+    opts, error = _parse_transcribe_options(body)
+    if error:
+        return error
+    if opts["mode"] == "range":
+        return jsonify({"error": "range mode is per-project only"}), 400
+
+    override = opts["mode"] == "override"
+    include_completed = _as_bool(body.get("include_completed"), override)
+
+    owned_ids, _shared = _accessible_project_ids(current_user)
+    started, skipped = [], []
+
+    for project_id in owned_ids:
+        project = Project.query.get(project_id)
+        image_count = Image.query.filter_by(project_id=project_id).count()
+        name = project.name if project else str(project_id)
+
+        if image_count == 0:
+            skipped.append({"id": project_id, "name": name, "reason": "no images downloaded"})
+            continue
+
+        if _transcribe_job_is_live(project_id):
+            skipped.append({"id": project_id, "name": name, "reason": "already transcribing"})
+            continue
+
+        if not include_completed:
+            untranscribed = Image.query.filter(
+                Image.project_id == project_id,
+                db.or_(Image.transcribed_text.is_(None), Image.transcribed_text == ""),
+            ).count()
+            if untranscribed == 0:
+                skipped.append({"id": project_id, "name": name, "reason": "already fully transcribed"})
+                continue
+
+        try:
+            _launch_transcribe_job(project_id, opts)
+            started.append({"id": project_id, "name": name})
+        except Exception as e:
+            logger.exception("Failed to start transcription for project %s", project_id)
+            skipped.append({"id": project_id, "name": name, "reason": str(e)})
+
+    logger.info(
+        "Transcribe All by %s: started %d, skipped %d (mode=%s, include_completed=%s)",
+        current_user.username, len(started), len(skipped), opts["mode"], include_completed,
+    )
+    return jsonify({"started": started, "skipped": skipped}), 202
+
+
+@app.route("/api/batch-transcribe/all", methods=["DELETE"])
+@jwt_required()
+def cancel_batch_transcribe_all():
+    """Stop every transcription job the user can see. Backs the Stop All button."""
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    owned_ids, shared_ids = _accessible_project_ids(current_user)
+    cancelled = [pid for pid in set(owned_ids) | set(shared_ids)
+                 if _cancel_transcribe_job(pid)]
+
+    logger.info("Stop All transcriptions by %s: cancelled %d job(s) %s",
+                current_user.username, len(cancelled), cancelled)
+    return jsonify({"cancelled": cancelled, "count": len(cancelled)})
+
+
+@app.route("/api/iiif-download/all", methods=["DELETE"])
+@jwt_required()
+def cancel_iiif_download_all():
+    """Stop every IIIF download the user can see. Backs the Stop All button."""
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    owned_ids, shared_ids = _accessible_project_ids(current_user)
+    # Cancel everything before promoting anything, otherwise releasing a domain
+    # slot would immediately start the next queued download we are about to stop.
+    cancelled = [pid for pid in set(owned_ids) | set(shared_ids)
+                 if _cancel_iiif_job(pid)]
+
+    logger.info("Stop All downloads by %s: cancelled %d job(s) %s",
+                current_user.username, len(cancelled), cancelled)
+    return jsonify({"cancelled": cancelled, "count": len(cancelled)})
+
+
+@app.route("/api/jobs/diagnostics", methods=["GET"])
+@jwt_required()
+def jobs_diagnostics():
+    """Dump every background job row next to what this process is really running.
+
+    Meant for debugging a stuck server without shell access: the `live` flag is
+    the ground truth (does a worker thread exist here?) and a row that is
+    "running"/"pending" with live=false is a tombstone from a dead process.
+    """
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+    if not getattr(current_user, "is_admin", False):
+        return jsonify({"error": "Admin access required"}), 403
+
+    def project_name(pid):
+        p = Project.query.get(pid)
+        return p.name if p else None
+
+    transcribe_jobs = [{
+        "project_id": j.project_id,
+        "project_name": project_name(j.project_id),
+        "status": j.status,
+        "live": _transcribe_job_is_live(j.project_id),
+        "current_image": j.current_image,
+        "total_images": j.total_images,
+        "model_name": j.model_name,
+        "mode": j.mode,
+        "error_message": j.error_message,
+        "created_at": j.created_at.isoformat() if j.created_at else None,
+        "updated_at": j.updated_at.isoformat() if j.updated_at else None,
+    } for j in BatchTranscribeJob.query.order_by(BatchTranscribeJob.project_id).all()]
+
+    download_jobs = [{
+        "project_id": j.project_id,
+        "project_name": project_name(j.project_id),
+        "status": j.status,
+        "live": _iiif_job_is_live(j.project_id),
+        "current_page": j.current_page,
+        "total_pages": j.total_pages,
+        "start_page": j.start_page,
+        "error_message": j.error_message,
+        "created_at": j.created_at.isoformat() if j.created_at else None,
+        "updated_at": j.updated_at.isoformat() if j.updated_at else None,
+    } for j in IiifDownloadJob.query.order_by(IiifDownloadJob.project_id).all()]
+
+    transcribe_lock_held = _transcribe_lock.locked()
+
+    return jsonify({
+        "server_started_at": SERVER_PROCESS_STARTED_AT.isoformat(),
+        "pid": os.getpid(),
+        "no_kraken": NO_KRAKEN,
+        "thread_count": threading.active_count(),
+        "transcribe_lock_held": transcribe_lock_held,
+        "transcribe_workers": _load_domain_config().get("transcription_workers", 1),
+        "live_transcribe_project_ids": sorted(_transcribe_stop_events.keys()),
+        "live_download_project_ids": sorted(_iiif_stop_events.keys()),
+        "iiif_running_by_domain": dict(_iiif_running_by_domain),
+        "transcribe_jobs": transcribe_jobs,
+        "download_jobs": download_jobs,
+    })
 
 
 # ---------------------------------------------------------------------------
