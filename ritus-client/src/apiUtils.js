@@ -161,7 +161,11 @@ export const updateProject = async (id, data) => {
   }
 };
 
-export const fetchImages = async (projectId) => {
+// Batch runners (e.g. "Process Table" on the projects list) call some of the
+// helpers below once per project and report progress themselves, so those take
+// a `silent` option that suppresses the per-call toasts. Errors are still
+// thrown; only the pop-ups are skipped.
+export const fetchImages = async (projectId, { silent = false } = {}) => {
   try {
     const response = await apiRequest(
       `${SERVER_URL}/api/projects/${projectId}/images`
@@ -169,12 +173,14 @@ export const fetchImages = async (projectId) => {
     if (!response.ok) throw new Error("Failed to fetch images");
     return await response.json();
   } catch (error) {
-    toaster.create({
-      title: "Error",
-      description: error.message || "Failed to fetch images",
-      type: "error",
-      duration: 3000,
-    });
+    if (!silent) {
+      toaster.create({
+        title: "Error",
+        description: error.message || "Failed to fetch images",
+        type: "error",
+        duration: 3000,
+      });
+    }
     throw error;
   }
 };
@@ -302,7 +308,7 @@ export const transcribeImage = async (imageId, modelName, ignoreEdges = true, ad
   }
 };
 
-export const fetchProjectContent = async (projectId) => {
+export const fetchProjectContent = async (projectId, { silent = false } = {}) => {
   try {
     const response = await apiRequest(
       `${SERVER_URL}/api/projects/${projectId}/content`
@@ -310,12 +316,14 @@ export const fetchProjectContent = async (projectId) => {
     if (!response.ok) throw new Error("Failed to fetch project content");
     return await response.json();
   } catch (error) {
-    toaster.create({
-      title: "Error",
-      description: error.message || "Failed to fetch project content",
-      type: "error",
-      duration: 3000,
-    });
+    if (!silent) {
+      toaster.create({
+        title: "Error",
+        description: error.message || "Failed to fetch project content",
+        type: "error",
+        duration: 3000,
+      });
+    }
     throw error;
   }
 };
@@ -396,9 +404,13 @@ export const saveProjectContent = async (projectId, contentRows) => {
   }
 };
 */
-export const saveProjectContent = async (projectId, contentRows) => {
+export const saveProjectContent = async (
+  projectId,
+  contentRows,
+  { silent = false } = {}
+) => {
   try {
-    const existingContent = await fetchProjectContent(projectId);
+    const existingContent = await fetchProjectContent(projectId, { silent });
     const payload = {
       delete: existingContent.map((row) => row.id),
       create: contentRows,
@@ -415,21 +427,25 @@ export const saveProjectContent = async (projectId, contentRows) => {
     if (!response.ok)
       throw new Error("Failed to perform bulk content operations");
 
-    toaster.create({
-      title: "Success",
-      description: "Project content saved successfully",
-      type: "success",
-      duration: 3000,
-    });
+    if (!silent) {
+      toaster.create({
+        title: "Success",
+        description: "Project content saved successfully",
+        type: "success",
+        duration: 3000,
+      });
+    }
 
     return { message: "Content saved" };
   } catch (error) {
-    toaster.create({
-      title: "Error",
-      description: error.message || "Failed to save project content",
-      type: "error",
-      duration: 3000,
-    });
+    if (!silent) {
+      toaster.create({
+        title: "Error",
+        description: error.message || "Failed to save project content",
+        type: "error",
+        duration: 3000,
+      });
+    }
     throw error;
   }
 };
@@ -438,7 +454,8 @@ export const saveProjectContent = async (projectId, contentRows) => {
 export const startBatchProcess = async (
   projectId,
   similarityThreshold,
-  matchingMethod = "ngram"
+  matchingMethod = "ngram",
+  { silent = false } = {}
 ) => {
   try {
     const response = await apiRequest(
@@ -457,17 +474,19 @@ export const startBatchProcess = async (
     }
     return await response.json();
   } catch (error) {
-    toaster.create({
-      title: "Error",
-      description: error.message || "Failed to start batch process",
-      type: "error",
-      duration: 3000,
-    });
+    if (!silent) {
+      toaster.create({
+        title: "Error",
+        description: error.message || "Failed to start batch process",
+        type: "error",
+        duration: 3000,
+      });
+    }
     throw error;
   }
 };
 
-export const getBatchProcessStatus = async (projectId) => {
+export const getBatchProcessStatus = async (projectId, { silent = false } = {}) => {
   try {
     const response = await apiRequest(
       `${SERVER_URL}/api/projects/${projectId}/batch-process`
@@ -480,12 +499,14 @@ export const getBatchProcessStatus = async (projectId) => {
     }
     return await response.json();
   } catch (error) {
-    toaster.create({
-      title: "Error",
-      description: error.message || "Failed to fetch batch process status",
-      type: "error",
-      duration: 3000,
-    });
+    if (!silent) {
+      toaster.create({
+        title: "Error",
+        description: error.message || "Failed to fetch batch process status",
+        type: "error",
+        duration: 3000,
+      });
+    }
     throw error;
   }
 };
@@ -907,19 +928,36 @@ export const fetchJobDiagnostics = async () => {
 /**
  * Trigger a CSV download of all transcribed images across owned/shared projects.
  */
-export const exportTranscriptions = async () => {
-  const response = await apiRequest(`${SERVER_URL}/api/export/transcriptions`);
-  if (!response.ok) throw new Error("Failed to export transcriptions");
+/** Fetch a CSV export endpoint and hand the file to the browser. */
+const downloadCsv = async (path, filename, errorMessage) => {
+  const response = await apiRequest(`${SERVER_URL}${path}`);
+  if (!response.ok) throw new Error(errorMessage);
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "transcriptions.csv";
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 };
+
+/** Every transcribed page of every accessible project, as one CSV. */
+export const exportTranscriptions = async () =>
+  downloadCsv(
+    "/api/export/transcriptions",
+    "transcriptions.csv",
+    "Failed to export transcriptions"
+  );
+
+/** The data tables saved on the server for every accessible project. */
+export const exportProjectTables = async () =>
+  downloadCsv(
+    "/api/export/tables",
+    "project_tables.csv",
+    "Failed to export project tables"
+  );
 
 
 // ---------------------------------------------------------------------------

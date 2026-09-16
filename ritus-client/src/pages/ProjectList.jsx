@@ -39,11 +39,13 @@ import {
   cancelBatchTranscribeAll,
   cancelIiifDownloadAll,
   exportTranscriptions,
+  exportProjectTables,
 } from "../apiUtils";
 import { useAuth } from "../App";
 import { toaster } from "@/components/ui/toaster";
 import BatchProjectCreator from "../components/BatchProjectCreator";
 import TranscribeAllDialog from "../components/TranscribeAllDialog";
+import ProcessTableDialog from "../components/ProcessTableDialog";
 import RedSensitivitySlider from "../components/RedSensitivitySlider";
 import {
   DEFAULT_RED_SENSITIVITY,
@@ -427,26 +429,32 @@ const ProjectList = () => {
   // Server-side transcription state
   const [transcribeJobStatuses, setTranscribeJobStatuses] = useState({});
   const [isStoppingAll, setIsStoppingAll] = useState(false);
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const pollingRef = useRef(null);
   const transcribePollingRef = useRef(null);
   const navigate = useNavigate();
   const { currentUser, logout } = useAuth();
 
+  // Re-read the projects list and re-seed the job statuses from it. Used
+  // wherever something finished that changes what the cards show (row counts,
+  // job states) without a page reload.
+  const refreshProjects = async () => {
+    const data = await fetchProjects();
+    setProjectData(data);
+    const statuses = {};
+    const txStatuses = {};
+    [...(data.owned || []), ...(data.shared || [])].forEach((p) => {
+      if (p.iiif_download_job) statuses[p.id] = p.iiif_download_job;
+      if (p.batch_transcribe_job) txStatuses[p.id] = p.batch_transcribe_job;
+    });
+    setIiifJobStatuses(statuses);
+    setTranscribeJobStatuses(txStatuses);
+    return data;
+  };
+
   useEffect(() => {
     setIsLoadingProjects(true);
-    fetchProjects()
-      .then((data) => {
-        setProjectData(data);
-        // Seed iiifJobStatuses from the projects response
-        const statuses = {};
-        const txStatuses = {};
-        [...(data.owned || []), ...(data.shared || [])].forEach((p) => {
-          if (p.iiif_download_job) statuses[p.id] = p.iiif_download_job;
-          if (p.batch_transcribe_job) txStatuses[p.id] = p.batch_transcribe_job;
-        });
-        setIiifJobStatuses(statuses);
-        setTranscribeJobStatuses(txStatuses);
-      })
+    refreshProjects()
       .catch((error) => {
         // fetchProjects already reported the error to the user
         console.error("Failed to load projects:", error);
@@ -616,9 +624,15 @@ const ProjectList = () => {
     }
   };
 
-  const handleExportCSV = async () => {
+  // Two different things can be exported as CSV, so the button asks first.
+  const handleExportCSV = async (what) => {
+    setIsExportDialogOpen(false);
     try {
-      await exportTranscriptions();
+      if (what === "tables") {
+        await exportProjectTables();
+      } else {
+        await exportTranscriptions();
+      }
     } catch (e) {
       toaster.create({ title: "Export failed", description: e.message, type: "error", duration: 5000 });
     }
@@ -736,7 +750,7 @@ const ProjectList = () => {
     if (data) {
       setProjectData(prev => ({
         ...prev,
-        owned: [...prev.owned, { id: data.id, ...newProject, first_thumbnail: null, owner_id: currentUser.id, is_owner: true, image_count: 0, transcribed_count: 0 }]
+        owned: [...prev.owned, { id: data.id, ...newProject, first_thumbnail: null, owner_id: currentUser.id, is_owner: true, image_count: 0, transcribed_count: 0, content_count: 0 }]
       }));
       setIsDialogOpen(false);
       if (newProject.type === "iiif" && newProject.iiif_url) {
@@ -912,7 +926,12 @@ const ProjectList = () => {
           projects={projectData.owned}
           onJobsStarted={handleTranscribeAllJobsStarted}
         />
-        <Button variant="outline" size="sm" onClick={handleExportCSV}>
+        <ProcessTableDialog
+          ownedProjects={projectData.owned}
+          sharedProjects={projectData.shared}
+          onFinished={refreshProjects}
+        />
+        <Button variant="outline" size="sm" onClick={() => setIsExportDialogOpen(true)}>
           <FaFileCsv /> Export CSV
         </Button>
         {activeJobCount > 0 && (
@@ -980,14 +999,23 @@ const ProjectList = () => {
                         <Text fontSize="sm" color="gray.500" maxW="400px" isTruncated>{project.iiif_url}</Text>
                       </HStack>
                     )}
-                    {project.image_count > 0 && (
-                      <HStack>
-                        <Text fontSize="sm" color="gray.600">{project.image_count} images</Text>
-                        {project.transcribed_count > 0 && (
-                          <Text fontSize="sm" color="green.600">· {project.transcribed_count} transcribed</Text>
-                        )}
-                      </HStack>
-                    )}
+                    <HStack>
+                      {project.image_count > 0 && (
+                        <>
+                          <Text fontSize="sm" color="gray.600">{project.image_count} images</Text>
+                          {project.transcribed_count > 0 && (
+                            <Text fontSize="sm" color="green.600">· {project.transcribed_count} transcribed</Text>
+                          )}
+                        </>
+                      )}
+                      <Text
+                        fontSize="sm"
+                        color={project.content_count > 0 ? "blue.600" : "gray.500"}
+                      >
+                        {project.image_count > 0 ? "· " : ""}
+                        {project.content_count ?? 0} rows in table
+                      </Text>
+                    </HStack>
                   </Stack>
                   <HStack alignItems="flex-start">
                     {project.type === "iiif" && (
@@ -1003,6 +1031,10 @@ const ProjectList = () => {
                       jobStatus={transcribeJobStatuses[project.id]}
                       onStart={(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold, autofixErrors, aiCorrect) => handleStartTranscribe(project.id, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold, autofixErrors, aiCorrect)}
                       onCancel={() => handleCancelTranscribe(project.id)}
+                    />
+                    <ProcessTableDialog
+                      project={project}
+                      onFinished={refreshProjects}
                     />
                     <Button
                       onClick={() => handleShareProject(project)}
@@ -1080,24 +1112,39 @@ const ProjectList = () => {
                         <Text fontSize="sm" color="gray.500" maxW="400px" isTruncated>{project.iiif_url}</Text>
                       </HStack>
                     )}
-                    {project.image_count > 0 && (
-                      <HStack>
-                        <Text fontSize="sm" color="gray.600">{project.image_count} images</Text>
-                        {project.transcribed_count > 0 && (
-                          <Text fontSize="sm" color="green.600">· {project.transcribed_count} transcribed</Text>
-                        )}
-                      </HStack>
-                    )}
+                    <HStack>
+                      {project.image_count > 0 && (
+                        <>
+                          <Text fontSize="sm" color="gray.600">{project.image_count} images</Text>
+                          {project.transcribed_count > 0 && (
+                            <Text fontSize="sm" color="green.600">· {project.transcribed_count} transcribed</Text>
+                          )}
+                        </>
+                      )}
+                      <Text
+                        fontSize="sm"
+                        color={project.content_count > 0 ? "blue.600" : "gray.500"}
+                      >
+                        {project.image_count > 0 ? "· " : ""}
+                        {project.content_count ?? 0} rows in table
+                      </Text>
+                    </HStack>
                     <Text fontSize="sm" color="gray.600">Shared with you</Text>
                   </Stack>
-                  {project.type === "iiif" && (
-                    <IiifProjectStatus
+                  <HStack alignItems="flex-start">
+                    {project.type === "iiif" && (
+                      <IiifProjectStatus
+                        project={project}
+                        jobStatus={iiifJobStatuses[project.id]}
+                        onDownload={(confirm) => handleServerIiifDownload(project.id, confirm)}
+                        onCancel={() => handleCancelIiifDownload(project.id)}
+                      />
+                    )}
+                    <ProcessTableDialog
                       project={project}
-                      jobStatus={iiifJobStatuses[project.id]}
-                      onDownload={(confirm) => handleServerIiifDownload(project.id, confirm)}
-                      onCancel={() => handleCancelIiifDownload(project.id)}
+                      onFinished={refreshProjects}
                     />
-                  )}
+                  </HStack>
                 </HStack>
               </Flex>
             ))}
@@ -1146,6 +1193,52 @@ const ProjectList = () => {
                   setConflictDialog({ open: false, projectId: null, imageCount: 0 });
                   handleServerIiifDownload(conflictDialog.projectId, "restart");
                 }}>Restart from page 1</Button>
+              </Dialog.Footer>
+            </Dialog.Content>
+          </Dialog.Positioner>
+        </Portal>
+      </Dialog.Root>
+
+      {/* Export CSV Dialog */}
+      <Dialog.Root
+        open={isExportDialogOpen}
+        onOpenChange={(e) => setIsExportDialogOpen(e.open)}
+        placement="center"
+        motionPreset="slide-in-bottom"
+      >
+        <Portal>
+          <Dialog.Backdrop />
+          <Dialog.Positioner>
+            <Dialog.Content>
+              <Dialog.Header>
+                <Dialog.Title>Export CSV</Dialog.Title>
+                <Dialog.CloseTrigger asChild>
+                  <CloseButton size="sm" />
+                </Dialog.CloseTrigger>
+              </Dialog.Header>
+              <Dialog.Body>
+                <Stack spacing={3}>
+                  <Text>What would you like to download?</Text>
+                  <Text fontSize="sm" color="gray.600">
+                    <strong>Transcriptions</strong> — the original transcribed
+                    text of every page, one row per page.
+                  </Text>
+                  <Text fontSize="sm" color="gray.600">
+                    <strong>Project tables</strong> — the data tables saved on
+                    the server, one row per table row, across all your projects.
+                  </Text>
+                </Stack>
+              </Dialog.Body>
+              <Dialog.Footer gap={2}>
+                <Button variant="outline" onClick={() => setIsExportDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button variant="outline" onClick={() => handleExportCSV("transcriptions")}>
+                  <FaFileCsv /> Transcriptions
+                </Button>
+                <Button onClick={() => handleExportCSV("tables")}>
+                  <FaFileCsv /> Project tables
+                </Button>
               </Dialog.Footer>
             </Dialog.Content>
           </Dialog.Positioner>

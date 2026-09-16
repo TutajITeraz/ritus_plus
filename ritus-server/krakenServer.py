@@ -2193,6 +2193,71 @@ def export_transcriptions():
     )
 
 
+@app.route("/api/export/tables", methods=["GET"])
+@jwt_required()
+def export_project_tables():
+    """
+    Return the data tables saved on the server for every project the current
+    user owns/shares, as one CSV file: project_id, project_name, then the
+    table's own columns.
+
+    The column set is not fixed here - a row's data is whatever JSON the table
+    editor saved - so the header is the union of the keys, in the order they
+    are first seen. Rows are written in the same order the table editor loads
+    them, so a project's block of rows keeps the table's row order.
+    """
+    import csv
+    import io
+
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    owned_ids = [p.id for p in Project.query.filter_by(owner_id=current_user.id).all()]
+    shared_ids = [ps.project_id for ps in ProjectSharing.query.filter_by(user_id=current_user.id).all()]
+    project_ids = sorted(set(owned_ids + shared_ids))
+
+    columns = []
+    seen_columns = set()
+    rows = []
+
+    for pid in project_ids:
+        project = Project.query.get(pid)
+        if not project:
+            continue
+        for content in Content.query.filter_by(project_id=pid).all():
+            try:
+                data = json.loads(content.data)
+            except (ValueError, TypeError):
+                logger.warning(f"Skipping unparsable content row {content.id} of project {pid}")
+                continue
+            if not isinstance(data, dict):
+                continue
+            for key in data:
+                if key not in seen_columns:
+                    seen_columns.add(key)
+                    columns.append(key)
+            rows.append((pid, project.name, data))
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["project_id", "project_name"] + columns)
+    for pid, project_name, data in rows:
+        writer.writerow([pid, project_name] + [data.get(col, "") for col in columns])
+
+    logger.info(
+        f"Exported {len(rows)} table row(s) from {len(project_ids)} project(s) for user {current_user.username}"
+    )
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")  # BOM for Excel compatibility
+
+    return Response(
+        csv_bytes,
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=project_tables.csv"},
+    )
+
+
 # Project Routes
 @app.route("/api/projects", methods=["GET"])
 @jwt_required()
@@ -2222,6 +2287,9 @@ def get_projects():
                 Image.transcribed_text.isnot(None),
                 Image.transcribed_text != ""
             ).count()
+            # Rows in the project's data table, shown on the projects list and
+            # used by "Process Table" to decide what already has data.
+            content_count = Content.query.filter_by(project_id=p.id).count()
             iiif_job = IiifDownloadJob.query.filter_by(project_id=p.id).first()
             iiif_download_job = None
             if iiif_job:
@@ -2253,6 +2321,7 @@ def get_projects():
                 "is_owner": p.owner_id == current_user.id,
                 "image_count": image_count,
                 "transcribed_count": transcribed_count,
+                "content_count": content_count,
                 "iiif_download_job": iiif_download_job,
                 "batch_transcribe_job": batch_transcribe_job,
             }
