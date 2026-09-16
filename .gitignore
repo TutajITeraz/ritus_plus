@@ -236,3 +236,8 @@ ritus-server/config.py
 Common transcription errors.xlsx
 /ritus-server/dbg_imgs
 /ritus-server/logs
+
+# Generated ground-truth oracles for the Automatic Fill benchmark
+# (regenerate with: cd ritus-server && python tests/build_fill_oracle.py)
+/ritus-server/tests/oracle_raw.json
+/ritus-server/tests/oracle_norm.json

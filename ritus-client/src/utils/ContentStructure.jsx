@@ -105,17 +105,32 @@ const ContentStructure = [
     editable: false,
     can_be_null: true,
     computeFunction: (content) => {
-      const text1 = content.formula_text_from_ms || "";
-      const text2 = content.formula_standardized || "";
-      if (!text1 || !text2) return "N/A";
+      // Compared case-insensitively: the standardized text capitalises proper
+      // nouns and sentence openings ("Deus", "Qui vivis") that the manuscript
+      // transcription writes in lower case. Those are not textual differences,
+      // and counting them kept an otherwise identical pair off 100%.
+      const text1 = (content.formula_text_from_ms || "").trim();
+      const rawStandardized = (content.formula_standardized || "").trim();
+      // "N/A" is what an automatic column shows when no formula is linked, so
+      // there is nothing to compare against - report no similarity rather than
+      // the edit distance to the literal letters "N/A".
+      const text2 = rawStandardized === "N/A" ? "" : rawStandardized;
+      if (!text1 || !text2) return "";
+      // Runs of whitespace are collapsed for the same reason: the split rejoins
+      // a prayer's tokens with single spaces, while the reference text may keep
+      // the double space the edition prints between sentences. That is layout,
+      // not a difference in wording.
+      const fold = (t) => t.replace(/\s+/g, " ").toLowerCase();
+      const a = fold(text1);
+      const b = fold(text2);
       const matches = calculateLevenshteinSimilarity(
-        [{ id: "1", text: text2 }],
-        text1,
+        [{ id: "1", text: b }],
+        a,
         new Map()
       );
-      if (!matches.length) return "N/A";
+      if (!matches.length) return "";
       const distance = matches[0].levenstein;
-      const maxLength = Math.max(text1.length, text2.length);
+      const maxLength = Math.max(a.length, b.length);
       const similarity = maxLength
         ? ((maxLength - distance) / maxLength) * 100
         : 0;
@@ -159,6 +174,14 @@ const ContentStructure = [
     value: "",
     can_be_null: true,
     type: "text",
+  },
+  {
+    name: "digital_page_number",
+    display_name: "Digital Page Number",
+    type: "number",
+    editable: true,
+    can_be_null: true,
+    value: "",
   },
   {
     name: "rite_name_from_ms",
@@ -378,14 +401,8 @@ const ContentStructure = [
 
 
   // --- New fields from Content model ---
-  {
-    name: "digital_page_number",
-    display_name: "Digital Page Number",
-    type: "number",
-    editable: true,
-    can_be_null: true,
-    value: "",
-  },
+  // (digital_page_number is one of these too; it sits next to the Where in MS
+  // columns because that is the folio it belongs to.)
   {
     name: "proper_texts",
     display_name: "Proper Texts",

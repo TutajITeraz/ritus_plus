@@ -45,6 +45,12 @@ import {
   calculateLevenshteinSimilarity,
   buildLookupIndex,
 } from "../utils/lookup";
+import {
+  buildNgramIndex,
+  ngramFindBestMatch,
+  ngramPoolSize,
+  normalizeLatin,
+} from "../utils/ngramLookup";
 import "react-data-grid/lib/styles.css";
 import "./DataTable.css";
 
@@ -346,7 +352,9 @@ const getCellContent = (row, col, dictionaries, tableStructure) => {
       }
       return acc;
     }, {});
-    return col.computeFunction(content) || "N/A";
+    // ?? not ||: a computed column may legitimately return an empty string to
+    // mean "nothing to show here", and || would turn that back into "N/A".
+    return col.computeFunction(content) ?? "N/A";
   } else if (col.type === "automatic" && dictionaries[col.name] && col.parentColumn) {
     const entry = findDictionaryEntryByValue(dictionaries[col.name], row[col.parentColumn]);
     return entry?.label || "N/A";
@@ -466,17 +474,33 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
   const [autoFillColumn, setAutoFillColumn] = useState(null);
   const [replaceExisting, setReplaceExisting] = useState(false);
   const [similarityThreshold, setSimilarityThreshold] = useState(50);
+  // Matching method for Automatic Fill. The n-gram matcher is the default: it is
+  // several times faster than the legacy algorithm and at least as accurate
+  // (see utils/ngramLookup.jsx for how it works).
+  const [matchingMethod, setMatchingMethod] = useState("ngram");
   const [updatedRows, setUpdatedRows] = useState(0);
   const [changedRows, setChangedRows] = useState(0);
   const [totalRows, setTotalRows] = useState(0);
   const [autoFillLoading, setAutoFillLoading] = useState(false);
-  const csvDialogRef = useRef(null);
-  const errorDialogRef = useRef(null);
-  const autoFillDialogRef = useRef(null);
+  // Set by "Stop" (and by closing the dialog) while Automatic Fill is running.
+  // A ref, not state: the running loop reads it on every row and would keep
+  // reading a stale value captured in the closure if it were state.
+  const autoFillCancelRef = useRef(false);
+  // These three dialogs are controlled. They used to be opened and closed by
+  // finding [data-part='close-trigger'] through a ref and calling .click() on
+  // it, which silently does nothing in a real browser: the trigger reacts to
+  // pointer events, not to a synthetic click, so a finished Automatic Fill left
+  // its dialog sitting over the table.
+  const [csvDialogOpen, setCsvDialogOpen] = useState(false);
+  const [errorDialogOpen, setErrorDialogOpen] = useState(false);
+  const [autoFillDialogOpen, setAutoFillDialogOpen] = useState(false);
   const autoFillContentRef = useRef(null);
   const gridRef = useRef(null);
   const [selectedCell, setSelectedCell] = useState(null);
   const levenshteinCache = useRef(new Map());
+  // Separate cache for the n-gram matcher: it keys on NORMALIZED text, so its
+  // entries must not be mixed with the legacy algorithm's raw-text keys.
+  const ngramLevenshteinCache = useRef(new Map());
   const isClickingCell = useRef(false);
 
   const sequenceKey =
@@ -1174,9 +1198,7 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
           setData(updatedData);
           setLoadingCSV(false);
           validateTable();
-          csvDialogRef.current
-            ?.querySelector("[data-part='close-trigger']")
-            ?.click();
+          setCsvDialogOpen(false);
         },
         error: () => {
           setCsvParseError("Failed to parse CSV file");
@@ -1240,9 +1262,7 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
           colIdx: colIndex + 1,
         });
       }
-      errorDialogRef.current
-        ?.querySelector("[data-part='close-trigger']")
-        ?.click();
+      setErrorDialogOpen(false);
     },
     [data, tableStructure, visibleColumns]
   );
@@ -1253,8 +1273,19 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
     return { ...targetRow, [columnKey]: sourceRow[columnKey] };
   }, []);
 
+  const handleCancelAutoFill = useCallback(() => {
+    console.log("Automatic Fill cancellation requested");
+    autoFillCancelRef.current = true;
+  }, []);
+
   const handleAutoFill = useCallback(async () => {
     if (!autoFillColumn || !autoFillColumn.dictionary) return;
+    autoFillCancelRef.current = false;
+    let cancelled = false;
+    // Local mirrors of the progress counters: the state setters above are
+    // asynchronous, so the values read back inside this loop would be stale.
+    let processedCount = 0;
+    let changedCount = 0;
     setAutoFillLoading(true);
     setUpdatedRows(0);
     setChangedRows(0);
@@ -1272,11 +1303,19 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
       const entries = parseCSV(csvText);
       // Built once for the whole batch instead of once per row - rebuilding
       // it per row cost 300-800ms and dwarfed the actual matching cost.
-      const lookupIndex = buildLookupIndex(entries);
+      const useNgram = matchingMethod === "ngram";
+      const lookupIndex = useNgram ? null : buildLookupIndex(entries);
+      const ngramIndex = useNgram ? buildNgramIndex(entries) : null;
 
       setTotalRows(data.length);
 
       for (let i = 0; i < data.length; i++) {
+        if (autoFillCancelRef.current) {
+          cancelled = true;
+          processedCount = i;
+          console.log("Autofill cancelled at row:", i);
+          break;
+        }
         const row = data[i];
         if (
           !replaceExisting &&
@@ -1321,23 +1360,44 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
             ? 30
             : 20;
 
-        const matches = countMatchingWords(
-          entries,
-          text,
-          how_many_matches,
-          lookupIndex
-        );
-        const bestMatches = calculateLevenshteinSimilarity(
-          matches,
-          text,
-          levenshteinCache.current
-        );
-        if (bestMatches.length > 0) {
-          const distance = bestMatches[0].levenstein;
-          const maxLength = Math.max(text.length, bestMatches[0].text.length);
-          const similarity = maxLength
-            ? ((maxLength - distance) / maxLength) * 100
-            : 100;
+        // Both methods end on the same thing - a single best entry carrying a
+        // 0-100 similarity - so everything downstream is shared.
+        let bestEntry = null;
+        let similarity = 0;
+        if (useNgram) {
+          const best = ngramFindBestMatch(
+            ngramIndex,
+            text,
+            ngramPoolSize(normalizeLatin(text).length),
+            ngramLevenshteinCache.current
+          );
+          if (best) {
+            bestEntry = best;
+            similarity = best.similarity;
+          }
+        } else {
+          const matches = countMatchingWords(
+            entries,
+            text,
+            how_many_matches,
+            lookupIndex
+          );
+          const bestMatches = calculateLevenshteinSimilarity(
+            matches,
+            text,
+            levenshteinCache.current
+          );
+          if (bestMatches.length > 0) {
+            bestEntry = bestMatches[0];
+            const distance = bestMatches[0].levenstein;
+            const maxLength = Math.max(text.length, bestMatches[0].text.length);
+            similarity = maxLength
+              ? ((maxLength - distance) / maxLength) * 100
+              : 100;
+          }
+        }
+
+        if (bestEntry) {
           if (similarity >= similarityThreshold) {
             console.log("Similarity:", similarity, ">= Threshold:", similarityThreshold);
 
@@ -1350,19 +1410,20 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
                 [autoFillColumn.name]: r[autoFillColumn.name],
               })),
             });
+            changedCount += 1;
             setChangedRows((prev) => prev + 1);
 
             setData((prevData) => {
               const newData = [...prevData];
               newData[i] = {
                 ...newData[i],
-                [autoFillColumn.name]: Number(bestMatches[0].id),
+                [autoFillColumn.name]: Number(bestEntry.id),
               };
               console.log("After update:", {
                 rowIndex: i,
                 internalId: row._internalId,
                 column: autoFillColumn.name,
-                updatedValue: bestMatches[0].id,
+                updatedValue: bestEntry.id,
                 newData: newData.map((r) => ({
                   internalId: r._internalId,
                   [autoFillColumn.name]: r[autoFillColumn.name],
@@ -1375,7 +1436,7 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
               rowIndex: i,
               internalId: row._internalId,
               column: autoFillColumn.name,
-              value: bestMatches[0].id,
+              value: bestEntry.id,
               similarity,
             });
           } else {
@@ -1410,18 +1471,30 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
         return updatedData;
       });
       validateTable();
+      if (cancelled) {
+        toaster.create({
+          title: "Automatic Fill stopped",
+          description: `Stopped after ${processedCount} of ${data.length} rows. ${changedCount} row(s) already filled were kept.`,
+          type: "info",
+          duration: 5000,
+        });
+      }
     } catch (error) {
       console.error("Error during autofill:", error);
     } finally {
       setAutoFillLoading(false);
-      autoFillDialogRef.current
-        ?.querySelector("[data-part='close-trigger']")
-        ?.click();
+      autoFillCancelRef.current = false;
+      // A cancelled run leaves the dialog open so the counters stay readable;
+      // a finished one closes itself as before.
+      if (!cancelled) {
+        setAutoFillDialogOpen(false);
+      }
     }
   }, [
     autoFillColumn,
     replaceExisting,
     similarityThreshold,
+    matchingMethod,
     data,
     sequenceKey,
     validateTable,
@@ -1851,12 +1924,7 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
 
   useEffect(() => {
     if (isPostImport && validationErrors.length > 0) {
-      const errorTrigger = errorDialogRef.current?.querySelector(
-        "[data-part='trigger']"
-      );
-      if (errorTrigger) {
-        errorTrigger.click();
-      }
+      setErrorDialogOpen(true);
       setIsPostImport(false);
     }
   }, [validationErrors, isPostImport]);
@@ -1901,6 +1969,17 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
     });
   }, [selectItems]);
 
+  const matchingMethodCollection = useMemo(
+    () =>
+      createListCollection({
+        items: [
+          { label: "n-gram matcher (recommended)", value: "ngram" },
+          { label: "legacy algorithm", value: "legacy" },
+        ],
+      }),
+    []
+  );
+
   return (
     <VStack width="full" gap="5" alignItems="start">
       <HStack mb={2}>
@@ -1916,8 +1995,9 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
           placement="center"
           motionPreset="slide-in-bottom"
           unmountOnExit
-          ref={csvDialogRef}
+          open={csvDialogOpen}
           onOpenChange={(e) => {
+            setCsvDialogOpen(e.open);
             if (!e.open) {
               setLoadingCSV(false);
               setCsvParseError(null);
@@ -1993,17 +2073,24 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
           placement="center"
           motionPreset="slide-in-bottom"
           unmountOnExit
+          open={autoFillDialogOpen}
           onOpenChange={(e) => {
+            setAutoFillDialogOpen(e.open);
             if (e.open) {
               setAutoFillColumn(null);
               setReplaceExisting(false);
               setSimilarityThreshold(50);
+              setMatchingMethod("ngram");
               setUpdatedRows(0);
+              setChangedRows(0);
               setTotalRows(0);
               setAutoFillLoading(false);
+            } else {
+              // Dismissing the dialog (Esc, backdrop) must stop the run too,
+              // or it would keep rewriting rows from behind a closed dialog.
+              autoFillCancelRef.current = true;
             }
           }}
-          ref={autoFillDialogRef}
         >
           <Dialog.Trigger asChild>
             <Button colorPalette="blue">
@@ -2020,6 +2107,36 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
                 </Dialog.Header>
                 <Dialog.Body>
                   <VStack spacing={4} align="stretch">
+                    <Text>Matching method:</Text>
+                    <Select.Root
+                      collection={matchingMethodCollection}
+                      value={[matchingMethod]}
+                      onValueChange={(details) =>
+                        setMatchingMethod(details.value[0] || "ngram")
+                      }
+                    >
+                      <Select.HiddenSelect />
+                      <Select.Control>
+                        <Select.Trigger>
+                          <Select.ValueText />
+                        </Select.Trigger>
+                        <Select.IndicatorGroup>
+                          <Select.Indicator />
+                        </Select.IndicatorGroup>
+                      </Select.Control>
+                      <Portal container={autoFillContentRef}>
+                        <Select.Positioner>
+                          <Select.Content>
+                            {matchingMethodCollection.items.map((item) => (
+                              <Select.Item item={item} key={item.value}>
+                                {item.label}
+                                <Select.ItemIndicator />
+                              </Select.Item>
+                            ))}
+                          </Select.Content>
+                        </Select.Positioner>
+                      </Portal>
+                    </Select.Root>
                     <Text>Column to autofill:</Text>
                     <Select.Root
                       collection={selectCollection}
@@ -2084,11 +2201,9 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
                     </NumberInput.Root>
                     {(autoFillLoading || updatedRows != 0) && (
                       <Progress.Root
-                        value={
-                          autoFillLoading
-                            ? (updatedRows / totalRows) * 100 || 0
-                            : 100
-                        }
+                        // Always the real ratio: a run stopped half-way must
+                        // not jump to 100% the moment the loop exits.
+                        value={(updatedRows / totalRows) * 100 || 0}
                         maxW="sm"
                       >
                         <HStack gap="5">
@@ -2103,11 +2218,20 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
                   </VStack>
                 </Dialog.Body>
                 <Dialog.Footer>
-                  <Dialog.ActionTrigger asChild>
-                    <Button variant="outline" disabled={autoFillLoading}>
-                      Cancel
+                  {autoFillLoading ? (
+                    <Button
+                      variant="outline"
+                      colorPalette="red"
+                      onClick={handleCancelAutoFill}
+                      data-testid="autofill-stop-button"
+                    >
+                      Stop
                     </Button>
-                  </Dialog.ActionTrigger>
+                  ) : (
+                    <Dialog.ActionTrigger asChild>
+                      <Button variant="outline">Cancel</Button>
+                    </Dialog.ActionTrigger>
+                  )}
                   <Button
                     onClick={handleAutoFill}
                     disabled={!autoFillColumn || autoFillLoading}
@@ -2190,7 +2314,8 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
             placement="center"
             motionPreset="slide-in-bottom"
             unmountOnExit
-            ref={errorDialogRef}
+            open={errorDialogOpen}
+            onOpenChange={(e) => setErrorDialogOpen(e.open)}
           >
             <Dialog.Trigger asChild>
               <Button colorPalette="red">

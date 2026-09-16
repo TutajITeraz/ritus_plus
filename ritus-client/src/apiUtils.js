@@ -434,7 +434,12 @@ export const saveProjectContent = async (projectId, contentRows) => {
   }
 };
 
-export const startBatchProcess = async (projectId, similarityThreshold) => {
+// matchingMethod: "ngram" (n-gram matcher, default) or "legacy" (legacy algorithm)
+export const startBatchProcess = async (
+  projectId,
+  similarityThreshold,
+  matchingMethod = "ngram"
+) => {
   try {
     const response = await apiRequest(
       `${SERVER_URL}/api/projects/${projectId}/batch-process`,
@@ -442,6 +447,7 @@ export const startBatchProcess = async (projectId, similarityThreshold) => {
         method: "POST",
         body: JSON.stringify({
           similarity_threshold: similarityThreshold * 100,
+          method: matchingMethod,
         }),
       }
     );

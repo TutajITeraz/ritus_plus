@@ -127,6 +127,7 @@ def _promote_waiting_domain(domain):
                     app.config["UPLOAD_FOLDER"], job.start_page
                 )
                 return
+import batch_analysis
 from batch_analysis import batch_process_project
 from image_processing import split_line_boundary_by_color
 from multi_column_layout import reorder_lines_for_multi_column, detect_column_bands
@@ -1235,6 +1236,14 @@ def start_batch_process(project_id):
             logger.error(f"Invalid similarity threshold: {similarity_threshold}")
             return jsonify({"error": "Invalid similarity threshold (must be between 1 and 100)"}), 400
 
+        # Matching method: "ngram" (default) or "legacy". Carried through the
+        # worker thread's closure rather than stored on BatchProcessing, so
+        # selecting a method needs no schema change.
+        method = data.get("method", batch_analysis.DEFAULT_METHOD)
+        if method not in (batch_analysis.METHOD_NGRAM, batch_analysis.METHOD_LEGACY):
+            logger.error(f"Invalid matching method: {method}")
+            return jsonify({"error": "Invalid matching method (must be 'ngram' or 'legacy')"}), 400
+
         # Delete any existing batch process for this project
         BatchProcessing.query.filter_by(project_id=project_id).delete()
         db.session.commit()
@@ -1253,12 +1262,25 @@ def start_batch_process(project_id):
             with app.app_context():
                 logger.info("Inside app context, checking BatchProcessing")
                 try:
-                    batch_process_project(project_id, similarity_threshold)
+                    batch_process_project(project_id, similarity_threshold, method=method)
+                    # End the worker's transaction first, so this reads the row
+                    # as the cancel endpoint (a different session) left it.
+                    db.session.commit()
                     batch_process = db.session.get(BatchProcessing, batch_process_id)
                     if batch_process:
+                        db.session.refresh(batch_process)
+                    if batch_process and batch_process.status == "running":
+                        # Still running means it ran to the end; a cancel or a
+                        # failure has already put its own status on the row and
+                        # must not be overwritten with "completed" here.
                         batch_process.status = "completed"
                         db.session.commit()
                         logger.info(f"Batch process completed for project ID {project_id}")
+                    elif batch_process:
+                        logger.info(
+                            f"Batch process for project ID {project_id} ended with "
+                            f"status '{batch_process.status}'"
+                        )
                 except Exception as e:
                     logger.error(f"Batch process failed for project {project_id}: {str(e)}")
                     batch_process = db.session.get(BatchProcessing, batch_process_id)

@@ -88,6 +88,10 @@ const TableEditor = () => {
   const [showConverterDialog, setShowConverterDialog] = useState(false);
   const [showBatchDialog, setShowBatchDialog] = useState(false);
   const [similarityThreshold, setSimilarityThreshold] = useState(0.75);
+  // Matching method for Full Automatic Lookup and Split. The n-gram matcher is
+  // the default: it is far faster than the legacy algorithm and at least as
+  // accurate (see ngram_matcher.py on the server for how it works).
+  const [matchingMethod, setMatchingMethod] = useState("ngram");
   const [batchStatus, setBatchStatus] = useState({
     status: "none",
     progress: 0,
@@ -96,12 +100,23 @@ const TableEditor = () => {
   const [shouldLoadContent, setShouldLoadContent] = useState(!!projectId);
   const pollingRef = useRef(null);
   const batchDialogRef = useRef(null);
+  // Portal container for the method dropdown: it must be a real DOM node inside
+  // the dialog, or the popover renders behind the modal backdrop. Dialog.Root is
+  // a context provider, so the ref goes on Dialog.Content.
+  const batchDialogContentRef = useRef(null);
 
   const structureCollection = createListCollection({
     items: [
       { label: "eCatalogus Structure", value: "content" },
       { label: "Usuarium Structure", value: "usuarium" },
       { label: "Cantus Index", value: "cantus" },
+    ],
+  });
+
+  const matchingMethodCollection = createListCollection({
+    items: [
+      { label: "n-gram matcher (recommended)", value: "ngram" },
+      { label: "legacy algorithm", value: "legacy" },
     ],
   });
 
@@ -171,8 +186,12 @@ const TableEditor = () => {
         setIsProcessing(false);
         setShowBatchDialog(false);
         stopPolling();
-        setShouldLoadContent(true); // Trigger content load after batch completion
-        await loadProjectContent();
+        // force: setShouldLoadContent is asynchronous, so loadProjectContent
+        // would still read the previous value out of this closure and skip the
+        // reload - leaving the table showing the pre-split rows until the user
+        // reloads the page by hand.
+        setShouldLoadContent(true);
+        await loadProjectContent({ force: true });
         toaster.create({
           title: "Success",
           description: "Batch processing completed",
@@ -223,9 +242,9 @@ const TableEditor = () => {
     return () => stopPolling();
   }, [projectId]);
 
-  const loadProjectContent = async () => {
-    if (!projectId || !shouldLoadContent) {
-      console.log("Skipping loadProjectContent:", { projectId, shouldLoadContent });
+  const loadProjectContent = async ({ force = false } = {}) => {
+    if (!projectId || (!shouldLoadContent && !force)) {
+      console.log("Skipping loadProjectContent:", { projectId, shouldLoadContent, force });
       return;
     }
     try {
@@ -571,8 +590,13 @@ const TableEditor = () => {
     }
     try {
       setIsLoading(true);
-      console.log("Starting batch process with threshold:", similarityThreshold);
-      await startBatchProcess(projectId, similarityThreshold);
+      console.log(
+        "Starting batch process with threshold:",
+        similarityThreshold,
+        "method:",
+        matchingMethod
+      );
+      await startBatchProcess(projectId, similarityThreshold, matchingMethod);
       setIsProcessing(true);
       startPolling();
       toaster.create({
@@ -603,10 +627,12 @@ const TableEditor = () => {
       setShowBatchDialog(false);
       stopPolling();
       toaster.create({
-        title: "Success",
-        description: "Batch processing canceled",
-        type: "success",
-        duration: 3000,
+        title: "Canceled",
+        description:
+          "Batch processing was canceled. The table was left as it was - " +
+          "results are only written once the run finishes.",
+        type: "info",
+        duration: 5000,
       });
     } catch (error) {
       console.error("Failed to cancel batch process:", error);
@@ -845,7 +871,7 @@ const TableEditor = () => {
         <Portal>
           <Dialog.Backdrop />
           <Dialog.Positioner>
-            <Dialog.Content>
+            <Dialog.Content ref={batchDialogContentRef}>
               <Dialog.Header>
                 <Dialog.Title>Full Automatic Lookup and Split</Dialog.Title>
                 <Dialog.CloseTrigger asChild>
@@ -854,6 +880,44 @@ const TableEditor = () => {
               </Dialog.Header>
               <Dialog.Body>
                 <VStack spacing={4} align="stretch">
+                  <Text>Matching method</Text>
+                  <Select.Root
+                    collection={matchingMethodCollection}
+                    value={[matchingMethod]}
+                    onValueChange={(details) =>
+                      setMatchingMethod(details.value[0] || "ngram")
+                    }
+                    disabled={isProcessing}
+                    size="sm"
+                  >
+                    <Select.HiddenSelect />
+                    <Select.Control>
+                      <Select.Trigger>
+                        <Select.ValueText
+                          placeholder={
+                            matchingMethodCollection.items.find(
+                              (item) => item.value === matchingMethod
+                            )?.label
+                          }
+                        />
+                      </Select.Trigger>
+                      <Select.IndicatorGroup>
+                        <Select.Indicator />
+                      </Select.IndicatorGroup>
+                    </Select.Control>
+                    <Portal container={batchDialogContentRef}>
+                      <Select.Positioner>
+                        <Select.Content>
+                          {matchingMethodCollection.items.map((item) => (
+                            <Select.Item item={item} key={item.value}>
+                              {item.label}
+                              <Select.ItemIndicator />
+                            </Select.Item>
+                          ))}
+                        </Select.Content>
+                      </Select.Positioner>
+                    </Portal>
+                  </Select.Root>
                   <Text>Similarity Threshold</Text>
                   <NumberInput.Root
                     defaultValue={String(similarityThreshold * 100)}

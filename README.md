@@ -121,6 +121,100 @@ journalctl -u kraken_flask -f
 
 
 
+## Matching methods: n-gram matcher vs legacy algorithm
+
+**Full Automatic Lookup and Split** and **Automatic Fill** both match manuscript
+text against the reference corpus (`formulas.csv`, ~13k entries). Each has a
+**Matching method** dropdown offering:
+
+- **n-gram matcher** (default)
+- **legacy algorithm** — the original implementation, kept for comparison
+
+Both are two-stage: a cheap prefilter narrows the corpus, then edit distance
+decides. They differ in the prefilter. The legacy algorithm compares the query
+against entries by shared 3-character chunks (Automatic Fill) or sweeps every
+text fragment against all 13,228 formulas repeatedly (Split). The n-gram matcher
+indexes the corpus **once** by word n-grams, so instead of asking "which of
+13,228 formulas does this look like?" it asks "which formulas share any wording
+with this text?" and gets candidates straight from the index. Text is normalized
+for medieval Latin first (accents stripped, j->i, v->u, w->uu, ae/oe->e), so
+scribal spelling variants stop counting as textual differences.
+
+Measured on `ritus-server/tests/Wr_Univ_I_F_366_*.csv`, against an exhaustive
+Levenshtein scan of the whole corpus as ground truth:
+
+| Automatic Fill (1532 rows) | legacy algorithm | n-gram matcher |
+|---|---|---|
+| wall time | 55.6s | **14.1s** (3.9x faster) |
+| rows filled (60% threshold) | 601 | **622** |
+| of those, the corpus-best match | 98.67% | **99.04%** |
+| found the corpus-best where one exists | 94.58% | **95.80%** |
+
+The two agree on 98.67% of the rows both fill. Of the 22 rows only the n-gram
+matcher fills, all 22 are the exhaustive scan's best match — they are cases like
+`contitebor tibi domine` or `oremus flectua genuam` that the legacy algorithm
+scored just under the cutoff because of spelling alone. Where the two disagree on
+a row both fill, the n-gram matcher's pick is textually closer 6 times and the
+legacy algorithm's 0 times.
+
+Wall times vary with machine load (the ratio has measured between 3.5x and 4x);
+the accuracy figures are deterministic. Note that Automatic Fill also sleeps 10ms
+per row to keep the progress bar responsive, so the wall clock a user sees
+includes ~15s on top of both methods.
+
+For **Full Automatic Lookup and Split**, the same manuscript is supplied as one
+225,645-character stream with every boundary removed (`Wr_Univ_I_F_366_merged.csv`)
+and the splitter has to find where each of the 1532 prayers starts and ends.
+Ground truth is exact — that stream is the individual texts concatenated in row
+order, so every true boundary is recoverable without any algorithm. A predicted
+segment counts as correct when it overlaps a true one by at least 50% IoU:
+
+| Full Automatic Lookup and Split | legacy algorithm | n-gram matcher |
+|---|---|---|
+| wall time | 2403s (40 min) | **5.5s** (~440x faster) |
+| boundary precision | 41.11% | **50.14%** |
+| boundary recall | 67.62% | **68.60%** |
+| boundary F1 | 51.14 | **57.94** |
+| formula_id agreement | 85.92% | **93.12%** |
+
+The n-gram matcher is ahead on every axis. The `formula_id` figure comes from a
+final re-rank step: the interval-scheduling DP is good at deciding *where* a
+segment is but poor at deciding *which* formula it is, because `partial_ratio`
+gives a short sub-formula a perfect score inside a longer prayer. Once the
+boundaries are fixed, each span's candidates are re-scored by symmetric full-text
+similarity, which lifts agreement from 81% to 93% and leaves boundaries untouched.
+
+Both benchmarks end in a regression gate and exit non-zero if the n-gram matcher
+falls behind the legacy algorithm on any accuracy axis or on speed.
+
+Implementation:
+
+- `ritus-client/src/utils/ngramLookup.jsx` — Automatic Fill (browser)
+- `ritus-server/ngram_matcher.py` — Full Automatic Lookup and Split (server)
+- `ritus-client/src/utils/lookup.jsx`, `ritus-server/batch_analysis.py` — legacy
+
+Tests and benchmarks:
+
+```
+# unit tests (fast, no extra dependencies)
+cd ritus-client && node tests/ngramLookup.test.mjs
+cd ritus-server && python tests/test_ngram_matcher.py
+
+# Automatic Fill benchmark: build the ground-truth oracle once (~25s), then compare
+cd ritus-server && python tests/build_fill_oracle.py
+cd ritus-client && node tests/benchmark_fill_methods.mjs      # ~70s, asserts no regression
+
+# Full Automatic Lookup and Split benchmark
+cd ritus-server && python tests/benchmark_split_methods.py            # n-gram only, ~1s
+cd ritus-server && python tests/benchmark_split_methods.py --legacy   # both; legacy takes hours
+```
+
+`build_fill_oracle.py` writes `oracle_raw.json` / `oracle_norm.json` into
+`ritus-server/tests/` — the exhaustive best match for every manuscript row over
+the whole corpus. `benchmark_fill_methods.mjs` scores both methods against it and
+fails if the n-gram matcher regresses on precision, coverage or speed.
+
+
 ## eCatalogus integration
 
 The table editor (`/table/`) has a **Send to eCatalogus** button next to Validate.

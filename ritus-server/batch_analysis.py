@@ -3,14 +3,56 @@ import re
 import json
 import pandas as pd
 from rapidfuzz import process, fuzz
+import bisect
 import logging
 from models import db, Content, BatchProcessing
 from threading import Thread
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError, NoResultFound
+import ngram_matcher
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Whitespace, stripped when measuring a segment against the token stream.
+_WS_RE = re.compile(r"\s")
+
 # --- Utility Functions ---
+
+def is_cancelled(batch_process):
+    """True once "Cancel Process" has flipped this run's status away from
+    "running".
+
+    The cancel arrives on a different request and therefore a different session,
+    so the worker's own copy of the row has to be re-read from the database -
+    otherwise it keeps reporting "running" for the whole run and the cancel is
+    silently ignored. The commit first flushes whatever progress the worker has
+    written so far and ends the worker's transaction, so the refresh sees the
+    other session's committed change.
+    """
+    if batch_process is None:
+        return False
+    db.session.commit()
+    try:
+        db.session.refresh(batch_process)
+    except (ObjectDeletedError, StaleDataError, NoResultFound):
+        # The row is gone: the run was cancelled and a newly started one has
+        # already replaced it. Stop this worker either way.
+        logger.info("Batch process row disappeared - treating as cancelled")
+        return True
+    except SQLAlchemyError as e:
+        # Anything else - a locked database, a dropped connection - says nothing
+        # about whether the user cancelled. Treating it as a cancel would throw
+        # away a run that is tens of minutes in, so keep going and re-check on
+        # the next poll; the session is rolled back first so it stays usable.
+        logger.warning("Could not re-read batch status (%s: %s) - continuing", type(e).__name__, e)
+        try:
+            db.session.rollback()
+        except Exception:
+            logger.exception("Rollback after a failed batch-status refresh also failed")
+        return False
+    return batch_process.status != "running"
+
 
 def tokenize(text):
     if not isinstance(text, str):
@@ -76,6 +118,10 @@ def build_text_tokens(content_rows, batch_process):
             logger.warning(f"Content.data for ID {row.id} is not a dict: {content_data}")
             continue
         page_name = content_data.get("where_in_ms_from", str(row.id))
+        # A source row can span several folios ("1r" -> "188r"). Carrying both
+        # ends lets reassign_data give a segment the range it really covers
+        # instead of collapsing it onto the first folio.
+        page_name_to = content_data.get("where_in_ms_to") or page_name
         content = content_data.get("formula_text_from_ms", "")
         if not isinstance(content, str):
             logger.warning(f"Content for ID {row.id} is not a string: {content}")
@@ -85,6 +131,7 @@ def build_text_tokens(content_rows, batch_process):
             word_global_counter += 1
             text_tokens.append({
                 "page_name": str(page_name),
+                "page_name_to": str(page_name_to),
                 "original_word": word,
                 "word_number": str(word_global_counter),
                 "corcordance_id": None,
@@ -146,6 +193,10 @@ def refine_text_tokens(text_tokens, phrases_conc_by_word, similarity_threshold=7
                     word_global_counter += 1
                     refined_tokens.append({
                         "page_name": token["page_name"],
+                        # The merged token ends where the SECOND one ended, so a
+                        # merge across a row boundary keeps the full range.
+                        "page_name_to": next_token.get(
+                            "page_name_to", next_token["page_name"]),
                         "original_word": combined_word,
                         "word_number": str(word_global_counter),
                         "corcordance_id": phrases_conc_by_word[combined_match[0]]["id"] if combined_match else None,
@@ -217,37 +268,50 @@ def clean_string(string):
     return re.sub(r"\W+", "", string)
 
 def reassign_data(results, text_tokens):
+    """Give every emitted segment the folio range of the tokens it covers.
+
+    Walks by NON-WHITESPACE CHARACTER rather than by word. Neither splitter adds
+    or drops a character, so the concatenated segment texts always reproduce the
+    token stream exactly - but they do not agree on word boundaries: the legacy
+    algorithm cuts fragments at the character offsets rapidfuzz returns, which
+    can split one token in two ("alleluia" -> "a" + "lleluia"), and
+    refine_text_tokens can merge two tokens into one. A word-based walk
+    therefore drifts out of step and mislabels every later segment (it was wrong
+    on ~81% of legacy segments and ~7% of n-gram ones); counting characters
+    cannot drift.
+
+    where_in_ms_from comes from the first token's page, where_in_ms_to from the
+    last token's end page, so a segment that merged several source rows spans
+    their full range and a segment that is one piece of a single row keeps that
+    row's range.
+    """
     logger.info(f"Reassigning data for {len(results)} items")
-    r = 0
-    w = 0
-    while r < len(results) and w < len(text_tokens):
-        result = results[r]
-        original_text = result["original_text"]
-        original_text_words = re.sub(r"\W+", " ", original_text).strip().split()
-        word = text_tokens[w]
-        content_data = word["content_data"].copy()  # Use source content_data
-        content_data["where_in_ms_from"] = word["page_name"]
-        content_data["where_in_ms_to"] = word["page_name"]
-        o = 0
-        while o < len(original_text_words):
-            w += 1
-            o += 1
-            if w >= len(text_tokens):
-                break
-            word = text_tokens[w]
-            while w < len(text_tokens) - 1 and clean_string(word["original_word"]) == "":
-                w += 1
-                word = text_tokens[w]
-            while o < len(original_text_words) and clean_string(original_text_words[o]) == "":
-                o += 1
-            if o < len(original_text_words) and clean_string(word["original_word"]) == clean_string(original_text_words[o]):
-                content_data["where_in_ms_to"] = word["page_name"]
-            elif o + 1 < len(original_text_words) and clean_string(word["original_word"]) == clean_string(original_text_words[o + 1]):
-                o += 1
-            elif o < len(original_text_words) and w + 1 < len(text_tokens) and clean_string(text_tokens[w + 1]["original_word"]) == clean_string(original_text_words[o]):
-                w += 1
-        results[r]["content_data"] = content_data
-        r += 1
+
+    # starts[i] = number of non-whitespace characters before token i
+    starts = []
+    total_chars = 0
+    for token in text_tokens:
+        starts.append(total_chars)
+        total_chars += len(_WS_RE.sub("", token.get("original_word") or ""))
+
+    cursor = 0
+    for result in results:
+        length = len(_WS_RE.sub("", result["original_text"]))
+        if length == 0 or cursor >= total_chars:
+            # Nothing to locate (or the stream is exhausted): leave whatever
+            # content_data the segment was built with.
+            continue
+        first = bisect.bisect_right(starts, cursor) - 1
+        cursor = min(cursor + length, total_chars)
+        last = bisect.bisect_right(starts, cursor - 1) - 1
+        first = max(0, min(first, len(text_tokens) - 1))
+        last = max(first, min(last, len(text_tokens) - 1))
+
+        content_data = text_tokens[first]["content_data"].copy()
+        content_data["where_in_ms_from"] = text_tokens[first]["page_name"]
+        content_data["where_in_ms_to"] = text_tokens[last].get(
+            "page_name_to", text_tokens[last]["page_name"])
+        result["content_data"] = content_data
     return results
 
 def search_phrases_in_text_by_fragment(text_tokens, phrases, similarity_threshold=80, batch_process=None):
@@ -324,6 +388,12 @@ def research_unfound_phrases(results, phrases, similarity_threshold=50, batch_pr
         return results
     updated_results = []
     for i, result in enumerate(results):
+        # A single pass over a large manuscript takes minutes, so the cancel is
+        # honoured here too, not only between passes. Returning the partial list
+        # is safe: batch_process_project checks the cancel right after.
+        if i % 50 == 0 and is_cancelled(batch_process):
+            logger.info("research_unfound_phrases cancelled after %d entries", i)
+            return updated_results
         content_data = result["content_data"].copy()  # Preserve source fields
         if result.get("best_phrase_id") != "":
             updated_results.append(result)
@@ -398,9 +468,20 @@ def research_unfound_phrases(results, phrases, similarity_threshold=50, batch_pr
 
 # --- Main Processing Function ---
 
-def batch_process_project(project_id, similarity_threshold, phrases_csv="static/data/formulas.csv", phrases2_csv="static/data/rite_names.csv"):
+# Matching methods available to "Full Automatic Lookup and Split".
+# "ngram"  - n-gram matcher (ngram_matcher.py): index the corpus by word n-grams
+#            once, look up candidate regions, verify them with rapidfuzz.
+# "legacy" - the original algorithm below: sweep every fragment against all
+#            13,228 formulas, repeatedly.
+METHOD_NGRAM = "ngram"
+METHOD_LEGACY = "legacy"
+DEFAULT_METHOD = METHOD_NGRAM
 
-    logger.info(f"STARTING Full Automatic Lookup and Split : Bath Process with similarity_threshold: {similarity_threshold}")
+
+def batch_process_project(project_id, similarity_threshold, phrases_csv="static/data/formulas.csv", phrases2_csv="static/data/rite_names.csv", method=DEFAULT_METHOD):
+
+    method = method if method in (METHOD_NGRAM, METHOD_LEGACY) else DEFAULT_METHOD
+    logger.info(f"STARTING Full Automatic Lookup and Split : Bath Process with similarity_threshold: {similarity_threshold}, method: {method}")
 
     batch_process = db.session.query(BatchProcessing).filter_by(project_id=project_id).first()
     if not batch_process or batch_process.status != "running":
@@ -409,8 +490,12 @@ def batch_process_project(project_id, similarity_threshold, phrases_csv="static/
     try:
         # Load phrases
         formula_phrases = load_phrases(phrases_csv)
-        phrases_conc_by_id, phrases_conc_by_word = build_phrases_concordance(formula_phrases)
-        phrases_tokens = build_phrases_tokens(formula_phrases, phrases_conc_by_word)
+        # The word concordance only feeds the legacy annotate/refine stages; the
+        # n-gram matcher builds its own index instead, so skip it there.
+        phrases_conc_by_word = {}
+        if method == METHOD_LEGACY:
+            phrases_conc_by_id, phrases_conc_by_word = build_phrases_concordance(formula_phrases)
+            phrases_tokens = build_phrases_tokens(formula_phrases, phrases_conc_by_word)
         batch_process.progress = 2.5
         db.session.commit()
 
@@ -436,32 +521,56 @@ def batch_process_project(project_id, similarity_threshold, phrases_csv="static/
             db.session.commit()
             return None
 
-        # Annotate and refine tokens
-        text_tokens = annotate_text_tokens(text_tokens, phrases_conc_by_word, similarity_threshold, batch_process=batch_process)#10-15%
-        text_tokens_refined = refine_text_tokens(text_tokens, phrases_conc_by_word, similarity_threshold, batch_process=batch_process)#15%-20%
-
-        # Search phrases
-        logger.info("Searching phrases...")
-        results = search_phrases_in_text_by_fragment(text_tokens_refined, formula_phrases, similarity_threshold, batch_process=batch_process)#20-30%
-
-        # Iterative refinement for formulas
-        new_results = []
-        changes = len(results)
-        passes_cntr = 0
-        max_passes = 13
-        while changes > 0:
-            if batch_process.status != "running":
+        if method == METHOD_NGRAM:
+            # n-gram matcher: one indexed pass over the stream instead of
+            # sweeping every fragment against the whole corpus repeatedly.
+            # annotate/refine are skipped - they exist to repair OCR word splits
+            # before whole-corpus fuzzy sweeps, and the n-gram matcher's
+            # rapidfuzz verification step already tolerates that damage.
+            logger.info("Searching phrases with the n-gram matcher...")
+            text_tokens_refined = text_tokens
+            results, ngram_timing = ngram_matcher.split_and_match(
+                text_tokens_refined,
+                formula_phrases,
+                similarity_threshold=similarity_threshold,
+                batch_process=batch_process,
+                progress_min=20,
+                progress_max=90,
+                should_cancel=lambda: is_cancelled(batch_process),
+            )
+            logger.info(f"n-gram matcher timing: {ngram_timing}")
+            # split_and_match returns None (not an empty list) when it stopped
+            # early on a cancel.
+            if results is None or is_cancelled(batch_process):
                 logger.info(f"Batch process cancelled for project {project_id}")
                 return None
-            logger.info(f"Pass {passes_cntr}/{max_passes}, detected {changes} items")
-            new_results = research_unfound_phrases(results, formula_phrases, similarity_threshold, batch_process=batch_process, is_rite=False, progress_min=30+((passes_cntr+1)/(max_passes+2))*40,progress_max=30+((passes_cntr+2)/(max_passes+2))*40 )#30%-70%
-            passes_cntr += 1
-            changes = len(new_results) - len(results)
-            results = new_results.copy()
+        else:
+            # Annotate and refine tokens
+            text_tokens = annotate_text_tokens(text_tokens, phrases_conc_by_word, similarity_threshold, batch_process=batch_process)#10-15%
+            text_tokens_refined = refine_text_tokens(text_tokens, phrases_conc_by_word, similarity_threshold, batch_process=batch_process)#15%-20%
+
+            # Search phrases
+            logger.info("Searching phrases...")
+            results = search_phrases_in_text_by_fragment(text_tokens_refined, formula_phrases, similarity_threshold, batch_process=batch_process)#20-30%
+
+            # Iterative refinement for formulas
+            new_results = []
+            changes = len(results)
+            passes_cntr = 0
+            max_passes = 13
+            while changes > 0:
+                if is_cancelled(batch_process):
+                    logger.info(f"Batch process cancelled for project {project_id}")
+                    return None
+                logger.info(f"Pass {passes_cntr}/{max_passes}, detected {changes} items")
+                new_results = research_unfound_phrases(results, formula_phrases, similarity_threshold, batch_process=batch_process, is_rite=False, progress_min=30+((passes_cntr+1)/(max_passes+2))*40,progress_max=30+((passes_cntr+2)/(max_passes+2))*40 )#30%-70%
+                passes_cntr += 1
+                changes = len(new_results) - len(results)
+                results = new_results.copy()
 
         #Setting all unfound rows to check_again:
         for i, result in enumerate(results):
-            if batch_process.status != "running":
+            if is_cancelled(batch_process):
                 logger.info(f"Batch process cancelled for {project_id}")
                 return None
             if result["best_phrase_id"] == "":
@@ -474,7 +583,7 @@ def batch_process_project(project_id, similarity_threshold, phrases_csv="static/
         passes_cntr = 0
         max_passes = 5
         while changes > 0:
-            if batch_process.status != "running":
+            if is_cancelled(batch_process):
                 logger.info(f"Batch process cancelled for project {project_id}")
                 return None
             logger.info(f"Pass {passes_cntr}/{max_passes}, detected {changes} items")
@@ -489,6 +598,12 @@ def batch_process_project(project_id, similarity_threshold, phrases_csv="static/
         batch_process.progress = 90
         db.session.commit()
 
+        # Last chance to cancel: past this point the old content is gone, and
+        # stopping half-way would leave the project with a truncated table.
+        if is_cancelled(batch_process):
+            logger.info(f"Batch process cancelled for {project_id}")
+            return None
+
         # Clear existing content
         db.session.query(Content).filter_by(project_id=project_id).delete()
         db.session.commit()
@@ -496,9 +611,6 @@ def batch_process_project(project_id, similarity_threshold, phrases_csv="static/
         # Save results to Content
         total_rows = len(results)
         for i, result in enumerate(results):
-            if batch_process.status != "running":
-                logger.info(f"Batch process cancelled for {project_id}")
-                return None
             content_data = result["content_data"].copy()  # Preserve source fields
             logger.info("PRE:")
             logger.info(json.dumps(content_data))
