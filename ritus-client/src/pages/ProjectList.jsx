@@ -18,6 +18,7 @@ import {
   Progress,
   RadioGroup,
   Checkbox,
+  Spinner,
 } from "@chakra-ui/react";
 import { LuPlus, LuTrash2 } from "react-icons/lu";
 import { FaDownload, FaStop, FaFileCsv } from "react-icons/fa";
@@ -401,6 +402,7 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
 
 const ProjectList = () => {
   const [projectData, setProjectData] = useState({ owned: [], shared: [] });
+  const [isLoadingProjects, setIsLoadingProjects] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [newProject, setNewProject] = useState({
     name: "New Project",
@@ -422,18 +424,25 @@ const ProjectList = () => {
   const { currentUser, logout } = useAuth();
 
   useEffect(() => {
-    fetchProjects().then((data) => {
-      setProjectData(data);
-      // Seed iiifJobStatuses from the projects response
-      const statuses = {};
-      const txStatuses = {};
-      [...(data.owned || []), ...(data.shared || [])].forEach((p) => {
-        if (p.iiif_download_job) statuses[p.id] = p.iiif_download_job;
-        if (p.batch_transcribe_job) txStatuses[p.id] = p.batch_transcribe_job;
-      });
-      setIiifJobStatuses(statuses);
-      setTranscribeJobStatuses(txStatuses);
-    });
+    setIsLoadingProjects(true);
+    fetchProjects()
+      .then((data) => {
+        setProjectData(data);
+        // Seed iiifJobStatuses from the projects response
+        const statuses = {};
+        const txStatuses = {};
+        [...(data.owned || []), ...(data.shared || [])].forEach((p) => {
+          if (p.iiif_download_job) statuses[p.id] = p.iiif_download_job;
+          if (p.batch_transcribe_job) txStatuses[p.id] = p.batch_transcribe_job;
+        });
+        setIiifJobStatuses(statuses);
+        setTranscribeJobStatuses(txStatuses);
+      })
+      .catch((error) => {
+        // fetchProjects already reported the error to the user
+        console.error("Failed to load projects:", error);
+      })
+      .finally(() => setIsLoadingProjects(false));
     if (currentUser) {
       fetchUsers().then(setUsers);
     }
@@ -1025,11 +1034,19 @@ const ProjectList = () => {
         </Box>
       )}
 
-      {/* No projects message */}
-      {projectData.owned.length === 0 && projectData.shared.length === 0 && (
-        <Text textAlign="center" color="gray.500" mt={8}>
-          No projects found. Create your first project to get started.
-        </Text>
+      {/* Loading spinner / no projects message */}
+      {isLoadingProjects ? (
+        <VStack colorPalette="teal" mt={8} spacing={3}>
+          <Spinner size="lg" color="colorPalette.600" />
+          <Text color="colorPalette.600">Loading projects...</Text>
+        </VStack>
+      ) : (
+        projectData.owned.length === 0 &&
+        projectData.shared.length === 0 && (
+          <Text textAlign="center" color="gray.500" mt={8}>
+            No projects found. Create your first project to get started.
+          </Text>
+        )
       )}
       {/* Conflict Dialog */}
       <Dialog.Root
