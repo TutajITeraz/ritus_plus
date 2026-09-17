@@ -2253,17 +2253,36 @@ def export_project_tables():
     seen_columns = set()
     rows = []
 
+    # Counted so an empty export says which of the two it was: the projects
+    # really hold no table rows, or rows were read and then skipped.
+    content_seen = 0
+    skipped_unparsable = 0
+    skipped_not_dict = 0
+    projects_with_content = 0
+    missing_projects = 0
+
     for pid in project_ids:
         project = Project.query.get(pid)
         if not project:
+            missing_projects += 1
             continue
-        for content in Content.query.filter_by(project_id=pid).all():
+        contents = Content.query.filter_by(project_id=pid).all()
+        if contents:
+            projects_with_content += 1
+        for content in contents:
+            content_seen += 1
             try:
                 data = json.loads(content.data)
             except (ValueError, TypeError):
+                skipped_unparsable += 1
                 logger.warning(f"Skipping unparsable content row {content.id} of project {pid}")
                 continue
             if not isinstance(data, dict):
+                skipped_not_dict += 1
+                logger.warning(
+                    f"Skipping content row {content.id} of project {pid}: "
+                    f"stored data is {type(data).__name__}, not a JSON object"
+                )
                 continue
             for key in data:
                 if key not in seen_columns:
@@ -2278,7 +2297,10 @@ def export_project_tables():
         writer.writerow([pid, project_name] + [data.get(col, "") for col in columns])
 
     logger.info(
-        f"Exported {len(rows)} table row(s) from {len(project_ids)} project(s) for user {current_user.username}"
+        f"Exported {len(rows)} table row(s) from {projects_with_content} of "
+        f"{len(project_ids)} project(s) for user {current_user.username} "
+        f"({content_seen} content row(s) read, {skipped_unparsable} unparsable, "
+        f"{skipped_not_dict} not a JSON object, {missing_projects} project(s) missing)"
     )
 
     csv_bytes = output.getvalue().encode("utf-8-sig")  # BOM for Excel compatibility
