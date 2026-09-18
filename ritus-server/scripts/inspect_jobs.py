@@ -28,8 +28,11 @@ USAGE (on the server, from the ritus-server directory):
   resumed or restarted from the web interface afterwards.
 
   NOTE: from the server release that added startup reconciliation onwards,
-  stuck rows are cleared automatically every time the server starts, so
-  --reset is only needed to rescue an older deployment.
+  stuck rows are cleared automatically every time the server starts - and from
+  the release after that, the jobs behind them are started again too. So
+  --reset is only needed to rescue an older deployment, or to stop a job the
+  server keeps resuming (set its status to "cancelled"; only "interrupted"
+  rows are resumed).
 """
 import argparse
 import datetime
@@ -151,16 +154,16 @@ def reset_stuck(path, assume_yes):
     # alive will write its own status back over this one.
     conn.execute(
         "UPDATE batch_transcribe_job SET status='interrupted', "
-        "error_message='Reset by scripts/inspect_jobs.py - start the job again' "
+        "error_message='Reset by scripts/inspect_jobs.py' "
         "WHERE status IN (%s)" % t_marks, ACTIVE_TRANSCRIBE)
     conn.execute(
         "UPDATE iiif_download_job SET status='interrupted', "
-        "error_message='Reset by scripts/inspect_jobs.py - resume the download' "
+        "error_message='Reset by scripts/inspect_jobs.py' "
         "WHERE status IN (%s)" % d_marks, ACTIVE_DOWNLOAD)
     conn.commit()
     conn.close()
-    print("Done. Reload the projects page; each affected project now offers "
-          "Resume / Retry.")
+    print("Done. On its next start the server picks these jobs up again by "
+          "itself; until then each affected project offers Resume / Retry.")
 
 
 def main():

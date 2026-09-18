@@ -72,6 +72,12 @@ class IiifDownloadJob(db.Model):
     total_pages = db.Column(db.Integer, default=0)
     start_page = db.Column(db.Integer, default=1)  # 1-based; for resuming
     error_message = db.Column(db.Text)
+    # Automatic resume after a server restart. auto_resume_count counts
+    # consecutive restarts that resumed this job, auto_resume_mark is the
+    # progress value the current run started from; together they tell a job
+    # that is making progress from one that keeps killing the server.
+    auto_resume_count = db.Column(db.Integer, default=0)
+    auto_resume_mark = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=db.func.now())
     updated_at = db.Column(db.DateTime, default=db.func.now(), onupdate=db.func.now())
 
@@ -84,6 +90,12 @@ class BatchTranscribeJob(db.Model):
     total_images = db.Column(db.Integer, default=0)
     model_name = db.Column(db.String(100))
     mode = db.Column(db.String(20), default='skip')  # skip/continue/override/range
+    # Full option set the job was started with (JSON), so a job interrupted by
+    # a restart can be resumed with the same settings and not with defaults.
+    options_json = db.Column(db.Text)
+    # See IiifDownloadJob for what these two mean.
+    auto_resume_count = db.Column(db.Integer, default=0)
+    auto_resume_mark = db.Column(db.Integer, default=0)
     error_message = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=db.func.now())
     updated_at = db.Column(db.DateTime, default=db.func.now(), onupdate=db.func.now())

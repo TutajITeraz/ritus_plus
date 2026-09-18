@@ -53,6 +53,15 @@ SERVER_PROCESS_STARTED_AT = _datetime.utcnow()
 ACTIVE_TRANSCRIBE_STATUSES = ("running", "pending")
 ACTIVE_IIIF_STATUSES = ("running", "pending", "waiting")
 
+# A job interrupted by a restart is picked up again automatically when the
+# server comes back (see auto_resume_interrupted_jobs at the bottom of this
+# file). The counter is the brake: if the server keeps dying inside the same
+# job - an OOM kill on one huge page is the usual cause - resuming it forever
+# would be a crash loop that also starves every other project. After this many
+# resumes that made no progress at all, the job is left "interrupted" and the
+# user gets the manual Resume button back.
+MAX_AUTO_RESUMES = 3
+
 
 def _transcribe_job_is_live(project_id):
     """True when *this* process still has a thread registered for the job.
@@ -292,6 +301,45 @@ def init_database():
             db.session.commit()
             logger.info("Admin user created")
 
+# Columns added after the first deployments. The database is created with
+# db.create_all(), which adds missing *tables* but never missing *columns*, so
+# an existing projects.db would keep the old job tables and every query would
+# fail with "no such column". Adding them here keeps upgrades a plain restart.
+_ADDED_JOB_COLUMNS = {
+    "batch_transcribe_job": {
+        "options_json": "TEXT",
+        "auto_resume_count": "INTEGER DEFAULT 0",
+        "auto_resume_mark": "INTEGER DEFAULT 0",
+    },
+    "iiif_download_job": {
+        "auto_resume_count": "INTEGER DEFAULT 0",
+        "auto_resume_mark": "INTEGER DEFAULT 0",
+    },
+}
+
+
+def ensure_job_columns():
+    """Add any job columns this version needs but an older database lacks."""
+    with app.app_context():
+        inspector = db.inspect(db.engine)
+        existing_tables = set(inspector.get_table_names())
+        added = []
+        for table, columns in _ADDED_JOB_COLUMNS.items():
+            if table not in existing_tables:
+                continue  # create_all just made it with every column
+            present = {c["name"] for c in inspector.get_columns(table)}
+            for name, ddl in columns.items():
+                if name in present:
+                    continue
+                db.session.execute(
+                    db.text("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, ddl))
+                )
+                added.append("%s.%s" % (table, name))
+        if added:
+            db.session.commit()
+            logger.info("Schema upgrade: added job column(s) %s", ", ".join(added))
+
+
 def reconcile_stale_jobs():
     """Retire job rows whose worker threads died with a previous process.
 
@@ -306,7 +354,12 @@ def reconcile_stale_jobs():
 
     Run once at import, before any request is served, so the database agrees
     with reality: no thread means no job. The rows keep their progress counters
-    so the user can resume where the job stopped.
+    so the job can pick up where it stopped.
+
+    This pass only marks the rows. Restarting them is a separate step
+    (auto_resume_interrupted_jobs), which has to wait until the whole module is
+    imported - the worker function and the memory governor it uses are defined
+    further down this file.
 
     NOTE: this assumes a single application process. Under Gunicorn the server
     must run with one worker (the job threads and their registries live in
@@ -322,7 +375,7 @@ def reconcile_stale_jobs():
             job.status = STATUS_INTERRUPTED
             job.error_message = (
                 "Server restarted while this job was %s - pages already "
-                "transcribed are kept, but the job must be started again." % was
+                "transcribed are kept, resuming from there." % was
             )
 
         iiif_stale = IiifDownloadJob.query.filter(
@@ -331,8 +384,8 @@ def reconcile_stale_jobs():
         for job in iiif_stale:
             job.status = STATUS_INTERRUPTED
             job.error_message = (
-                "Server restarted while this download was running - resume to "
-                "continue from page %s." % ((job.current_page or 0) + 1)
+                "Server restarted while this download was running - resuming "
+                "from page %s." % ((job.current_page or 0) + 1)
             )
 
         if transcribe_stale or iiif_stale:
@@ -352,6 +405,7 @@ def reconcile_stale_jobs():
 
 # Initialize database for both direct run and Gunicorn
 init_database()
+ensure_job_columns()
 reconcile_stale_jobs()
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -1548,6 +1602,7 @@ def get_iiif_download_status(project_id):
         "current_page": job.current_page,
         "total_pages": job.total_pages,
         "start_page": job.start_page,
+        "auto_resume_count": job.auto_resume_count,
         "error_message": job.error_message,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
     })
@@ -1612,6 +1667,7 @@ def run_batch_transcribe(
     column_gap_ratio=0.045,
     autofix_errors=True,
     ai_correct=False,
+    resume_offset=0,
 ):
     """
     Transcribe all images in a project in a background thread.
@@ -1625,6 +1681,13 @@ def run_batch_transcribe(
             "continue" – start from the first image without transcribed_text
             "override" – re-transcribe every image regardless
             "range"    – re-transcribe only a selected inclusive page range
+
+        resume_offset: how many pages a previous, interrupted run of this job
+            had already finished. Only meaningful for "override" and "range",
+            where the work list is the same every time and would otherwise be
+            redone from page 1 after every restart. "skip" and "continue"
+            recompute the list from what is already transcribed, so they resume
+            by themselves and ignore this.
     """
     if NO_KRAKEN:
         with flask_app.app_context():
@@ -1691,11 +1754,37 @@ def run_batch_transcribe(
                 else:  # override
                     to_process_ids = [img.id for img in images]
 
-                total = len(to_process_ids)
+                # Drop what the interrupted run already did. Pages finish in
+                # roughly list order but not exactly, because up to `workers`
+                # of them are in flight at once; rewinding by that much is the
+                # difference between re-transcribing a handful of pages and
+                # silently leaving a hole in the manuscript.
+                already_done = 0
+                if resume_offset and mode in ("override", "range"):
+                    already_done = max(0, min(len(to_process_ids),
+                                              resume_offset - (workers - 1)))
+                    to_process_ids = to_process_ids[already_done:]
+                    logger.info(
+                        "Project %s resumes %s mode at page %d of %d "
+                        "(the interrupted run had finished %d)",
+                        project_id, mode, already_done + 1,
+                        already_done + len(to_process_ids), resume_offset,
+                    )
 
-            update_job(0, total, "running")
+                total = len(to_process_ids) + already_done
 
-            completed_count = [0]
+            # The progress counter this run starts from. Whether the next
+            # restart sees progress is judged against this number, so it has to
+            # be on the row before the first page is handed out.
+            with flask_app.app_context():
+                j = BatchTranscribeJob.query.get(job_id)
+                if j is not None:
+                    j.auto_resume_mark = already_done
+                    db.session.commit()
+
+            update_job(already_done, total, "running")
+
+            completed_count = [already_done]
             count_lock = threading.Lock()
 
             def process_image(image_id):
@@ -1739,7 +1828,7 @@ def run_batch_transcribe(
             if stop_event.is_set():
                 update_job(completed_count[0], total, "cancelled")
             else:
-                update_job(len(to_process_ids), total, "completed")
+                update_job(total, total, "completed")
 
         except Exception as e:
             logger.exception(f"Unexpected error in run_batch_transcribe: {e}")
@@ -1808,10 +1897,15 @@ def _parse_transcribe_options(body):
     }, None
 
 
-def _launch_transcribe_job(project_id, opts):
+def _launch_transcribe_job(project_id, opts, resume_offset=0, auto_resumed=False):
     """Upsert the job row and start its worker thread. Returns the job id.
 
     Caller must have validated access and checked for a live job first.
+
+    auto_resumed marks a start that nobody asked for - the server came back up
+    and picked the job off the floor. A start a user did ask for clears the
+    resume counter, so a job that is stopped and started by hand always gets a
+    full set of automatic retries again.
     """
     existing = BatchTranscribeJob.query.filter_by(project_id=project_id).first()
     if existing:
@@ -1830,6 +1924,13 @@ def _launch_transcribe_job(project_id, opts):
             mode=opts["mode"],
         )
         db.session.add(job)
+    # Remember every setting, not just model and mode: an automatic resume has
+    # nobody to ask, and silently swapping a user's options for the defaults
+    # would corrupt half a manuscript with settings they never chose.
+    job.options_json = json.dumps(opts)
+    if not auto_resumed:
+        job.auto_resume_count = 0
+    job.auto_resume_mark = 0
     db.session.commit()
     job_id = job.id
 
@@ -1843,7 +1944,7 @@ def _launch_transcribe_job(project_id, opts):
             opts["ignore_edges"], opts["range_from"], opts["range_to"],
             opts["add_page_break"], opts["red_threshold"],
             opts["enhanced_multi_column"], opts["column_gap_ratio"],
-            opts["autofix_errors"], opts["ai_correct"],
+            opts["autofix_errors"], opts["ai_correct"], resume_offset,
         ),
         daemon=True,
     ).start()
@@ -1918,6 +2019,7 @@ def get_batch_transcribe_status(project_id):
         "total_images": job.total_images,
         "model_name": job.model_name,
         "mode": job.mode,
+        "auto_resume_count": job.auto_resume_count,
         "error_message": job.error_message,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
     })
@@ -2140,6 +2242,8 @@ def jobs_diagnostics():
         "total_images": j.total_images,
         "model_name": j.model_name,
         "mode": j.mode,
+        "auto_resume_count": j.auto_resume_count,
+        "auto_resume_mark": j.auto_resume_mark,
         "error_message": j.error_message,
         "created_at": j.created_at.isoformat() if j.created_at else None,
         "updated_at": j.updated_at.isoformat() if j.updated_at else None,
@@ -2153,6 +2257,8 @@ def jobs_diagnostics():
         "current_page": j.current_page,
         "total_pages": j.total_pages,
         "start_page": j.start_page,
+        "auto_resume_count": j.auto_resume_count,
+        "auto_resume_mark": j.auto_resume_mark,
         "error_message": j.error_message,
         "created_at": j.created_at.isoformat() if j.created_at else None,
         "updated_at": j.updated_at.isoformat() if j.updated_at else None,
@@ -2167,6 +2273,8 @@ def jobs_diagnostics():
         "thread_count": threading.active_count(),
         "transcribe_lock_held": transcribe_lock_held,
         "transcribe_workers": _load_domain_config().get("transcription_workers", 1),
+        "auto_resume_enabled": _load_domain_config().get("auto_resume_interrupted_jobs", True),
+        "max_auto_resumes": MAX_AUTO_RESUMES,
         "page_admission": _page_admission.snapshot(),
         "page_memory_budget_mb": _page_admission.page_memory_mb(),
         "memory_headroom_mb": _page_admission.headroom_mb(),
@@ -3107,6 +3215,204 @@ def dictionaries_refresh():
         return jsonify({"error": "Refresh failed: %s" % error}), 500
     finally:
         _dict_refresh_lock.release()
+
+
+# ---------------------------------------------------------------------------
+# Automatic resume of jobs a restart interrupted
+# ---------------------------------------------------------------------------
+#
+# reconcile_stale_jobs() (near the top of this file) marks every job whose
+# thread died with the previous process as "interrupted". That made the UI
+# honest, but it still left a long manuscript sitting there until somebody
+# noticed and pressed Resume - and a deploy in the middle of the night means
+# every project is waiting in the morning. The jobs below pick that work up on
+# their own, with the same effect as pressing Resume on each project.
+#
+# This runs at the very bottom of the module on purpose: it starts worker
+# threads, and those threads call transcribe_image_by_id and _page_admission,
+# which are defined further up but only exist once the whole file has been
+# imported. Resuming from reconcile_stale_jobs' position would race the import.
+
+
+def _transcribe_opts_for_resume(job):
+    """Rebuild the settings an interrupted transcription was started with.
+
+    An automatic resume has nobody to ask, so the stored options matter: quietly
+    finishing a manuscript with default settings, when the user chose a
+    different model or turned AI correction on, would be worse than not
+    resuming at all. Rows written before options were stored fall back to the
+    model and mode the row does carry.
+    """
+    body = {}
+    if job.options_json:
+        try:
+            body = json.loads(job.options_json)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Project %s: stored transcription options are not readable, "
+                "falling back to the model and mode on the job row",
+                job.project_id,
+            )
+            body = {}
+    body.setdefault("model_name", job.model_name or "Tridis_Medieval_EarlyModern.mlmodel")
+    body.setdefault("mode", job.mode or "skip")
+    # A "range" row from before options were stored has no range left to resume
+    # into. "skip" finishes the pages that have no text, which is the closest
+    # honest answer - guessing at a range the user picked is not.
+    if body.get("mode") == "range" and (body.get("range_from") is None
+                                        or body.get("range_to") is None):
+        logger.warning(
+            "Project %s: interrupted range job has no stored range, resuming "
+            "in skip mode instead", job.project_id,
+        )
+        body["mode"] = "skip"
+
+    opts, error = _parse_transcribe_options(body)
+    if error:
+        logger.warning(
+            "Project %s: stored transcription options were rejected, resuming "
+            "in skip mode with model %s", job.project_id, job.model_name,
+        )
+        opts, _ = _parse_transcribe_options({"model_name": body["model_name"], "mode": "skip"})
+    return opts
+
+
+def _claim_auto_resume(job, progress):
+    """Decide whether to pick *job* up again, and count the attempt.
+
+    auto_resume_mark is the progress value the run that died started from, so
+    anything above it means the last automatic resume got real work done and
+    the crash-loop counter can be forgiven. A job that comes back to exactly
+    where it started, MAX_AUTO_RESUMES times over, is taking the server down
+    with it and is left for a human.
+    """
+    count = job.auto_resume_count or 0
+    if progress > (job.auto_resume_mark or 0):
+        count = 0
+    if count >= MAX_AUTO_RESUMES:
+        return False
+    job.auto_resume_count = count + 1
+    return True
+
+
+def _give_up_message(what):
+    return (
+        "Automatic resume gave up after %d restarts that made no progress - "
+        "the server keeps stopping during this %s. Press Resume to try again."
+        % (MAX_AUTO_RESUMES, what)
+    )
+
+
+def auto_resume_interrupted_jobs():
+    """Restart every job a server restart interrupted.
+
+    Set "auto_resume_interrupted_jobs": false in domain_config.json to turn
+    this off - worth knowing about when a deployment is stuck in a crash loop
+    and you want the server up without it immediately loading a model again.
+    """
+    if not _load_domain_config().get("auto_resume_interrupted_jobs", True):
+        logger.info("Automatic resume is disabled in domain_config.json")
+        return
+
+    with app.app_context():
+        resumed, retired = [], []
+
+        for job in BatchTranscribeJob.query.filter_by(status=STATUS_INTERRUPTED).all():
+            project_id = job.project_id
+            if NO_KRAKEN:
+                logger.info(
+                    "Project %s has an interrupted transcription but Kraken is "
+                    "disabled (--no-kraken); leaving it for later", project_id,
+                )
+                continue
+            if _transcribe_job_is_live(project_id):
+                continue  # something already started it in this process
+            if Image.query.filter_by(project_id=project_id).count() == 0:
+                logger.info(
+                    "Project %s has an interrupted transcription but no images; "
+                    "nothing to resume", project_id,
+                )
+                continue
+
+            progress = job.current_image or 0
+            if not _claim_auto_resume(job, progress):
+                job.error_message = _give_up_message("transcription")
+                retired.append(project_id)
+                continue
+
+            opts = _transcribe_opts_for_resume(job)
+            db.session.commit()  # keep the attempt count even if the start fails
+            try:
+                _launch_transcribe_job(project_id, opts, resume_offset=progress,
+                                       auto_resumed=True)
+                resumed.append(project_id)
+            except Exception:
+                logger.exception("Failed to auto-resume transcription for project %s",
+                                 project_id)
+
+        if retired:
+            db.session.commit()
+
+        logger.info(
+            "Automatic resume: restarted %d transcription job(s) %s; left %d "
+            "for manual Resume %s",
+            len(resumed), resumed, len(retired), retired,
+        )
+
+        resumed_dl, retired_dl, queued_dl = [], [], []
+
+        for job in IiifDownloadJob.query.filter_by(status=STATUS_INTERRUPTED).all():
+            project_id = job.project_id
+            project = Project.query.get(project_id)
+            if not project or not project.iiif_url:
+                continue
+            if _iiif_job_is_live(project_id):
+                continue
+
+            progress = job.current_page or 0
+            if not _claim_auto_resume(job, progress):
+                job.error_message = _give_up_message("download")
+                retired_dl.append(project_id)
+                continue
+
+            # Same arithmetic as pressing Resume: pages already on disk are not
+            # fetched again.
+            start_page = progress + 1
+            job.start_page = start_page
+            job.auto_resume_mark = progress
+            job.error_message = None
+
+            domain = _iiif_domain(project.iiif_url)
+            if domain in _iiif_running_by_domain:
+                # One download per domain; this one waits its turn and is
+                # promoted when the running one finishes.
+                job.status = "waiting"
+                db.session.commit()
+                queued_dl.append(project_id)
+                continue
+
+            job.status = "pending"
+            db.session.commit()
+            try:
+                _launch_iiif_thread(project_id, job.id, project.iiif_url,
+                                    app.config["UPLOAD_FOLDER"], start_page)
+                resumed_dl.append(project_id)
+            except Exception:
+                logger.exception("Failed to auto-resume download for project %s",
+                                 project_id)
+
+        if retired_dl:
+            db.session.commit()
+
+        logger.info(
+            "Automatic resume: restarted %d download(s) %s, queued %d behind a "
+            "busy domain %s; left %d for manual Resume %s",
+            len(resumed_dl), resumed_dl, len(queued_dl), queued_dl,
+            len(retired_dl), retired_dl,
+        )
+
+
+auto_resume_interrupted_jobs()
 
 
 def open_browser():

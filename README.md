@@ -244,9 +244,44 @@ moved and every new start was refused with "Transcription already running".
 Restarting did not help, because nothing revisited those rows.
 
 Now the server reconciles them at startup - every row still claiming to be
-active is marked `interrupted`, keeping its progress counters, and the project
-offers Resume / Retry. Starting a job also ignores a row that no live thread
-backs, so a stale row can never block a restart again.
+active is marked `interrupted`, keeping its progress counters - and then
+**starts them again by itself**, exactly as if you had pressed Resume on each
+project. A deploy in the middle of the night no longer leaves every manuscript
+waiting until somebody notices in the morning. Starting a job also ignores a
+row that no live thread backs, so a stale row can never block a restart again.
+
+What "resume" means per mode:
+
+- **Skip** / **Continue** recompute their work list from the pages that have no
+  text yet, so they carry on naturally.
+- **Override** / **Range** always process the same list, so the server records
+  how far the interrupted run got and starts from there, rewinding by the
+  number of pages that were in flight when the process died. A couple of pages
+  transcribed twice is the price of never leaving a hole in a manuscript.
+- The model, the page range and every checkbox from the Transcribe dialog are
+  stored with the job, so a resumed run uses the settings you chose, not the
+  defaults. Jobs started before this release only carry a model and a mode; a
+  "range" job among them resumes in skip mode, because its range is not
+  recorded anywhere.
+
+A job the user **cancelled** is never resumed - that was a decision, not an
+accident.
+
+#### When resuming would be a crash loop
+
+If the server is dying *because* of one job - an OOM kill on a huge page is the
+usual cause - resuming it forever would take the server down repeatedly and
+starve every other project. So a job that comes back three times without
+finishing a single page is left `interrupted`, with a message saying so, and
+waits for a human. Any real progress resets that count.
+
+To turn automatic resume off entirely (useful while rescuing a server that is
+stuck in a restart loop), add to `ritus-server/domain_config.json`:
+
+    { "auto_resume_interrupted_jobs": false }
+
+`GET /api/jobs/diagnostics` reports `auto_resume_enabled`, `max_auto_resumes`
+and each job's `auto_resume_count`.
 
 To inspect (or rescue) a server without logging in - it reads the SQLite file
 directly, so it works even when the server is stopped or wedged:

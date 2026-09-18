@@ -114,7 +114,8 @@ const IiifProjectStatus = ({ project, jobStatus, onDownload, onCancel }) => {
       <Stack spacing={1}>
         <Text fontSize="sm" color="orange.600">
           {status === "interrupted"
-            ? `Interrupted by a server restart at page ${current}/${total || "?"}`
+            ? jobStatus?.error_message ||
+              `Interrupted by a server restart at page ${current}/${total || "?"}`
             : `Cancelled at page ${current}/${total || "?"}`}
         </Text>
         <Button size="xs" variant="subtle" onClick={() => onDownload(null)}>
@@ -373,8 +374,12 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
       <>
         <Stack spacing={1}>
           <Text fontSize="sm" color="orange.600">
+            {/* The server resumes interrupted jobs by itself, so a row that is
+                still "interrupted" by the time the page loads is one it chose
+                not to resume; error_message says why. */}
             {status === "interrupted"
-              ? `Interrupted by a server restart at ${current}/${total || "?"} — already transcribed pages are kept`
+              ? jobStatus?.error_message ||
+                `Interrupted by a server restart at ${current}/${total || "?"} — already transcribed pages are kept`
               : `Transcription cancelled at ${current}/${total || "?"}`}
           </Text>
           <Button size="xs" variant="subtle" colorPalette="purple" onClick={() => setOpen(true)}>
