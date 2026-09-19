@@ -12,8 +12,8 @@ const ANCHOR_THRESHOLD = 5.0;
  *  sensitive rather than barely different from each other. */
 const GAMMA = 3;
 
-/** Default UI sensitivity (80% → threshold 5.0). */
-export const DEFAULT_RED_SENSITIVITY = 80;
+/** Default UI sensitivity (93% → threshold ~0.21). */
+export const DEFAULT_RED_SENSITIVITY = 93;
 
 /**
  * Convert UI sensitivity (0–100%) to backend red_threshold.

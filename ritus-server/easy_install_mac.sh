@@ -138,6 +138,13 @@ run_cmd ".venv/bin/pip install pandas --quiet"
 print_and_log "Installing Party (OCR alternative)..."
 run_cmd ".venv/bin/pip install git+https://github.com/mittagessen/party.git --quiet"
 
+print_and_log "Installing transformers (TrOCR recognition models, e.g. TrOCR_Manicule_2026_Latin_Medieval)..."
+# The TrOCR checkpoints are published in the transformers v5 layout
+# (processor_config.json), which transformers 4.x cannot read - hence the
+# >=5 floor. Without this package the server still starts and every kraken
+# model works; only the TrOCR entries in the model dropdown fail.
+run_cmd ".venv/bin/pip install 'transformers>=5,<6' --quiet"
+
 print_and_log "Installing optional dependencies (backports.tarfile, httpx, openai)..."
 run_cmd ".venv/bin/pip install backports.tarfile httpx openai --force-reinstall --quiet"
 

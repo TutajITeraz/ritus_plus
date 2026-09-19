@@ -61,6 +61,45 @@ ritus-server/models/blla.mlmodel
 (please get if from kraken repository)
 
 
+### Recognition models: kraken and TrOCR
+
+Line *segmentation* is always kraken's (`blla.mlmodel`). Line *recognition*
+can come from either of two families, and the model dropdown mixes both:
+
+* **kraken** - the `*.mlmodel` files in `ritus-server/models/`, CTC models
+  read through `kraken.rpred`.
+* **TrOCR** - HuggingFace vision-encoder-decoder checkpoints listed in
+  `ritus-server/trocr_recognizer.py` (`TROCR_MODELS`), currently
+  `LaMOP/TrOCR_Manicule_2026_Latin_Medieval`. They are downloaded on first
+  use into `ritus-server/models/trocr/` (~1.2 GB each, essentially one
+  weights file) and need the `transformers` package (>=5, because the
+  checkpoints use the v5 `processor_config.json` layout). Without it the
+  server still starts and every kraken model keeps working; only the TrOCR
+  entries return an error.
+
+  Each checkpoint is kept as a plain directory holding only the files the
+  server loads - `models/trocr/<org>--<name>/{config.json,
+  generation_config.json, model.safetensors, processor_config.json,
+  tokenizer.json, tokenizer_config.json}` - rather than a HuggingFace cache
+  tree with its blobs, refs, locks and symlinks. If you have a directory in
+  the old cache layout, `python3 scripts/trim_trocr_cache.py` converts it in
+  place by moving the files (no re-download, no second copy on disk).
+
+  The directory is disposable: delete `models/trocr/` and the only cost is a
+  re-download the next time a TrOCR model is picked. Set the `TROCR_CACHE_DIR`
+  environment variable to keep it on another disk or to share one copy
+  between checkouts.
+
+Everything built on top of the segmentation - red-rubric splitting,
+multi-column reordering, edge filtering, autofix - is shared, so the two
+families differ only in which network turns a line crop into characters.
+
+Mind the cost: a kraken recognizer is a small CTC network, while TrOCR
+generates text token by token and is roughly five times slower per page on
+CPU (measured on `tests/`: ~0.6 s per line against ~0.1 s). Recognition is
+batched per page to soften that, and a GPU narrows the gap.
+
+
 ### Following commands must be executed in the project directory to compile it from the scratch!
 
 ```

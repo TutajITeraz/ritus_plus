@@ -97,6 +97,13 @@ run_cmd ".venv/bin/pip install flask_jwt --quiet"
 print_and_log "Installing flask_jwt_extended ..."
 run_cmd ".venv/bin/pip install flask_jwt_extended --quiet"
 
+print_and_log "Installing transformers (TrOCR recognition models, e.g. TrOCR_Manicule_2026_Latin_Medieval)..."
+# The TrOCR checkpoints are published in the transformers v5 layout
+# (processor_config.json), which transformers 4.x cannot read - hence the
+# >=5 floor. Without this package the server still starts and every kraken
+# model works; only the TrOCR entries in the model dropdown fail.
+run_cmd "pip install 'transformers>=5,<6' --quiet"
+
 # Check if user wants to install Torch for acceleration
 read -p "Do you want to install PyTorch for GPU/CPU acceleration (this can take up to 10GB)? (y/n): " accel_choice
 

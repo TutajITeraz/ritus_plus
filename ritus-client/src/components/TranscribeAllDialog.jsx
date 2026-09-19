@@ -37,6 +37,7 @@ const models = createListCollection({
     { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
     { label: "German Handwriting", value: "german_handwriting.mlmodel" },
     { label: "Modern English Print", value: "en_best.mlmodel" },
+    { label: "TrOCR Manicule (Latin Medieval HTR)", value: "TrOCR_Manicule_2026_Latin_Medieval" },
   ],
 });
 
@@ -49,9 +50,9 @@ const models = createListCollection({
  */
 const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
   const [open, setOpen] = useState(false);
-  const [model, setModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
+  const [model, setModel] = useState("TrOCR_Manicule_2026_Latin_Medieval");
   const [mode, setMode] = useState("skip");
-  const [addPageBreak, setAddPageBreak] = useState(false);
+  const [addPageBreak, setAddPageBreak] = useState(true);
   const [enhancedMultiColumn, setEnhancedMultiColumn] = useState(false);
   const [autofixErrors, setAutofixErrors] = useState(true);
   const [aiCorrect, setAiCorrect] = useState(false);

@@ -163,10 +163,10 @@ const transcribeModels = createListCollection({
 // ---------------------------------------------------------------------------
 const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
   const [open, setOpen] = useState(false);
-  const [model, setModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
+  const [model, setModel] = useState("TrOCR_Manicule_2026_Latin_Medieval");
   const [mode, setMode] = useState("skip");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
-  const [addPageBreak, setAddPageBreak] = useState(false);
+  const [addPageBreak, setAddPageBreak] = useState(true);
   const [autofixErrors, setAutofixErrors] = useState(true);
   const [aiCorrect, setAiCorrect] = useState(false);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
@@ -804,7 +804,7 @@ const ProjectList = () => {
       <Flex justify="space-between" align="center" mb={4}>
         <Image src="/logo.svg" alt="Ritus Logo" height="40px" />
         <HStack>
-          <Text fontSize="sm" color="gray.500">v.1.18</Text>
+          <Text fontSize="sm" color="gray.500">v.1.19</Text>
           {currentUser && (
             <>
               <Text fontSize="sm">Welcome, {currentUser.username}</Text>

@@ -47,6 +47,7 @@ const models = createListCollection({
     { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
     { label: "German Handwriting", value: "german_handwriting.mlmodel" },
     { label: "Modern English Print", value: "en_best.mlmodel" },
+    { label: "TrOCR Manicule (Latin Medieval HTR)", value: "TrOCR_Manicule_2026_Latin_Medieval" },
   ],
 });
 
@@ -61,9 +62,9 @@ const Transcribe = ({
   const [pageCount, setPageCount] = useState(images.length);
   const [startPage, setStartPage] = useState(initialStartPage);
   const [endPage, setEndPage] = useState(images.length);
-  const [model, setModel] = useState("Tridis_Medieval_EarlyModern.mlmodel");
+  const [model, setModel] = useState("TrOCR_Manicule_2026_Latin_Medieval");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
-  const [addPageBreak, setAddPageBreak] = useState(false);
+  const [addPageBreak, setAddPageBreak] = useState(true);
   const [enhancedMultiColumn, setEnhancedMultiColumn] = useState(false);
   const [autofixErrors, setAutofixErrors] = useState(true);
   const [aiCorrect, setAiCorrect] = useState(false);
@@ -223,7 +224,7 @@ const Transcribe = ({
               </Text>
               <Select.Root
                 collection={models}
-                defaultValue={["Tridis_Medieval_EarlyModern.mlmodel"]}
+                defaultValue={["TrOCR_Manicule_2026_Latin_Medieval"]}
                 onValueChange={(details) => setModel(details.value[0])}
                 size="sm"
                 disabled={isTranscribing}

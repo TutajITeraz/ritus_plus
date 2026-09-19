@@ -30,6 +30,7 @@ from models import db, User, Project, ProjectSharing, Image, Content, BatchProce
 from download_iiif import run_iiif_download
 from transcription_autofix import apply_autofix
 from memory_governor import MemoryGovernor, available_memory_mb, process_rss_mb
+import trocr_recognizer
 
 # Registry of stop events keyed by project_id for IIIF background downloads
 _iiif_stop_events = {}
@@ -463,6 +464,16 @@ if not NO_KRAKEN:
         "en_best.mlmodel": get_model_path("en_best.mlmodel"),
         "blla.mlmodel": get_model_path("blla.mlmodel"),
     }
+    # TrOCR models sit alongside the kraken ones in the client's model list
+    # but need `transformers`; log once at startup whether they can be used,
+    # so a "TrOCR support requires..." error later has context.
+    logger.info(
+        "TrOCR models available: %s (transformers importable: %s, weights cache: %s)",
+        sorted(trocr_recognizer.TROCR_MODELS),
+        trocr_recognizer.trocr_available(),
+        trocr_recognizer.TROCR_CACHE_DIR,
+    )
+
     # Uwaga: Ładowanie ciężkich modeli lepiej robić wewnątrz pierwszej prośby 
     # lub użyć preload_app w Gunicorn, aby nie dublować RAM-u
     baseline_model_path = MODEL_PATHS.get("blla.mlmodel")
@@ -628,18 +639,30 @@ if not NO_KRAKEN:
 
         import time
         start_time = time.time()
-        model_path = MODEL_PATHS.get(model_name)
-        if not model_path:
-            logger.error(f"Model not found: {model_name}")
-            return "Model not found", 400
+        # TrOCR models are not kraken .mlmodel files: they are HuggingFace
+        # checkpoints loaded by trocr_recognizer, and only the recognition
+        # step differs - segmentation below is kraken's either way.
+        use_trocr = trocr_recognizer.is_trocr_model(model_name)
+        if use_trocr:
+            if not trocr_recognizer.trocr_available():
+                logger.error("TrOCR model %s requested but transformers is not installed", model_name)
+                return "TrOCR support requires the 'transformers' package", 500
+        else:
+            model_path = MODEL_PATHS.get(model_name)
+            if not model_path:
+                logger.error(f"Model not found: {model_name}")
+                return "Model not found", 400
 
-        if model_name != last_ocr_model_name or ocr_model is None:
-            logger.info(f"Loading model: {model_name}")
-            ocr_model = load_any(model_path, device=selected_device)
-            last_ocr_model_name = model_name
+            if model_name != last_ocr_model_name or ocr_model is None:
+                logger.info(f"Loading model: {model_name}")
+                ocr_model = load_any(model_path, device=selected_device)
+                last_ocr_model_name = model_name
 
         logger.info("Image processing...")
         image = PILImage.open(image_file)
+        # TrOCR was trained on colour line crops, so it reads the page in its
+        # original colours; kraken's recognizers want the grayscale version.
+        color_image = image.convert("RGB") if use_trocr else None
         if image.mode != "L":
             image = image.convert("L")
 
@@ -702,7 +725,10 @@ if not NO_KRAKEN:
         logger.info(lines)
 
         logger.info("Recognition...")
-        predictions = rpred.rpred(ocr_model, image, seg)
+        if use_trocr:
+            predictions = trocr_recognizer.recognize(color_image, seg, model_name, device=selected_device)
+        else:
+            predictions = rpred.rpred(ocr_model, image, seg)
         line_texts = [str(record) for record in predictions if len(str(record)) > 2]
         line_texts = dehyphenate_line_texts(line_texts)
         transcribed_text = "".join(text + "\n" for text in line_texts)
@@ -867,10 +893,18 @@ def transcribe_image_by_id(image_id, model_name, **kwargs):
 
 def _transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0, enhanced_multi_column=False, column_gap_ratio=0.045, autofix_errors=True, ai_correct=False):
     global baseline_model, last_ocr_model_name, ocr_model, selected_device
-    model_path = MODEL_PATHS.get(model_name)
-    if not model_path:
-        logger.error(f"Model not found: {model_name}")
-        return "Model not found", 400
+    # See transcribe_image: a TrOCR model replaces only the recognizer, so
+    # everything below (segmentation, colour split, autofix) is unchanged.
+    use_trocr = trocr_recognizer.is_trocr_model(model_name)
+    if use_trocr:
+        if not trocr_recognizer.trocr_available():
+            logger.error("TrOCR model %s requested but transformers is not installed", model_name)
+            return "TrOCR support requires the 'transformers' package", 500
+    else:
+        model_path = MODEL_PATHS.get(model_name)
+        if not model_path:
+            logger.error(f"Model not found: {model_name}")
+            return "Model not found", 400
 
     image_record = Image.query.get_or_404(image_id)
     image_path = image_record.original
@@ -879,7 +913,11 @@ def _transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_b
         return f"Image file not found at {image_path}", 404
 
     with _ocr_model_lock:
-        if model_name != last_ocr_model_name or ocr_model is None:
+        if use_trocr:
+            # Loading is cached and serialised inside trocr_recognizer; doing
+            # it here keeps the first page of a batch from loading it twice.
+            trocr_recognizer.load_model(model_name, device=selected_device)
+        elif model_name != last_ocr_model_name or ocr_model is None:
             logger.info(f"Loading model: {model_name}")
             ocr_model = load_any(model_path, device=selected_device)
             last_ocr_model_name = model_name
@@ -1019,74 +1057,112 @@ def _transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_b
     buffered_text = []     # Buffer for accumulating text of the same color
     pending_hyphen = None  # Word fragment left by a genuine line-wrap hyphen
 
+    # Colour splitting looks only at the page image, so every line can be cut
+    # into its red/black pieces before any recognition happens. That ordering
+    # is what lets a TrOCR model see the whole page in batches (its decoder is
+    # autoregressive, so one generate() call per line is far more expensive
+    # than one call per batch); kraken still recognises line by line below.
+    split_lines_per_line = []
     for i, line in enumerate(original_lines):
         logger.info(f"Processing line {i + 1}")
         logger.info(f"Baseline: {line.baseline}")
         logger.info(f"Boundary: {line.boundary}")
-        
+
         # Split line by color and get new line segments
         try:
              split_lines = split_line_boundary_by_color(color_image, line, i, window_size=80, red_threshold=red_threshold)
         except Exception as e:
              logger.error(f"Failed to split line {i+1}: {e}")
              split_lines = [line]
+        split_lines_per_line.append(split_lines)
 
-        # Process each split line for OCR
-        for split_line in split_lines:
-            seg.lines = [split_line]
-            line_color = getattr(split_line, 'color', 'black')
-            logger.info(f"Recognition for line {i + 1}, color {line_color}...")
-            try:
+    # (original line index, split line) in reading order - the order the text
+    # is assembled in below.
+    flat_lines = [(i, split_line)
+                  for i, split_lines in enumerate(split_lines_per_line)
+                  for split_line in split_lines]
+
+    trocr_texts = None
+    if use_trocr:
+        seg.lines = [split_line for _i, split_line in flat_lines]
+        logger.info(f"Recognition of {len(seg.lines)} line segments with {model_name}...")
+        trocr_texts = trocr_recognizer.recognize(
+            color_image, seg, model_name, device=selected_device
+        )
+
+    # Lines that produced no text at all are dropped rather than reported as
+    # empty. blla regularly finds "lines" over decorated initials, woodcuts and
+    # pen flourishes - portrait-shaped blobs of a few dozen pixels with nothing
+    # to read in them. A recognizer that returns nothing for such a blob is
+    # right, and the honest response is to drop the line, not to make something
+    # up: forcing an answer out of those crops only ever yields invented words.
+    recognized_lines = []
+
+    for flat_index, (i, split_line) in enumerate(flat_lines):
+        line_color = getattr(split_line, 'color', 'black')
+        logger.info(f"Recognition for line {i + 1}, color {line_color}...")
+        line_had_text = False
+        try:
+            if use_trocr:
+                predictions = [trocr_texts[flat_index]]
+            else:
+                seg.lines = [split_line]
                 predictions = rpred.rpred(ocr_model, ocr_image, seg)
-                for record in predictions:
-                    record_text = str(record).strip()
-                    if pending_hyphen is not None:
-                        record_text = pending_hyphen + record_text
-                        pending_hyphen = None
-                    # Skip if record is empty or contains only non-letter characters
-                    if not record_text or not re.search(r'[a-zA-Z]', record_text):
-                        logger.debug(f"Skipping record for line {i + 1}, color {line_color}: '{record_text}' (empty or non-letter)")
-                        continue
-                    if record_text.endswith(LINE_WRAP_HYPHEN):
-                        # A genuine end-of-line word-wrap - hold this fragment
-                        # back and glue it onto the next line's text instead
-                        # of emitting the print-layout hyphen mark.
-                        pending_hyphen = record_text[:-1]
-                        continue
+            for record in predictions:
+                record_text = str(record).strip()
+                if pending_hyphen is not None:
+                    record_text = pending_hyphen + record_text
+                    pending_hyphen = None
+                # Skip if record is empty or contains only non-letter characters
+                if not record_text or not re.search(r'[a-zA-Z]', record_text):
+                    logger.debug(f"Skipping record for line {i + 1}, color {line_color}: '{record_text}' (empty or non-letter)")
+                    continue
+                line_had_text = True
+                if record_text.endswith(LINE_WRAP_HYPHEN):
+                    # A genuine end-of-line word-wrap - hold this fragment
+                    # back and glue it onto the next line's text instead
+                    # of emitting the print-layout hyphen mark.
+                    pending_hyphen = record_text[:-1]
+                    continue
 
-                    current_color = line_color.upper()
-                    if current_color == "RED":
-                        if previous_color == "RED":
-                            # Append to buffered text without closing/opening tags
-                            buffered_text.append(record_text)
-                        else:
-                            # Close previous red text if open, start new red text
-                            if buffered_text and previous_color == "RED":
-                                transcribed_text += " ".join(buffered_text) + "</red> "
-                                buffered_text = []
-                            elif buffered_text:
-                                transcribed_text += " ".join(buffered_text) + " "
-                                buffered_text = []
-                            buffered_text.append(record_text)
-                            if not transcribed_text.endswith("<red> "):
-                                transcribed_text += "<red> "
-                    else:  # BLACK (default)
+                current_color = line_color.upper()
+                if current_color == "RED":
+                    if previous_color == "RED":
+                        # Append to buffered text without closing/opening tags
+                        buffered_text.append(record_text)
+                    else:
+                        # Close previous red text if open, start new red text
                         if buffered_text and previous_color == "RED":
-                            # Close red text and append buffered text
                             transcribed_text += " ".join(buffered_text) + "</red> "
                             buffered_text = []
                         elif buffered_text:
-                            # Append buffered black text
                             transcribed_text += " ".join(buffered_text) + " "
                             buffered_text = []
                         buffered_text.append(record_text)
-                    
-                    previous_color = current_color
-                    logger.info(f"Detected text ({current_color}): '{record_text}'")
-            except Exception as e:
-                logger.error(f"OCR failed for line {i + 1}, color {line_color}: {str(e)}")
+                        if not transcribed_text.endswith("<red> "):
+                            transcribed_text += "<red> "
+                else:  # BLACK (default)
+                    if buffered_text and previous_color == "RED":
+                        # Close red text and append buffered text
+                        transcribed_text += " ".join(buffered_text) + "</red> "
+                        buffered_text = []
+                    elif buffered_text:
+                        # Append buffered black text
+                        transcribed_text += " ".join(buffered_text) + " "
+                        buffered_text = []
+                    buffered_text.append(record_text)
 
-        new_lines.extend(split_lines)
+                previous_color = current_color
+                logger.info(f"Detected text ({current_color}): '{record_text}'")
+        except Exception as e:
+            logger.error(f"OCR failed for line {i + 1}, color {line_color}: {str(e)}")
+
+        if line_had_text:
+            recognized_lines.append(split_line)
+        else:
+            logger.info(f"Dropping line {i + 1} ({line_color}): no text recognized")
+
+    new_lines = recognized_lines
 
     if pending_hyphen is not None:
         # Nothing followed the last line-wrap hyphen (e.g. end of page) -
