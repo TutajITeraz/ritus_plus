@@ -657,6 +657,46 @@ const Sidebar = ({
                     </Text>
                     <Text w="250px">{project.iiif_url || "N/A"}</Text>
                   </Flex>
+                  <Stack spacing={1} bg="white" borderWidth="1px" borderRadius="md" p={3}>
+                    <Flex align="center">
+                      <Text fontWeight="bold" minW="80px">Images:</Text>
+                      <Text fontSize="sm">
+                        {project.image_count ?? 0}
+                        {project.image_count > 0 && (
+                          <Text as="span" color="green.600">
+                            {" "}· {project.transcribed_count ?? 0} transcribed
+                          </Text>
+                        )}
+                      </Text>
+                    </Flex>
+                    <Flex align="center">
+                      <Text fontWeight="bold" minW="80px">Table:</Text>
+                      <Text fontSize="sm" color={project.content_count > 0 ? "blue.600" : "gray.500"}>
+                        {project.content_count ?? 0} row(s)
+                      </Text>
+                    </Flex>
+                    {project.transcription_models?.length > 0 && (
+                      <Flex align="start">
+                        <Text fontWeight="bold" minW="80px">
+                          {project.transcription_models.length > 1 ? "Models:" : "Model:"}
+                        </Text>
+                        <Text fontSize="sm">
+                          {project.transcription_models.map(modelLabel).join(", ")}
+                        </Text>
+                      </Flex>
+                    )}
+                    {project.is_owner && project.shared_users?.length > 0 && (
+                      <Flex align="center">
+                        <Text fontWeight="bold" minW="80px">Shared:</Text>
+                        <Text fontSize="sm">
+                          with {project.shared_users.length} user(s)
+                        </Text>
+                      </Flex>
+                    )}
+                    {!project.is_owner && (
+                      <Text fontSize="xs" color="gray.500">Shared with you</Text>
+                    )}
+                  </Stack>
                   <FileUpload.Root maxFiles={10}>
                     <FileUpload.HiddenInput
                       onChange={handleUpload}

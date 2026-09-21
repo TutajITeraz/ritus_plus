@@ -45,10 +45,18 @@ const models = createListCollection({
  * TranscribeAllDialog
  *
  * Props:
- *   projects        – array of project objects with image_count > 0 (owned only)
+ *   projects        – array of project objects with image_count > 0 (owned only,
+ *                      pass a filtered subset to scope the run to a selection)
  *   onJobsStarted   – callback after jobs are fired (receives array of project IDs)
+ *   triggerLabel    – text for the trigger button (default "Transcribe All")
+ *   dialogTitle     – text for the dialog title (default "Transcribe All Projects")
  */
-const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
+const TranscribeAllDialog = ({
+  projects,
+  onJobsStarted,
+  triggerLabel = "Transcribe All",
+  dialogTitle = "Transcribe All Projects",
+}) => {
   const [open, setOpen] = useState(false);
   const [model, setModel] = useState("TrOCR_Manicule_2026_Latin_Medieval");
   const [mode, setMode] = useState("skip");
@@ -144,7 +152,7 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
     <Dialog.Root open={open} onOpenChange={(e) => setOpen(e.open)}>
       <Dialog.Trigger asChild>
         <Button variant="solid" colorPalette="purple" size="sm">
-          Transcribe All
+          {triggerLabel}
         </Button>
       </Dialog.Trigger>
       <Portal>
@@ -152,7 +160,7 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
         <Dialog.Positioner>
           <Dialog.Content>
             <Dialog.Header>
-              <Dialog.Title>Transcribe All Projects</Dialog.Title>
+              <Dialog.Title>{dialogTitle}</Dialog.Title>
               <Dialog.CloseTrigger asChild>
                 <CloseButton size="sm" />
               </Dialog.CloseTrigger>

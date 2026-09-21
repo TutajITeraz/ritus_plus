@@ -454,6 +454,8 @@ const ProjectList = () => {
   const [transcribeJobStatuses, setTranscribeJobStatuses] = useState({});
   const [isStoppingAll, setIsStoppingAll] = useState(false);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [isDeletingSelected, setIsDeletingSelected] = useState(false);
   const pollingRef = useRef(null);
   const transcribePollingRef = useRef(null);
   const navigate = useNavigate();
@@ -488,6 +490,15 @@ const ProjectList = () => {
       fetchUsers().then(setUsers);
     }
   }, [currentUser]);
+
+  // Drop selected ids that no longer exist (e.g. deleted from another tab).
+  useEffect(() => {
+    const ownedIds = new Set(projectData.owned.map((p) => p.id));
+    setSelectedIds((prev) => {
+      const next = prev.filter((id) => ownedIds.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [projectData.owned]);
 
   // Poll running jobs every 3s
   useEffect(() => {
@@ -663,7 +674,8 @@ const ProjectList = () => {
   };
 
   const handleDownloadAll = async () => {
-    const toDownload = projectData.owned.filter(
+    const pool = selectedIds.length > 0 ? selectedProjects : projectData.owned;
+    const toDownload = pool.filter(
       (p) => p.type === "iiif" && p.iiif_url &&
         !["running", "pending", "waiting", "completed"].includes(iiifJobStatuses[p.id]?.status)
     );
@@ -794,6 +806,52 @@ const ProjectList = () => {
         owned: prev.owned.filter(p => p.id !== id),
         shared: prev.shared.filter(p => p.id !== id)
       }));
+      setSelectedIds((prev) => prev.filter((sid) => sid !== id));
+    }
+  };
+
+  const toggleSelectProject = (id) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((sid) => sid !== id) : [...prev, id]
+    );
+  };
+
+  const toggleSelectAll = () => {
+    const ownedIds = projectData.owned.map((p) => p.id);
+    const allSelected = ownedIds.length > 0 && ownedIds.every((id) => selectedIds.includes(id));
+    setSelectedIds(allSelected ? [] : ownedIds);
+  };
+
+  const selectedProjects = projectData.owned.filter((p) => selectedIds.includes(p.id));
+
+  const handleDeleteSelected = async () => {
+    if (selectedProjects.length === 0) return;
+    if (
+      !window.confirm(
+        `Delete ${selectedProjects.length} selected project(s)? This will permanently delete all images and data.`
+      )
+    ) {
+      return;
+    }
+    setIsDeletingSelected(true);
+    try {
+      const idsToDelete = selectedProjects.map((p) => p.id);
+      await Promise.all(idsToDelete.map((id) => deleteProject(id)));
+      setProjectData((prev) => ({
+        owned: prev.owned.filter((p) => !idsToDelete.includes(p.id)),
+        shared: prev.shared.filter((p) => !idsToDelete.includes(p.id)),
+      }));
+      setSelectedIds([]);
+      toaster.create({
+        title: "Projects deleted",
+        description: `Deleted ${idsToDelete.length} project(s).`,
+        type: "success",
+        duration: 3000,
+      });
+    } catch (e) {
+      toaster.create({ title: "Delete failed", description: e.message, type: "error", duration: 5000 });
+    } finally {
+      setIsDeletingSelected(false);
     }
   };
 
@@ -854,7 +912,7 @@ const ProjectList = () => {
       <Flex justify="space-between" align="center" mb={4}>
         <Image src="/logo.svg" alt="Ritus Logo" height="40px" />
         <HStack>
-          <Text fontSize="sm" color="gray.500">v.1.19</Text>
+          <Text fontSize="sm" color="gray.500">v.1.20</Text>
           {currentUser && (
             <>
               <Text fontSize="sm">Welcome, {currentUser.username}</Text>
@@ -975,12 +1033,30 @@ const ProjectList = () => {
           onProjectsCreated={() => fetchProjects().then(setProjectData)}
         />
         <Button variant="outline" size="sm" onClick={handleDownloadAll}>
-          <FaDownload /> Download All
+          <FaDownload /> {selectedIds.length > 0 ? `Download Selected (${selectedIds.length})` : "Download All"}
         </Button>
         <TranscribeAllDialog
-          projects={projectData.owned}
+          projects={selectedIds.length > 0 ? selectedProjects : projectData.owned}
           onJobsStarted={handleTranscribeAllJobsStarted}
+          triggerLabel={selectedIds.length > 0 ? `Transcribe Selected (${selectedIds.length})` : "Transcribe All"}
+          dialogTitle={selectedIds.length > 0 ? "Transcribe Selected Projects" : "Transcribe All Projects"}
         />
+        {selectedIds.length > 0 && (
+          <Button
+            variant="outline"
+            colorPalette="red"
+            size="sm"
+            onClick={handleDeleteSelected}
+            loading={isDeletingSelected}
+          >
+            <LuTrash2 /> Delete Selected ({selectedIds.length})
+          </Button>
+        )}
+        {selectedIds.length > 0 && (
+          <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>
+            Clear selection
+          </Button>
+        )}
         <ProcessTableDialog
           ownedProjects={projectData.owned}
           sharedProjects={projectData.shared}
@@ -1005,7 +1081,27 @@ const ProjectList = () => {
       {/* Owned Projects Section */}
       {projectData.owned.length > 0 && (
         <Box>
-          <Text fontSize="xl" fontWeight="bold" mb={4}>My Projects</Text>
+          <HStack mb={4} spacing={3}>
+            <Checkbox.Root
+              checked={
+                projectData.owned.every((p) => selectedIds.includes(p.id))
+                  ? true
+                  : selectedIds.length > 0
+                  ? "indeterminate"
+                  : false
+              }
+              onCheckedChange={toggleSelectAll}
+            >
+              <Checkbox.HiddenInput />
+              <Checkbox.Control>
+                <Checkbox.Indicator />
+              </Checkbox.Control>
+            </Checkbox.Root>
+            <Text fontSize="xl" fontWeight="bold">My Projects</Text>
+            {selectedIds.length > 0 && (
+              <Text fontSize="sm" color="gray.600">{selectedIds.length} selected</Text>
+            )}
+          </HStack>
           <Stack spacing={4}>
             {projectData.owned.map((project) => (
               <Flex
@@ -1013,10 +1109,21 @@ const ProjectList = () => {
                 p={4}
                 borderWidth="1px"
                 borderRadius="lg"
-                bg="white"
+                bg={selectedIds.includes(project.id) ? "purple.50" : "white"}
                 boxShadow="sm"
               >
                 <HStack spacing={4} w="full">
+                  <Checkbox.Root
+                    checked={selectedIds.includes(project.id)}
+                    onCheckedChange={() => toggleSelectProject(project.id)}
+                    alignSelf="flex-start"
+                    mt={2}
+                  >
+                    <Checkbox.HiddenInput />
+                    <Checkbox.Control>
+                      <Checkbox.Indicator />
+                    </Checkbox.Control>
+                  </Checkbox.Root>
                   <Image
                     src={project.first_thumbnail}
                     fallback={

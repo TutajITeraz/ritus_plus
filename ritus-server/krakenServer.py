@@ -2515,6 +2515,77 @@ def export_project_tables():
 
 
 # Project Routes
+
+def format_project(p, current_user):
+    """Shared summary shape for a project: counts, models in use, and the
+    live job status, used by both the project list and a single project's
+    detail page so they never drift apart."""
+    first_image = Image.query.filter_by(project_id=p.id).order_by(Image.id.asc()).first()
+    thumbnail_url = (
+        f"{SERVER_URL}/{app.config['UPLOAD_FOLDER']}/project_{p.id}/{first_image.name}_{first_image.id}_thumbnail.jpg"
+        if first_image
+        else None
+    )
+    image_count = Image.query.filter_by(project_id=p.id).count()
+    transcribed_count = Image.query.filter(
+        Image.project_id == p.id,
+        Image.transcribed_text.isnot(None),
+        Image.transcribed_text != ""
+    ).count()
+    # Rows in the project's data table, shown on the projects list and
+    # used by "Process Table" to decide what already has data.
+    content_count = Content.query.filter_by(project_id=p.id).count()
+    # Which model(s) produced the automatic transcriptions currently on
+    # this project's pages - usually one, but pages can be re-run with
+    # a different model, so the list can have more than one entry.
+    transcription_models = [
+        row[0] for row in db.session.query(Image.model_name)
+        .filter(Image.project_id == p.id, Image.model_name.isnot(None))
+        .distinct()
+        .all()
+    ]
+    iiif_job = IiifDownloadJob.query.filter_by(project_id=p.id).first()
+    iiif_download_job = None
+    if iiif_job:
+        iiif_download_job = {
+            "status": iiif_job.status,
+            "current_page": iiif_job.current_page,
+            "total_pages": iiif_job.total_pages,
+            "start_page": iiif_job.start_page,
+            "error_message": iiif_job.error_message,
+        }
+    transcribe_job = BatchTranscribeJob.query.filter_by(project_id=p.id).first()
+    batch_transcribe_job = None
+    if transcribe_job:
+        batch_transcribe_job = {
+            "status": transcribe_job.status,
+            "current_image": transcribe_job.current_image,
+            "total_images": transcribe_job.total_images,
+            "model_name": transcribe_job.model_name,
+            "mode": transcribe_job.mode,
+            "error_message": transcribe_job.error_message,
+        }
+    result = {
+        "id": p.id,
+        "name": p.name,
+        "type": p.type,
+        "iiif_url": p.iiif_url,
+        "first_thumbnail": thumbnail_url,
+        "owner_id": p.owner_id,
+        "is_owner": p.owner_id == current_user.id,
+        "image_count": image_count,
+        "transcribed_count": transcribed_count,
+        "content_count": content_count,
+        "transcription_models": transcription_models,
+        "iiif_download_job": iiif_download_job,
+        "batch_transcribe_job": batch_transcribe_job,
+    }
+    if p.owner_id == current_user.id:
+        shared_user_ids = [s.user_id for s in ProjectSharing.query.filter_by(project_id=p.id).all()]
+        result["shared_users"] = shared_user_ids
+    return result
+
+
 @app.route("/api/projects", methods=["GET"])
 @jwt_required()
 def get_projects():
@@ -2530,74 +2601,8 @@ def get_projects():
         shared_project_ids = [ps.project_id for ps in ProjectSharing.query.filter_by(user_id=current_user.id).all()]
         shared_projects = Project.query.filter(Project.id.in_(shared_project_ids)).all() if shared_project_ids else []
 
-        def format_project(p):
-            first_image = Image.query.filter_by(project_id=p.id).order_by(Image.id.asc()).first()
-            thumbnail_url = (
-                f"{SERVER_URL}/{app.config['UPLOAD_FOLDER']}/project_{p.id}/{first_image.name}_{first_image.id}_thumbnail.jpg"
-                if first_image
-                else None
-            )
-            image_count = Image.query.filter_by(project_id=p.id).count()
-            transcribed_count = Image.query.filter(
-                Image.project_id == p.id,
-                Image.transcribed_text.isnot(None),
-                Image.transcribed_text != ""
-            ).count()
-            # Rows in the project's data table, shown on the projects list and
-            # used by "Process Table" to decide what already has data.
-            content_count = Content.query.filter_by(project_id=p.id).count()
-            # Which model(s) produced the automatic transcriptions currently on
-            # this project's pages - usually one, but pages can be re-run with
-            # a different model, so the list can have more than one entry.
-            transcription_models = [
-                row[0] for row in db.session.query(Image.model_name)
-                .filter(Image.project_id == p.id, Image.model_name.isnot(None))
-                .distinct()
-                .all()
-            ]
-            iiif_job = IiifDownloadJob.query.filter_by(project_id=p.id).first()
-            iiif_download_job = None
-            if iiif_job:
-                iiif_download_job = {
-                    "status": iiif_job.status,
-                    "current_page": iiif_job.current_page,
-                    "total_pages": iiif_job.total_pages,
-                    "start_page": iiif_job.start_page,
-                    "error_message": iiif_job.error_message,
-                }
-            transcribe_job = BatchTranscribeJob.query.filter_by(project_id=p.id).first()
-            batch_transcribe_job = None
-            if transcribe_job:
-                batch_transcribe_job = {
-                    "status": transcribe_job.status,
-                    "current_image": transcribe_job.current_image,
-                    "total_images": transcribe_job.total_images,
-                    "model_name": transcribe_job.model_name,
-                    "mode": transcribe_job.mode,
-                    "error_message": transcribe_job.error_message,
-                }
-            result = {
-                "id": p.id,
-                "name": p.name,
-                "type": p.type,
-                "iiif_url": p.iiif_url,
-                "first_thumbnail": thumbnail_url,
-                "owner_id": p.owner_id,
-                "is_owner": p.owner_id == current_user.id,
-                "image_count": image_count,
-                "transcribed_count": transcribed_count,
-                "content_count": content_count,
-                "transcription_models": transcription_models,
-                "iiif_download_job": iiif_download_job,
-                "batch_transcribe_job": batch_transcribe_job,
-            }
-            if p.owner_id == current_user.id:
-                shared_user_ids = [s.user_id for s in ProjectSharing.query.filter_by(project_id=p.id).all()]
-                result["shared_users"] = shared_user_ids
-            return result
-
-        owned_result = [format_project(p) for p in owned_projects]
-        shared_result = [format_project(p) for p in shared_projects]
+        owned_result = [format_project(p, current_user) for p in owned_projects]
+        shared_result = [format_project(p, current_user) for p in shared_projects]
 
         logger.info(f"Retrieved {len(owned_projects)} owned and {len(shared_projects)} shared projects for user {current_user.username}")
         return jsonify({"owned": owned_result, "shared": shared_result})
@@ -2629,15 +2634,18 @@ def create_project():
         return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/api/projects/<int:id>", methods=["GET"])
+@jwt_required()
 def get_project(id):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    if not check_project_access(id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
     try:
         project = Project.query.get_or_404(id)
-        result = {
-            "id": project.id,
-            "name": project.name,
-            "type": project.type,
-            "iiif_url": project.iiif_url
-        }
+        result = format_project(project, current_user)
         logger.info(f"Retrieved project with ID {id}")
         return jsonify(result)
     except Exception as e:
