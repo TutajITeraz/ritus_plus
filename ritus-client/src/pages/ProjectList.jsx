@@ -38,6 +38,7 @@ import {
   cancelBatchTranscribe,
   cancelBatchTranscribeAll,
   cancelIiifDownloadAll,
+  clearProjectTranscriptions,
   exportTranscriptions,
   exportProjectTables,
 } from "../apiUtils";
@@ -51,6 +52,9 @@ import {
   DEFAULT_RED_SENSITIVITY,
   sensitivityToThreshold,
 } from "../utils/redSensitivity";
+import { modelLabel } from "../utils/modelLabels";
+import { useJobPacing } from "../utils/useJobPacing";
+import DeviceStatusBadge from "../components/DeviceStatusBadge";
 
 const typeCollection = createListCollection({
   items: [
@@ -155,6 +159,7 @@ const transcribeModels = createListCollection({
     { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
     { label: "German Handwriting", value: "german_handwriting.mlmodel" },
     { label: "Modern English Print", value: "en_best.mlmodel" },
+    { label: "TrOCR Manicule (Latin Medieval HTR)", value: "TrOCR_Manicule_2026_Latin_Medieval" },
   ],
 });
 
@@ -182,6 +187,7 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
   const current = jobStatus?.current_image ?? 0;
   const total = jobStatus?.total_images ?? 0;
   const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  const avgSeconds = useJobPacing(status === "running", current);
 
   // Running/pending: no dialog needed, early return is fine
   if (status === "running" || status === "pending") {
@@ -190,6 +196,7 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
         <Text fontSize="sm" color="purple.600">
           {status === "pending" ? "Starting transcription…" : "Transcribing in background…"}
         </Text>
+        {status === "running" && <DeviceStatusBadge />}
         <Progress.Root value={status === "pending" ? null : pct} maxW="260px">
           <HStack gap="3">
             <Progress.Track flex="1">
@@ -198,6 +205,11 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
             <Progress.ValueText>{current}/{total || "?"}</Progress.ValueText>
           </HStack>
         </Progress.Root>
+        {avgSeconds != null && (
+          <Text fontSize="xs" color="gray.600">
+            ~{avgSeconds.toFixed(1)}s/page in this session
+          </Text>
+        )}
         <Button size="xs" variant="subtle" colorPalette="red" onClick={onCancel}>
           <FaStop /> Cancel
         </Button>
@@ -272,6 +284,13 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
                       </RadioGroup.Item>
                     </Stack>
                   </RadioGroup.Root>
+                  {(mode === "override" || mode === "range") && (
+                    <Text fontSize="xs" color="gray.500">
+                      Pages a human has manually edited keep that edit — only the
+                      automatic (model) copy is refreshed. Use "Overwrite with
+                      automatic" on a page to replace a manual edit on purpose.
+                    </Text>
+                  )}
                 </Stack>
                 {mode === "range" && (
                   <HStack align="end" spacing={3}>
@@ -778,6 +797,37 @@ const ProjectList = () => {
     }
   };
 
+  // Clears only the main (human/manual) transcription; the model's own
+  // output (auto_transcribed_text) is kept, so nothing OCR produced is lost.
+  const handleClearTranscriptions = async (project) => {
+    if (!project.transcribed_count) return;
+    if (
+      !window.confirm(
+        `Clear the manual transcription of all ${project.transcribed_count} transcribed page(s) in "${project.name}"?\n\n` +
+        "This cannot be undone. The automatic (model) transcription is kept and can still be reviewed or reapplied per page."
+      )
+    ) {
+      return;
+    }
+    try {
+      const result = await clearProjectTranscriptions(project.id);
+      toaster.create({
+        title: "Transcription cleared",
+        description: `Cleared ${result.cleared_count} page(s) in "${project.name}".`,
+        type: "success",
+        duration: 4000,
+      });
+      refreshProjects();
+    } catch (error) {
+      toaster.create({
+        title: "Error",
+        description: error.message || "Failed to clear transcriptions",
+        type: "error",
+        duration: 5000,
+      });
+    }
+  };
+
   const handleShareProject = async (project) => {
     setSharingProject(project);
     setSelectedUsers(project.shared_users || []);
@@ -1021,6 +1071,16 @@ const ProjectList = () => {
                         {project.content_count ?? 0} rows in table
                       </Text>
                     </HStack>
+                    {project.transcription_models?.length > 0 && (
+                      <HStack>
+                        <Text fontWeight="bold" fontSize="xs">
+                          {project.transcription_models.length > 1 ? "Models:" : "Model:"}
+                        </Text>
+                        <Text fontSize="xs" color="gray.600">
+                          {project.transcription_models.map(modelLabel).join(", ")}
+                        </Text>
+                      </HStack>
+                    )}
                   </Stack>
                   <HStack alignItems="flex-start">
                     {project.type === "iiif" && (
@@ -1048,6 +1108,16 @@ const ProjectList = () => {
                     >
                       Share
                     </Button>
+                    {project.transcribed_count > 0 && (
+                      <Button
+                        onClick={() => handleClearTranscriptions(project)}
+                        variant="subtle"
+                        colorPalette="orange"
+                        size="sm"
+                      >
+                        Clear transcription
+                      </Button>
+                    )}
                     <Button
                       onClick={() => handleDeleteProject(project.id)}
                       variant="subtle"
@@ -1134,6 +1204,16 @@ const ProjectList = () => {
                         {project.content_count ?? 0} rows in table
                       </Text>
                     </HStack>
+                    {project.transcription_models?.length > 0 && (
+                      <HStack>
+                        <Text fontWeight="bold" fontSize="xs">
+                          {project.transcription_models.length > 1 ? "Models:" : "Model:"}
+                        </Text>
+                        <Text fontSize="xs" color="gray.600">
+                          {project.transcription_models.map(modelLabel).join(", ")}
+                        </Text>
+                      </HStack>
+                    )}
                     <Text fontSize="sm" color="gray.600">Shared with you</Text>
                   </Stack>
                   <HStack alignItems="flex-start">

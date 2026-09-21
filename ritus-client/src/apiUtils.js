@@ -277,6 +277,44 @@ export const updateImage = async (imageId, data) => {
   }
 };
 
+// Dangerous on purpose: replaces the human transcription with the model's own
+// output. The caller is expected to confirm with the user before calling this.
+export const overwriteImageWithAuto = async (imageId) => {
+  try {
+    const response = await apiRequest(
+      `${SERVER_URL}/api/images/${imageId}/overwrite-with-auto`,
+      { method: "POST" }
+    );
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || "Failed to overwrite transcription");
+    }
+    return await response.json();
+  } catch (error) {
+    toaster.create({
+      title: "Error",
+      description: error.message || "Failed to overwrite transcription",
+      type: "error",
+      duration: 4000,
+    });
+    throw error;
+  }
+};
+
+// Fetches whether this server is transcribing on GPU or CPU. Fixed for the
+// lifetime of the server process, so callers can fetch it once and cache it.
+export const fetchTranscribeDeviceStatus = async () => {
+  try {
+    const response = await apiRequest(`${SERVER_URL}/api/transcribe/device-status`);
+    if (!response.ok) throw new Error("Failed to fetch device status");
+    return await response.json();
+  } catch (error) {
+    // Silent: this is a status hint, not something worth interrupting the
+    // user's transcription flow over.
+    throw error;
+  }
+};
+
 export const transcribeImage = async (imageId, modelName, ignoreEdges = true, addPageBreak = false, redThreshold = 5.0, enhancedMultiColumn = false, columnGapRatio = 0.045, autofixErrors = true, aiCorrect = false) => {
   try {
     const formData = new FormData();
@@ -833,6 +871,22 @@ export const cancelBatchTranscribe = async (projectId) => {
   );
   if (!response.ok) throw new Error("Failed to cancel transcription");
   return await response.json();
+};
+
+/**
+ * Blank the human (main) transcription of every image in a project.
+ * The model's own output (auto_transcribed_text) is left untouched.
+ * Dangerous on purpose - callers should confirm with the user first.
+ * @param {number} projectId
+ */
+export const clearProjectTranscriptions = async (projectId) => {
+  const response = await apiRequest(
+    `${SERVER_URL}/api/projects/${projectId}/clear-transcriptions`,
+    { method: "POST" }
+  );
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Failed to clear transcriptions");
+  return data;
 };
 
 

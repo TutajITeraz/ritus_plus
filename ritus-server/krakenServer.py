@@ -316,11 +316,19 @@ _ADDED_JOB_COLUMNS = {
         "auto_resume_count": "INTEGER DEFAULT 0",
         "auto_resume_mark": "INTEGER DEFAULT 0",
     },
+    # Splits "what the model produced" from "what a human is editing" (see
+    # Image in models.py) - older databases only ever had transcribed_text.
+    "image": {
+        "human_edited": "BOOLEAN DEFAULT 0",
+        "auto_transcribed_text": "TEXT",
+        "model_name": "VARCHAR(100)",
+        "auto_transcribed_at": "DATETIME",
+    },
 }
 
 
 def ensure_job_columns():
-    """Add any job columns this version needs but an older database lacks."""
+    """Add any columns this version needs but an older database lacks."""
     with app.app_context():
         inspector = db.inspect(db.engine)
         existing_tables = set(inspector.get_table_names())
@@ -338,7 +346,7 @@ def ensure_job_columns():
                 added.append("%s.%s" % (table, name))
         if added:
             db.session.commit()
-            logger.info("Schema upgrade: added job column(s) %s", ", ".join(added))
+            logger.info("Schema upgrade: added column(s) %s", ", ".join(added))
 
 
 def reconcile_stale_jobs():
@@ -1191,7 +1199,17 @@ def _transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_b
     if add_page_break:
         transcribed_text += "⏎"
 
-    image_record.transcribed_text = transcribed_text.strip()
+    final_text = transcribed_text.strip()
+    image_record.auto_transcribed_text = final_text
+    image_record.model_name = model_name
+    image_record.auto_transcribed_at = _datetime.utcnow()
+    # Automatic transcription (single page, batch, override, ...) never
+    # overwrites a page a human has edited - only the explicit "overwrite
+    # with automatic transcription" action may do that. A page that has
+    # never been touched by a human keeps behaving as before: every rerun
+    # refreshes transcribed_text too.
+    if not image_record.human_edited:
+        image_record.transcribed_text = final_text
     db.session.commit()
 
     return {"text": transcribed_text, "lines": new_lines}
@@ -2528,6 +2546,15 @@ def get_projects():
             # Rows in the project's data table, shown on the projects list and
             # used by "Process Table" to decide what already has data.
             content_count = Content.query.filter_by(project_id=p.id).count()
+            # Which model(s) produced the automatic transcriptions currently on
+            # this project's pages - usually one, but pages can be re-run with
+            # a different model, so the list can have more than one entry.
+            transcription_models = [
+                row[0] for row in db.session.query(Image.model_name)
+                .filter(Image.project_id == p.id, Image.model_name.isnot(None))
+                .distinct()
+                .all()
+            ]
             iiif_job = IiifDownloadJob.query.filter_by(project_id=p.id).first()
             iiif_download_job = None
             if iiif_job:
@@ -2560,6 +2587,7 @@ def get_projects():
                 "image_count": image_count,
                 "transcribed_count": transcribed_count,
                 "content_count": content_count,
+                "transcription_models": transcription_models,
                 "iiif_download_job": iiif_download_job,
                 "batch_transcribe_job": batch_transcribe_job,
             }
@@ -2682,7 +2710,10 @@ def get_project_images(project_id):
             "original": f"{SERVER_URL}/{img.original}",
             "thumbnail": f"{SERVER_URL}/{app.config['UPLOAD_FOLDER']}/project_{project_id}/{img.name}_{img.id}_thumbnail.jpg",
             "transcribed_text": img.transcribed_text,
-            "line_count": len(img.transcribed_text.split("\n")) if img.transcribed_text else 0
+            "line_count": len(img.transcribed_text.split("\n")) if img.transcribed_text else 0,
+            "human_edited": bool(img.human_edited),
+            "auto_transcribed_text": img.auto_transcribed_text,
+            "model_name": img.model_name,
         } for img in images]
         logger.info(f"Retrieved {len(images)} images for project ID {project_id} by user {current_user.username}")
         return jsonify(result)
@@ -2823,6 +2854,10 @@ def update_image(image_id):
         data = request.json
         transcribed_text = data.get("transcribed_text", image.transcribed_text)
         image.transcribed_text = transcribed_text
+        # This route is how a human edits transcribed_text (the editor's Save
+        # button, and AI Auto Fix's Save). From now on automatic transcription
+        # leaves this page's transcribed_text alone - see _transcribe_image_by_id.
+        image.human_edited = True
         db.session.commit()
         logger.info(f"Updated image with ID {image_id} by user {current_user.username}")
         return jsonify({
@@ -2833,11 +2868,87 @@ def update_image(image_id):
                 "name": image.name,
                 "original": f"{SERVER_URL}/{image.original}",
                 "transcribed_text": image.transcribed_text,
-                "line_count": len(image.transcribed_text.split("\n")) if image.transcribed_text else 0
+                "line_count": len(image.transcribed_text.split("\n")) if image.transcribed_text else 0,
+                "human_edited": bool(image.human_edited),
+                "auto_transcribed_text": image.auto_transcribed_text,
+                "model_name": image.model_name,
             }
         })
     except Exception as e:
         logger.error(f"Error in update_image for ID {image_id}: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route("/api/images/<int:image_id>/overwrite-with-auto", methods=["POST"])
+@jwt_required()
+def overwrite_image_with_auto(image_id):
+    """Replace the human transcription with the model's own output.
+
+    Dangerous on purpose: this is the one path that discards a human edit, so
+    it is a separate, explicit action rather than something a normal OCR rerun
+    does implicitly (see _transcribe_image_by_id). The client is expected to
+    confirm with the user before calling this.
+    """
+    try:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+
+        image = Image.query.get_or_404(image_id)
+        if not check_project_access(image.project_id, current_user):
+            return jsonify({"error": "Access denied"}), 403
+
+        if image.auto_transcribed_text is None:
+            return jsonify({"error": "No automatic transcription available for this image yet"}), 400
+
+        image.transcribed_text = image.auto_transcribed_text
+        image.human_edited = False
+        db.session.commit()
+        logger.warning(
+            "Image %s: human transcription overwritten with the automatic (%s) "
+            "result by user %s", image_id, image.model_name, current_user.username,
+        )
+        return jsonify({
+            "message": "Transcription overwritten with the automatic result",
+            "image": {
+                "id": image.id,
+                "transcribed_text": image.transcribed_text,
+                "line_count": len(image.transcribed_text.split("\n")) if image.transcribed_text else 0,
+                "human_edited": bool(image.human_edited),
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error in overwrite_image_with_auto for ID {image_id}: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route("/api/projects/<int:project_id>/clear-transcriptions", methods=["POST"])
+@jwt_required()
+def clear_project_transcriptions(project_id):
+    """Blank the human (main) transcription of every image in the project.
+
+    Only transcribed_text is cleared - auto_transcribed_text (the model's own
+    output) and model_name are left alone, so nothing about what the OCR
+    produced is lost; it can still be restored via overwrite-with-auto.
+    """
+    try:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+
+        if not check_project_access(project_id, current_user):
+            return jsonify({"error": "Access denied"}), 403
+
+        cleared = Image.query.filter_by(project_id=project_id).update(
+            {"transcribed_text": None, "human_edited": False},
+            synchronize_session=False,
+        )
+        db.session.commit()
+        logger.warning(
+            "Project %s: cleared the manual transcription of %d image(s) "
+            "(user %s)", project_id, cleared, current_user.username,
+        )
+        return jsonify({"message": "Manual transcription cleared", "cleared_count": cleared})
+    except Exception as e:
+        logger.error(f"Error in clear_project_transcriptions for project {project_id}: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
 
 # Content Routes
@@ -3098,11 +3209,38 @@ def transcribe_by_id(image_id):
         return jsonify({
             "status": "success",
             "message": "Image transcribed and text saved",
-            "line_count": len(result["lines"])
+            "line_count": len(result["lines"]),
+            "device": selected_device,
         })
     except Exception as e:
         logger.error(f"Error in transcribe_by_id for ID {image_id}: {str(e)}")
         return jsonify({"status": "error", "message": str(e), "line_count": 0}), 500
+
+@app.route("/api/transcribe/device-status", methods=["GET"])
+@jwt_required()
+def transcribe_device_status():
+    """What device transcription actually runs on, for the GUI's status line.
+
+    selected_device is decided once at process startup (torch.cuda.is_available()),
+    so this is a fixed fact about this server process, not a per-request check.
+    """
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    is_gpu = selected_device != "cpu"
+    gpu_name = None
+    if is_gpu:
+        try:
+            gpu_name = torch.cuda.get_device_name(0)
+        except Exception as e:
+            logger.warning("Could not read GPU device name: %s", e)
+
+    return jsonify({
+        "device": selected_device,
+        "is_gpu": is_gpu,
+        "gpu_name": gpu_name,
+    })
 
 # Static File Serving
 @app.route("/project/<path:path>")

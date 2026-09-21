@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Levenshtein diff — side-by-side character view</title>
+<style>
+  :root{
+    /* warm parchment palette: black-bean / umber / buff / champagne / khaki */
+    --bg:#fbf7f0;          /* warm parchment */
+    --panel:#e1d7c7;       /* champagne — header / toolbar */
+    --text:#352c29;        /* black-bean */
+    --muted:#7a6f64;       /* muted umber-brown */
+    --border:#d3c4ae;      /* warm border */
+    --accent:#D9A973;      /* buff / gold */
+    --accent-ink:#8a5a1e;  /* dark gold for text on light */
+    --ins-bg:#dcebd4; --ins-fg:#256b39;   /* insertion  – green */
+    --del-bg:#f4d7d6; --del-fg:#b02a37;   /* deletion   – red   */
+    --sub-bg:#f2e3c6; --sub-fg:#8a5a1e;   /* substitute – gold (brand accent) */
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;display:flex;flex-direction:column;height:100vh;
+       font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+       background:var(--bg);color:var(--text)}
+
+  header{padding:12px 16px 10px;border-bottom:1px solid var(--border);flex:0 0 auto;background:var(--panel)}
+  h1{font-size:16px;margin:0 0 8px;font-weight:600}
+  .toolbar{display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:13px}
+  .toolbar label{display:inline-flex;gap:6px;align-items:center;cursor:pointer;user-select:none}
+  button{background:var(--panel);color:var(--text);border:1px solid var(--border);
+         border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.active{border-color:var(--accent);color:var(--accent-ink);background:var(--bg)}
+  input[type=checkbox]{accent-color:var(--accent)}
+  .stats{display:flex;gap:14px;margin-left:auto;color:var(--muted);font-size:12px;white-space:nowrap}
+  .stats b{color:var(--text)}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted)}
+  .chip{display:inline-flex;align-items:center;gap:6px}
+  .box{width:13px;height:13px;border-radius:3px;display:inline-block}
+
+  /* ---- shared mono type ---- */
+  .mono{font:14.5px/1.75 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+  /* ---- COMPARE (aligned rows) ---- */
+  #compare{flex:1 1 auto;overflow:auto;min-height:0}
+  .row{display:flex;align-items:stretch}
+  .row:hover{outline:1px solid #35292914;outline-offset:-1px}
+  .cell{flex:1 1 50%;min-width:0;padding:1px 16px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;min-height:1.75em}
+  .cell.a{border-right:1px solid var(--border)}
+  #compare.nowrap .cell{white-space:pre;overflow-wrap:normal;word-break:normal}
+  .row.mod{background:#d9a9731f}
+  .row.del .cell.a{background:#b02a3717}.row.del .cell.b{background:#b02a370c}
+  .row.ins .cell.b{background:#256b3917}.row.ins .cell.a{background:#256b390c}
+  .ins{background:var(--ins-bg);color:var(--ins-fg);border-radius:3px}
+  .del{background:var(--del-bg);color:var(--del-fg);border-radius:3px}
+  .sub{background:var(--sub-bg);color:var(--sub-fg);border-radius:3px}
+  .mark{color:var(--del-fg);font-weight:700;cursor:help}
+
+  /* ---- EDIT (two textareas) ---- */
+  #edit{flex:1 1 auto;display:flex;min-height:0}
+  #edit .pane{position:relative;flex:1 1 50%;min-width:0;border-right:1px solid var(--border)}
+  #edit .pane:last-child{border-right:0}
+  #edit textarea{position:absolute;inset:0;width:100%;height:100%;margin:0;border:0;
+    padding:14px 16px;background:transparent;color:var(--text);resize:none;outline:none;
+    white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow:auto}
+  #edit.nowrap textarea{white-space:pre;overflow-wrap:normal;word-break:normal}
+  .tag{position:absolute;top:8px;right:10px;z-index:3;font:600 12px/1 ui-monospace,monospace;
+       color:var(--muted);background:var(--bg);padding:3px 7px;border:1px solid var(--border);border-radius:6px}
+  .hidden{display:none!important}
+  .dragover{outline:2px dashed var(--accent);outline-offset:-2px;background:#d9a9731f}
+</style>
+</head>
+<body>
+  <header>
+    <h1>Levenshtein diff — side-by-side character view</h1>
+    <div class="toolbar">
+      <button id="mode" class="active">Compare</button>
+      <label><input type="checkbox" id="wrap" checked> Word wrap</label>
+      <label><input type="checkbox" id="ci"> Ignore case</label>
+      <label><input type="checkbox" id="delmark" checked> Deletions as single character (⌇)</label>
+      <button id="swap" title="Swap A and B">⇄ Swap A / B</button>
+      <button id="copy" title="Copy a shareable link with the current A/B text">Copy link</button>
+      <div class="stats" id="stats"></div>
+    </div>
+    <div class="legend">
+      <span class="chip"><span class="box" style="background:var(--ins-bg);border:1px solid var(--ins-fg)"></span> insertion</span>
+      <span class="chip"><span class="box" style="background:var(--del-bg);border:1px solid var(--del-fg)"></span> deletion ⌇</span>
+      <span class="chip"><span class="box" style="background:var(--sub-bg);border:1px solid var(--sub-fg)"></span> substitution</span>
+      <span class="chip"><span class="box" style="border:1px solid var(--border)"></span> unchanged</span>
+      <span class="chip" style="margin-left:6px">A left · B right</span>
+      <span class="chip">drag &amp; drop a file onto the A or B side</span>
+    </div>
+  </header>
+
+  <div id="compare" class="mono"></div>
+
+  <div id="edit" class="mono hidden">
+    <div class="pane"><span class="tag">A</span><textarea id="taA" spellcheck="false"></textarea></div>
+    <div class="pane"><span class="tag">B</span><textarea id="taB" spellcheck="false"></textarea></div>
+  </div>
+
+<script>
+"use strict";
+
+/* ---------- alignment core (works on any token array) ---------- */
+function alignCore(a, b, eq){
+  const n = a.length, m = b.length;
+  const d = Array.from({length:n+1}, ()=> new Int32Array(m+1));
+  for(let i=0;i<=n;i++) d[i][0]=i;
+  for(let j=0;j<=m;j++) d[0][j]=j;
+  for(let i=1;i<=n;i++)
+    for(let j=1;j<=m;j++){
+      const c = eq(a[i-1], b[j-1]) ? 0 : 1;
+      d[i][j] = Math.min(d[i-1][j]+1, d[i][j-1]+1, d[i-1][j-1]+c);
+    }
+  const ops=[]; let i=n, j=m;
+  while(i>0 || j>0){
+    if(i>0 && j>0){
+      const c = eq(a[i-1], b[j-1]) ? 0 : 1;
+      if(d[i][j] === d[i-1][j-1] + c){ ops.push({op:c?'sub':'equal', a:a[i-1], b:b[j-1]}); i--; j--; continue; }
+    }
+    if(i>0 && d[i][j] === d[i-1][j] + 1){ ops.push({op:'del', a:a[i-1], b:null}); i--; continue; }
+    ops.push({op:'ins', a:null, b:b[j-1]}); j--;
+  }
+  ops.reverse();
+  return {ops, distance:d[n][m]};
+}
+const charEq = ci => ci ? (x,y)=>x.toLowerCase()===y.toLowerCase() : (x,y)=>x===y;
+
+/* Cost of pairing two lines as a "modified" pair.
+   0 = identical; similar lines get a cheap cost (<2 so they pair);
+   dissimilar lines get 3 (> ins+del = 2) so the DP prefers clean insert/delete. */
+function lineCost(x, y, ci){
+  const same = ci ? x.toLowerCase()===y.toLowerCase() : x===y;
+  if(same) return 0;
+  const ax = Array.from(x), ay = Array.from(y);
+  if(ax.length===0 || ay.length===0) return 3;
+  const dist = alignCore(ax, ay, charEq(ci)).distance;
+  const nd = dist / Math.max(ax.length, ay.length);   // 0..1 normalized distance
+  return nd < 0.6 ? 1 + nd : 3;
+}
+
+/* Line-level alignment with the similarity-aware cost above. */
+function alignLines(a, b, ci){
+  const n=a.length, m=b.length, EPS=1e-9;
+  const cost = (x,y)=> lineCost(x,y,ci);
+  const d = Array.from({length:n+1}, ()=> new Float64Array(m+1));
+  for(let i=0;i<=n;i++) d[i][0]=i;
+  for(let j=0;j<=m;j++) d[0][j]=j;
+  for(let i=1;i<=n;i++)
+    for(let j=1;j<=m;j++){
+      const c = cost(a[i-1], b[j-1]);
+      d[i][j] = Math.min(d[i-1][j]+1, d[i][j-1]+1, d[i-1][j-1]+c);
+    }
+  const ops=[]; let i=n, j=m;
+  while(i>0 || j>0){
+    if(i>0 && j>0){
+      const c = cost(a[i-1], b[j-1]);
+      if(Math.abs(d[i][j]-(d[i-1][j-1]+c))<EPS){ ops.push({op:c<EPS?'equal':'sub', a:a[i-1], b:b[j-1]}); i--; j--; continue; }
+    }
+    if(i>0 && Math.abs(d[i][j]-(d[i-1][j]+1))<EPS){ ops.push({op:'del', a:a[i-1], b:null}); i--; continue; }
+    ops.push({op:'ins', a:null, b:b[j-1]}); j--;
+  }
+  ops.reverse();
+  return {ops};
+}
+
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const escAttr = s => esc(s).replace(/"/g,'&quot;').replace(/\n/g,'\\n');
+const sp = (cls,ch) => `<span class="${cls}">${esc(ch)}</span>`;
+const mark = t => `<span class="mark" title="deleted: ${escAttr(t)}">⌇</span>`;
+
+/* char-level diff of one aligned line pair -> {ha, hb} */
+function pairHtml(a, b, ci, single){
+  const {ops} = alignCore(Array.from(a), Array.from(b), charEq(ci));
+  let ha='', hb='';
+  for(let k=0;k<ops.length;k++){
+    const o = ops[k];
+    if(o.op==='equal'){ ha+=esc(o.a); hb+=esc(o.b); }
+    else if(o.op==='sub'){ ha+=sp('sub',o.a); hb+=sp('sub',o.b); }
+    else if(o.op==='ins'){ hb+=sp('ins',o.b); }
+    else{ // del: red char in A, ⌇ marker in B
+      ha += sp('del', o.a);
+      if(single){
+        const prev = ops[k-1];
+        if(!prev || prev.op!=='del'){
+          let run='', j=k; while(j<ops.length && ops[j].op==='del'){ run+=ops[j].a; j++; }
+          hb += mark(run);
+        }
+      } else {
+        hb += mark(o.a);              // one ⌇ per deleted character
+      }
+    }
+  }
+  return {ha, hb};
+}
+
+const $ = id => document.getElementById(id);
+const els = {
+  compare:$('compare'), edit:$('edit'), taA:$('taA'), taB:$('taB'),
+  stats:$('stats'), mode:$('mode'), wrap:$('wrap'), ci:$('ci'),
+  delmark:$('delmark'), swap:$('swap'), copy:$('copy'),
+};
+
+const SAMPLE_A =
+`Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
+Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.
+Nisi ut aliquip ex ea commodo consequat.
+Duis aute irure dolor in reprehenderit in voluptate velit esse.
+Excepteur sint occaecat cupidatat non proident, sunt in culpa.
+Qui officia deserunt mollit anim id est laborum.`;
+
+const SAMPLE_B =
+`Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
+Ut enim ad minima veniam, quis nostrum exercitation.
+Nisi ut aliquip ex ea commodo consequat sequi.
+A completely new sentence inserted here for testing alignment.
+Duis aute irure dolor in reprehenderit in voluptate velit esse cillum.
+Qui officia deserunt mollit anim id est laborum.`;
+
+els.taA.value = SAMPLE_A;
+els.taB.value = SAMPLE_B;
+
+/* ---------- render aligned Compare view ---------- */
+function render(){
+  const A = els.taA.value, B = els.taB.value;
+  const ci = els.ci.checked, single = els.delmark.checked;
+
+  const linesA = A.split('\n'), linesB = B.split('\n');
+  const {ops:lineOps} = alignLines(linesA, linesB, ci);
+
+  let html = '';
+  const cnt = {mod:0, ins:0, del:0};
+  for(const o of lineOps){
+    if(o.op==='equal'){
+      html += rowHtml('equal', esc(o.a) || '&#8203;', esc(o.b) || '&#8203;');
+    } else if(o.op==='sub'){
+      cnt.mod++;
+      const p = pairHtml(o.a, o.b, ci, single);
+      html += rowHtml('mod', p.ha || '&#8203;', p.hb || '&#8203;');
+    } else if(o.op==='del'){
+      cnt.del++;
+      html += rowHtml('del', `<span class="del">${esc(o.a) || ' '}</span>`, `<span class="mark">⌇</span>`);
+    } else { // ins
+      cnt.ins++;
+      html += rowHtml('ins', '&#8203;', `<span class="ins">${esc(o.b) || ' '}</span>`);
+    }
+  }
+  els.compare.innerHTML = html;
+
+  const {distance} = alignCore(Array.from(A), Array.from(B), charEq(ci));
+  els.stats.innerHTML =
+    `char distance <b>${distance}</b> &nbsp;·&nbsp; lines: mod <b>${cnt.mod}</b>, ins <b>${cnt.ins}</b>, del <b>${cnt.del}</b>`;
+}
+function rowHtml(cls, a, b){
+  return `<div class="row ${cls}"><div class="cell a">${a}</div><div class="cell b">${b}</div></div>`;
+}
+
+/* ---------- Edit-mode synchronized scrolling ---------- */
+let scrollLock = false;
+function syncScroll(src){
+  if(scrollLock) return; scrollLock = true;
+  const other = src === els.taA ? els.taB : els.taA;
+  other.scrollTop = src.scrollTop; other.scrollLeft = src.scrollLeft;
+  scrollLock = false;
+}
+els.taA.addEventListener('scroll', ()=>syncScroll(els.taA));
+els.taB.addEventListener('scroll', ()=>syncScroll(els.taB));
+
+/* ---------- events ---------- */
+els.taA.addEventListener('input', render);
+els.taB.addEventListener('input', render);
+els.ci.addEventListener('change', render);
+els.delmark.addEventListener('change', render);
+els.wrap.addEventListener('change', ()=>{
+  els.compare.classList.toggle('nowrap', !els.wrap.checked);
+  els.edit.classList.toggle('nowrap', !els.wrap.checked);
+});
+els.swap.addEventListener('click', ()=>{
+  const t = els.taA.value; els.taA.value = els.taB.value; els.taB.value = t; render();
+});
+els.mode.addEventListener('click', ()=>{
+  const editing = els.edit.classList.contains('hidden');
+  els.edit.classList.toggle('hidden', !editing);
+  els.compare.classList.toggle('hidden', editing);
+  els.mode.textContent = editing ? 'Edit' : 'Compare';
+  els.mode.classList.toggle('active', !editing);
+  if(!editing) render();           // returning to compare -> refresh
+});
+
+/* ---------- import data from the URL (#a=..&b=..  or  ?a=..&b=..) ---------- */
+function applyOptionsFromParams(p){
+  if(p.get('ci')==='1')  els.ci.checked = true;
+  if(p.get('wrap')==='0') els.wrap.checked = false;
+  if(p.get('del')==='0') els.delmark.checked = false;
+  els.compare.classList.toggle('nowrap', !els.wrap.checked);
+  els.edit.classList.toggle('nowrap', !els.wrap.checked);
+}
+function importFromUrl(){
+  const raw = location.hash.length>1 ? location.hash.slice(1)
+            : (location.search.length>1 ? location.search.slice(1) : '');
+  if(!raw) return false;
+  let p; try{ p = new URLSearchParams(raw); }catch(_){ return false; }
+  if(!p.has('a') && !p.has('b')) return false;
+  els.taA.value = p.get('a') || '';
+  els.taB.value = p.get('b') || '';
+  applyOptionsFromParams(p);
+  return true;
+}
+// react to hash changes too (another system can push a new #a=..&b=.. live)
+window.addEventListener('hashchange', ()=>{ if(importFromUrl()) render(); });
+
+/* ---------- drag & drop text files onto the A / B side ---------- */
+function loadFileInto(file, side){
+  const reader = new FileReader();
+  reader.onload = e => { (side==='a'?els.taA:els.taB).value = String(e.target.result); render(); };
+  reader.readAsText(file);
+}
+function handleDrop(e, sideResolver){
+  e.preventDefault();
+  document.querySelectorAll('.dragover').forEach(el=>el.classList.remove('dragover'));
+  const files = e.dataTransfer && e.dataTransfer.files ? [...e.dataTransfer.files] : [];
+  if(!files.length) return;
+  if(files.length >= 2){ loadFileInto(files[0],'a'); loadFileInto(files[1],'b'); return; }
+  loadFileInto(files[0], sideResolver(e));
+}
+function wireDrop(el, sideResolver){
+  el.addEventListener('dragover', e=>{ e.preventDefault(); el.classList.add('dragover'); });
+  el.addEventListener('dragleave', e=>{ if(e.target===el) el.classList.remove('dragover'); });
+  el.addEventListener('drop', e=> handleDrop(e, sideResolver));
+}
+const byX = e => {                     // pick side from horizontal drop position
+  const r = e.currentTarget.getBoundingClientRect();
+  return (e.clientX - r.left) < r.width/2 ? 'a' : 'b';
+};
+wireDrop(els.taA, ()=>'a');
+wireDrop(els.taB, ()=>'b');
+wireDrop(els.compare, byX);
+
+/* ---------- Copy link (URL hash carries the current A/B + options) ---------- */
+function buildLink(){
+  const p = new URLSearchParams();
+  p.set('a', els.taA.value);
+  p.set('b', els.taB.value);
+  if(els.ci.checked)       p.set('ci','1');
+  if(!els.wrap.checked)    p.set('wrap','0');
+  if(!els.delmark.checked) p.set('del','0');
+  return location.href.replace(/[?#].*$/,'') + '#' + p.toString();
+}
+function flash(msg){
+  const b = els.copy, old = b.textContent;
+  b.textContent = msg; setTimeout(()=>{ b.textContent = old; }, 1200);
+}
+async function copyLink(){
+  const link = buildLink();
+  try{ await navigator.clipboard.writeText(link); flash('Copied ✓'); return; }
+  catch(_){ /* fall back below (e.g. file:// or no permission) */ }
+  const ta = document.createElement('textarea');
+  ta.value = link; ta.style.position='fixed'; ta.style.opacity='0';
+  document.body.appendChild(ta); ta.select();
+  let ok=false; try{ ok = document.execCommand('copy'); }catch(_){}
+  ta.remove();
+  ok ? flash('Copied ✓') : prompt('Copy this link:', link);
+}
+els.copy.addEventListener('click', copyLink);
+
+importFromUrl();   // URL data (if any) overrides the sample text
+render();
+</script>
+</body>
+</html>

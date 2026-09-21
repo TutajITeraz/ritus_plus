@@ -26,7 +26,7 @@ import { LuUpload, LuFolder } from "react-icons/lu";
 import { GiFeather } from "react-icons/gi";
 import { FaRegTrashAlt, FaDownload, FaStop } from "react-icons/fa";
 import { TiArrowBack } from "react-icons/ti";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import {
   updateProject,
   updateImage,
@@ -40,9 +40,12 @@ import {
   startBatchTranscribe,
   getBatchTranscribeStatus,
   cancelBatchTranscribe,
+  overwriteImageWithAuto,
 } from "../apiUtils";
 import { useNavigate } from "react-router-dom";
 import { toaster } from "@/components/ui/toaster";
+import { SERVER_URL } from "../config";
+import { levenshteinDistance } from "../utils/levenshtein";
 import { ProgressBar } from "@/components/ui/progress";
 import IiifDownloader from "./IiifDownloader";
 import Transcribe from "./Transcribe";
@@ -58,6 +61,9 @@ import {
 } from "../utils/columnSensitivity";
 import TranscriptionEditor from "./TranscriptionEditor";
 import AIAutoFixModal from "./AIAutoFixModal";
+import DeviceStatusBadge from "./DeviceStatusBadge";
+import { useJobPacing } from "../utils/useJobPacing";
+import { modelLabel } from "../utils/modelLabels";
 
 const transcribeModels = createListCollection({
   items: [
@@ -114,6 +120,10 @@ const Sidebar = ({
   const [transcribeRangeTo, setTranscribeRangeTo] = useState(1);
   const [transcribeStarting, setTranscribeStarting] = useState(false);
   const transcribePollRef = useRef(null);
+  const transcribeAvgSeconds = useJobPacing(
+    transcribeJob?.status === "running",
+    transcribeJob?.current_image ?? 0
+  );
 
   // Sync transcriptionText when selectedImage changes
   useEffect(() => {
@@ -282,6 +292,7 @@ const Sidebar = ({
                   ...img,
                   transcribed_text: transcriptionText,
                   line_count: transcriptionText.split("\n").length,
+                  human_edited: true,
                 }
               : img
           )
@@ -333,6 +344,7 @@ const Sidebar = ({
                 ...img,
                 transcribed_text: aiFixedText,
                 line_count: aiFixedText.split("\n").length,
+                human_edited: true,
               }
             : img
         )
@@ -511,6 +523,59 @@ const Sidebar = ({
         setMainImage(updatedImages[0].original);
       }
     });
+  };
+
+  // Levenshtein distance between the model's own output and what is
+  // currently in the editor (live, not just the last saved transcribed_text),
+  // so the number tracks manual edits as they happen.
+  const autoTranscribedText = selectedImage?.auto_transcribed_text || "";
+  const canCompareWithAuto = !!selectedImage?.auto_transcribed_text;
+  const autoDiffDistance = useMemo(
+    () => (canCompareWithAuto ? levenshteinDistance(autoTranscribedText, transcriptionText) : null),
+    [autoTranscribedText, transcriptionText, canCompareWithAuto]
+  );
+
+  const handleOpenAutoCompare = () => {
+    if (!selectedImage || !canCompareWithAuto) return;
+    const params = new URLSearchParams();
+    params.set("a", autoTranscribedText);
+    params.set("b", transcriptionText || "");
+    const url = `${SERVER_URL}/levenshtein-diff.html#${params.toString()}`;
+    window.open(url, `ritus-diff-${selectedImage.id}`, "width=1100,height=800");
+  };
+
+  // Dangerous on purpose: discards whatever is in the human transcription and
+  // replaces it with the model's own output. Requires explicit confirmation.
+  const handleOverwriteWithAuto = async () => {
+    if (!selectedImage || !canCompareWithAuto) return;
+    if (
+      !window.confirm(
+        "Overwrite the human transcription of this page with the automatic (model) transcription?\n\n" +
+        "Any manual edits on this page will be discarded. This cannot be undone."
+      )
+    ) {
+      return;
+    }
+    try {
+      const result = await overwriteImageWithAuto(selectedImage.id);
+      const newText = result.image.transcribed_text;
+      setImages(
+        images.map((img) =>
+          img.id === selectedImage.id
+            ? { ...img, transcribed_text: newText, human_edited: false, line_count: result.image.line_count }
+            : img
+        )
+      );
+      setTranscriptionText(newText);
+      toaster.create({
+        title: "Transcription overwritten",
+        description: "The human transcription was replaced with the automatic result.",
+        type: "success",
+        duration: 4000,
+      });
+    } catch (_) {
+      // overwriteImageWithAuto already shows an error toast
+    }
   };
 
   return (
@@ -692,12 +757,18 @@ const Sidebar = ({
                   {transcribeJob?.status === "running" && (
                     <Stack spacing={1}>
                       <Text fontSize="xs" color="blue.600">Transcribing in background…</Text>
+                      <DeviceStatusBadge />
                       <Progress.Root value={transcribeJob.total_images > 0 ? Math.round((transcribeJob.current_image / transcribeJob.total_images) * 100) : 0} maxW="220px">
                         <HStack gap="3">
                           <Progress.Track flex="1"><Progress.Range /></Progress.Track>
                           <Progress.ValueText>{transcribeJob.current_image}/{transcribeJob.total_images || "?"}</Progress.ValueText>
                         </HStack>
                       </Progress.Root>
+                      {transcribeAvgSeconds != null && (
+                        <Text fontSize="xs" color="gray.600">
+                          ~{transcribeAvgSeconds.toFixed(1)}s/page in this session
+                        </Text>
+                      )}
                       <Button size="xs" variant="subtle" colorPalette="red" onClick={handleCancelBatchTranscribe}>
                         <FaStop /> Stop
                       </Button>
@@ -793,6 +864,39 @@ const Sidebar = ({
                   selectedImage={selectedImage}
                   handleTranscriptionUpdate={handleTranscriptionUpdate}
                 />
+                {selectedImage && (
+                  <Stack spacing={1}>
+                    <Text fontSize="xs" color={selectedImage.human_edited ? "blue.600" : "gray.500"}>
+                      {selectedImage.human_edited
+                        ? "✎ Manually edited — protected from automatic re-transcription"
+                        : selectedImage.model_name
+                        ? `Automatic transcription (${modelLabel(selectedImage.model_name)}) — not yet manually edited`
+                        : "Not transcribed yet"}
+                    </Text>
+                    <HStack>
+                      <Text fontSize="xs" color="gray.600">Diff vs. automatic:</Text>
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={!canCompareWithAuto}
+                        onClick={handleOpenAutoCompare}
+                        title="Levenshtein distance between the automatic and human transcription — click to open the comparator"
+                      >
+                        {canCompareWithAuto ? autoDiffDistance : "—"}
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant="subtle"
+                        colorPalette="red"
+                        disabled={!canCompareWithAuto}
+                        onClick={handleOverwriteWithAuto}
+                        title="Discard the human transcription and replace it with the automatic (model) result"
+                      >
+                        Overwrite with automatic
+                      </Button>
+                    </HStack>
+                  </Stack>
+                )}
                 <Popover.Root
                   open={isAIAutoFixOpen}
                   onOpenChange={(e) => setIsAIAutoFixOpen(e.open)}
@@ -906,6 +1010,13 @@ const Sidebar = ({
                         </HStack>
                       </Stack>
                     </RadioGroup.Root>
+                    {(transcribeMode === "override" || transcribeMode === "range") && (
+                      <Text fontSize="xs" color="gray.500">
+                        Pages a human has manually edited keep that edit — only the
+                        automatic (model) copy is refreshed. Use "Overwrite with
+                        automatic" on a page to replace a manual edit on purpose.
+                      </Text>
+                    )}
                   </Stack>
                   {transcribeMode === "range" && (
                     <HStack align="end" spacing={3}>

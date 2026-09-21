@@ -45,7 +45,25 @@ class Image(db.Model):
     project_id = db.Column(db.Integer, db.ForeignKey('project.id', ondelete='CASCADE'), nullable=False)
     name = db.Column(db.String(100), nullable=False)
     original = db.Column(db.String(200), nullable=False)
+    # The working copy: what a human reads/edits, and what exports use. An
+    # automatic transcription fills this in too, but only while a human has
+    # never touched it (see human_edited) - once someone edits a page here,
+    # re-running OCR on it must not silently clobber their work.
     transcribed_text = db.Column(db.Text)
+    # True once a human has explicitly saved transcribed_text (the editor's
+    # Save button, or accepting an AI Auto Fix result). From then on, ordinary
+    # automatic transcription (single page, batch, override, ...) leaves
+    # transcribed_text alone; only the explicit "overwrite with automatic
+    # transcription" action may replace it.
+    human_edited = db.Column(db.Boolean, nullable=False, default=False)
+    # The model's own, unedited output - always overwritten by the next
+    # automatic transcription run, and never touched by a human edit. This is
+    # what "overwrite with automatic transcription" copies into
+    # transcribed_text, and what the transcription/human diff compares against.
+    auto_transcribed_text = db.Column(db.Text)
+    # Which model produced auto_transcribed_text, and when.
+    model_name = db.Column(db.String(100))
+    auto_transcribed_at = db.Column(db.DateTime)
 
 class Content(db.Model):
     id = db.Column(db.Integer, primary_key=True)

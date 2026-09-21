@@ -20,6 +20,7 @@ import { toaster } from "@/components/ui/toaster";
 import { transcribeImage } from "../apiUtils";
 import RedSensitivitySlider from "./RedSensitivitySlider";
 import ColumnSensitivitySlider from "./ColumnSensitivitySlider";
+import DeviceStatusBadge from "./DeviceStatusBadge";
 import {
   DEFAULT_RED_SENSITIVITY,
   sensitivityToThreshold,
@@ -74,6 +75,9 @@ const Transcribe = ({
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [totalLines, setTotalLines] = useState(0);
   const [stopRequested, setStopRequested] = useState(false);
+  // Wall-clock time spent inside transcribeImage() calls this run, used to
+  // show a running average seconds/page while the dialog is open.
+  const [elapsedMs, setElapsedMs] = useState(0);
 
   // Update page count and end page when images change
   useEffect(() => {
@@ -86,6 +90,7 @@ const Transcribe = ({
     setIsTranscribing(true);
     setStopRequested(false);
     setTotalLines(0);
+    setElapsedMs(0);
     try {
       const start = selectedImageId
         ? images.findIndex((img) => img.id === selectedImageId) + 1
@@ -108,6 +113,7 @@ const Transcribe = ({
           break;
         }
 
+        const pageStart = performance.now();
         try {
           const result = await transcribeImage(
             imageId,
@@ -125,6 +131,7 @@ const Transcribe = ({
             linesCount += result.line_count;
             setProgress({ current: transcribedCount, total });
             setTotalLines(linesCount);
+            setElapsedMs((prev) => prev + (performance.now() - pageStart));
           } else {
             throw new Error(result.message);
           }
@@ -187,7 +194,13 @@ const Transcribe = ({
         <Dialog.Body pt="4">
           <Dialog.Title>Transcribe Images</Dialog.Title>
           <Stack spacing={4}>
+            <DeviceStatusBadge />
             <Text>Number of pages: {pageCount}</Text>
+            <Text fontSize="xs" color="gray.500">
+              Pages a human has manually edited keep that edit — only the
+              automatic (model) copy is refreshed. Use "Overwrite with
+              automatic" on a page to replace a manual edit on purpose.
+            </Text>
             {!selectedImageId && (
               <>
                 <Box>
@@ -329,6 +342,12 @@ const Transcribe = ({
                   </HStack>
                 </Progress.Root>
                 <Text>Total lines transcribed: {totalLines}</Text>
+                {progress.current > 0 && (
+                  <Text fontSize="sm" color="gray.600">
+                    Average time per page:{" "}
+                    {(elapsedMs / progress.current / 1000).toFixed(1)}s
+                  </Text>
+                )}
               </>
             )}
           </Stack>

@@ -240,9 +240,11 @@ const TranscribeAllDialog = ({ projects, onJobsStarted }) => {
                   </RadioGroup.Root>
                   {isOverride && (
                     <Text fontSize="xs" color="orange.600">
-                      Existing transcriptions on every page of every project
-                      will be replaced, including the {fullyTranscribed.length}{" "}
-                      already-finished project(s).
+                      Every page of every project is re-transcribed, including the{" "}
+                      {fullyTranscribed.length} already-finished project(s). Pages a
+                      human has manually edited keep that edit — only the automatic
+                      (model) copy of those pages is refreshed; use "Overwrite with
+                      automatic" on a page to replace a manual edit on purpose.
                     </Text>
                   )}
                 </Stack>
