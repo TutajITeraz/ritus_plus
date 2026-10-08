@@ -28,6 +28,12 @@ class Project(db.Model):
     type = db.Column(db.String(50))
     iiif_url = db.Column(db.String(200))
     owner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    # Red-ink detection sensitivity (UI percent, 0-100) for this manuscript,
+    # because ink colour differs between manuscripts. NULL = not determined
+    # yet. red_sensitivity_source says who set it: 'auto' (calibrated from
+    # sample pages) or 'manual' (the user's override, never recalibrated).
+    red_sensitivity = db.Column(db.Float)
+    red_sensitivity_source = db.Column(db.String(10))
     contents = db.relationship('Content', backref='project', cascade='all, delete-orphan')
     batch_processes = db.relationship('BatchProcessing', backref='project', cascade='all, delete-orphan')
     images = db.relationship('Image', backref='project', cascade='all, delete-orphan')
@@ -79,8 +85,28 @@ class BatchProcessing(db.Model):
     processed_rows = db.Column(db.Integer, default=0)
     similarity_threshold = db.Column(db.Float, default=0.0)
     error_message = db.Column(db.Text)
+    # Needed to restart the run after a server restart, with the same settings.
+    method = db.Column(db.String(10))
+    auto_resume_count = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=db.func.now())
     updated_at = db.Column(db.DateTime, default=db.func.now(), onupdate=db.func.now())
+
+class BulkAiJob(db.Model):
+    """Bulk AI autofix over the transcribed text of several projects. The page
+    list is rebuilt from project_ids_json (in that order), and `done` pages are
+    skipped, so a restarted server continues where the last one stopped."""
+    id = db.Column(db.Integer, primary_key=True)
+    owner_id = db.Column(db.Integer, nullable=False)
+    project_ids_json = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='pending')  # pending, running, completed, failed, cancelled, interrupted
+    done = db.Column(db.Integer, default=0)
+    total = db.Column(db.Integer, default=0)
+    changed = db.Column(db.Integer, default=0)
+    projects = db.Column(db.Integer, default=0)
+    skipped = db.Column(db.Integer, default=0)
+    error_message = db.Column(db.Text)
+    auto_resume_count = db.Column(db.Integer, default=0)
+    auto_resume_mark = db.Column(db.Integer, default=0)
 
 class IiifDownloadJob(db.Model):
     id = db.Column(db.Integer, primary_key=True)

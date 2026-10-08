@@ -29,6 +29,7 @@ import { TiArrowBack } from "react-icons/ti";
 import { useState, useEffect, useRef, useMemo } from "react";
 import {
   updateProject,
+  fetchProject,
   updateImage,
   uploadImages,
   deleteImage,
@@ -49,7 +50,8 @@ import { levenshteinDistance } from "../utils/levenshtein";
 import { ProgressBar } from "@/components/ui/progress";
 import IiifDownloader from "./IiifDownloader";
 import Transcribe from "./Transcribe";
-import RedSensitivitySlider from "./RedSensitivitySlider";
+import RedSensitivityControl from "./RedSensitivityControl";
+import ProjectRedLevel from "./ProjectRedLevel";
 import ColumnSensitivitySlider from "./ColumnSensitivitySlider";
 import {
   DEFAULT_RED_SENSITIVITY,
@@ -62,7 +64,7 @@ import {
 import TranscriptionEditor from "./TranscriptionEditor";
 import AIAutoFixModal from "./AIAutoFixModal";
 import DeviceStatusBadge from "./DeviceStatusBadge";
-import { useJobPacing } from "../utils/useJobPacing";
+import { useJobPacing, formatDuration } from "../utils/useJobPacing";
 import { modelLabel } from "../utils/modelLabels";
 
 const transcribeModels = createListCollection({
@@ -115,14 +117,16 @@ const Sidebar = ({
   const [autofixErrors, setAutofixErrors] = useState(true);
   const [aiCorrect, setAiCorrect] = useState(false);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
+  const [redAuto, setRedAuto] = useState(true);
   const [columnSensitivity, setColumnSensitivity] = useState(DEFAULT_COLUMN_SENSITIVITY);
   const [transcribeRangeFrom, setTranscribeRangeFrom] = useState(1);
   const [transcribeRangeTo, setTranscribeRangeTo] = useState(1);
   const [transcribeStarting, setTranscribeStarting] = useState(false);
   const transcribePollRef = useRef(null);
-  const transcribeAvgSeconds = useJobPacing(
+  const { avgSeconds: transcribeAvgSeconds, etaSeconds: transcribeEtaSeconds } = useJobPacing(
     transcribeJob?.status === "running",
-    transcribeJob?.current_image ?? 0
+    transcribeJob?.current_image ?? 0,
+    transcribeJob?.total_images ?? 0
   );
 
   // Sync transcriptionText when selectedImage changes
@@ -481,7 +485,8 @@ const Sidebar = ({
         enhancedMultiColumn,
         sensitivityToColumnGapRatio(columnSensitivity),
         autofixErrors,
-        aiCorrect
+        aiCorrect,
+        redAuto
       );
       setTranscribeJob({
         status: "running",
@@ -685,6 +690,14 @@ const Sidebar = ({
                         </Text>
                       </Flex>
                     )}
+                    <Flex align="center">
+                      <ProjectRedLevel
+                        project={project}
+                        size="xs"
+                        fontSize="md"
+                        onChanged={() => fetchProject(project.id).then((p) => setProject(p))}
+                      />
+                    </Flex>
                     {project.is_owner && project.shared_users?.length > 0 && (
                       <Flex align="center">
                         <Text fontWeight="bold" minW="80px">Shared:</Text>
@@ -806,7 +819,8 @@ const Sidebar = ({
                       </Progress.Root>
                       {transcribeAvgSeconds != null && (
                         <Text fontSize="xs" color="gray.600">
-                          ~{transcribeAvgSeconds.toFixed(1)}s/page in this session
+                          ~{transcribeAvgSeconds.toFixed(1)}s/page avg (this session)
+                          {transcribeEtaSeconds != null && ` · ETA ${formatDuration(transcribeEtaSeconds)}`}
                         </Text>
                       )}
                       <Button size="xs" variant="subtle" colorPalette="red" onClick={handleCancelBatchTranscribe}>
@@ -1137,7 +1151,9 @@ const Sidebar = ({
                         AI is unavailable the find/replace result is kept.
                       </Text>
                   </Stack>
-                  <RedSensitivitySlider
+                  <RedSensitivityControl
+                    auto={redAuto}
+                    onAutoChange={setRedAuto}
                     sensitivity={redSensitivity}
                     onSensitivityChange={setRedSensitivity}
                   />

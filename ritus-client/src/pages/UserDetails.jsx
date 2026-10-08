@@ -41,6 +41,7 @@ const UserDetails = () => {
   const [currentPassword, setCurrentPassword] = useState("");
   const [domainConfig, setDomainConfig] = useState({});
   const [transcriptionWorkers, setTranscriptionWorkers] = useState(1);
+  const [redMaxPercent, setRedMaxPercent] = useState(25);
   const [newDomain, setNewDomain] = useState({ domain: "", sleep_seconds: 0, timeout: 60 });
   const [domainConfigSaving, setDomainConfigSaving] = useState(false);
   const navigate = useNavigate();
@@ -50,8 +51,9 @@ const UserDetails = () => {
     if (currentUser?.is_admin) {
       fetchUsers().then(setUsers);
       getDomainConfig().then((cfg) => {
-        const { transcription_workers, ...domainOnly } = cfg;
+        const { transcription_workers, red_max_fraction_percent, ...domainOnly } = cfg;
         setTranscriptionWorkers(transcription_workers ?? 1);
+        setRedMaxPercent(red_max_fraction_percent ?? 25);
         setDomainConfig(domainOnly);
       }).catch(() => {});
     }
@@ -63,7 +65,7 @@ const UserDetails = () => {
   const handleSaveDomainConfig = async () => {
     setDomainConfigSaving(true);
     try {
-      await saveDomainConfig({ transcription_workers: Number(transcriptionWorkers), ...domainConfig });
+      await saveDomainConfig({ transcription_workers: Number(transcriptionWorkers), red_max_fraction_percent: Number(redMaxPercent), ...domainConfig });
     } catch (e) {
       console.error("Failed to save domain config:", e);
     } finally {
@@ -372,6 +374,26 @@ const UserDetails = () => {
             <Text fontSize="xs" color="gray.500">
               Strony transkrybowane jednocześnie w ramach jednego projektu (np. 4 lub 8 dla 8 rdzeni CPU).
               Projekty są kolejkowane i transkrybowane jeden po drugim.
+            </Text>
+          </HStack>
+          {/* Red-ink calibration limit */}
+          <HStack mb={5} spacing={4} align="center">
+            <Text fontWeight="bold" fontSize="sm" whiteSpace="nowrap">
+              Max. share of red text (%):
+            </Text>
+            <Input
+              size="sm"
+              type="number"
+              min={1}
+              max={100}
+              step={1}
+              value={redMaxPercent}
+              onChange={(e) => setRedMaxPercent(e.target.value)}
+              w="80px"
+            />
+            <Text fontSize="xs" color="gray.500">
+              Automatyczne ustalanie poziomu czerwonego obniża czułość, dopóki więcej niż tyle
+              tekstu na stronach próbnych jest wykrywane jako czerwone (rubryk jest zwykle mniej niż treści).
             </Text>
           </HStack>
           <Table.Root size="sm" mb={4}>

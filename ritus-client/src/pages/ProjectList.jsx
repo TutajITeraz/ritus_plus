@@ -21,11 +21,12 @@ import {
   Spinner,
 } from "@chakra-ui/react";
 import { LuPlus, LuTrash2 } from "react-icons/lu";
-import { FaDownload, FaStop, FaFileCsv } from "react-icons/fa";
+import { FaDownload, FaStop, FaFileCsv, FaCheckCircle } from "react-icons/fa";
 import { MdImageNotSupported } from "react-icons/md";
 import { useNavigate } from "react-router-dom";
 import {
   fetchProjects,
+  fetchProjectsStats,
   createProject,
   deleteProject,
   fetchUsers,
@@ -41,19 +42,24 @@ import {
   clearProjectTranscriptions,
   exportTranscriptions,
   exportProjectTables,
+  applyTextActions,
+  startBulkAiAutofix,
+  getBulkAiAutofixStatus,
+  cancelBulkAiAutofix,
 } from "../apiUtils";
 import { useAuth } from "../App";
 import { toaster } from "@/components/ui/toaster";
 import BatchProjectCreator from "../components/BatchProjectCreator";
 import TranscribeAllDialog from "../components/TranscribeAllDialog";
 import ProcessTableDialog from "../components/ProcessTableDialog";
-import RedSensitivitySlider from "../components/RedSensitivitySlider";
+import RedSensitivityControl from "../components/RedSensitivityControl";
+import ProjectRedLevel, { describeRedLevel } from "../components/ProjectRedLevel";
 import {
   DEFAULT_RED_SENSITIVITY,
   sensitivityToThreshold,
 } from "../utils/redSensitivity";
 import { modelLabel } from "../utils/modelLabels";
-import { useJobPacing } from "../utils/useJobPacing";
+import { useJobPacing, formatDuration } from "../utils/useJobPacing";
 import DeviceStatusBadge from "../components/DeviceStatusBadge";
 
 const typeCollection = createListCollection({
@@ -129,11 +135,10 @@ const IiifProjectStatus = ({ project, jobStatus, onDownload, onCancel }) => {
     );
   }
 
-  if (status === "completed") {
-    return (
-      <Text fontSize="sm" color="green.600">✓ Download complete</Text>
-    );
-  }
+  // "completed" shows no separate widget - a small checkmark next to the
+  // image count (rendered by the caller) is enough; a permanent "Download
+  // complete" line would otherwise linger on every finished project forever.
+  if (status === "completed") return null;
 
   // No job or status="none" – show Download button
   if (!project.iiif_url) return null;
@@ -175,6 +180,7 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
   const [autofixErrors, setAutofixErrors] = useState(true);
   const [aiCorrect, setAiCorrect] = useState(false);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
+  const [redAuto, setRedAuto] = useState(true);
   const [rangeFrom, setRangeFrom] = useState(1);
   const [rangeTo, setRangeTo] = useState(project.image_count || 1);
 
@@ -187,7 +193,7 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
   const current = jobStatus?.current_image ?? 0;
   const total = jobStatus?.total_images ?? 0;
   const pct = total > 0 ? Math.round((current / total) * 100) : 0;
-  const avgSeconds = useJobPacing(status === "running", current);
+  const { avgSeconds, etaSeconds } = useJobPacing(status === "running", current, total);
 
   // Running/pending: no dialog needed, early return is fine
   if (status === "running" || status === "pending") {
@@ -207,7 +213,8 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
         </Progress.Root>
         {avgSeconds != null && (
           <Text fontSize="xs" color="gray.600">
-            ~{avgSeconds.toFixed(1)}s/page in this session
+            ~{avgSeconds.toFixed(1)}s/page avg (this session)
+            {etaSeconds != null && ` · ETA ${formatDuration(etaSeconds)}`}
           </Text>
         )}
         <Button size="xs" variant="subtle" colorPalette="red" onClick={onCancel}>
@@ -356,7 +363,9 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
                       AI is unavailable the find/replace result is kept.
                     </Text>
                 </Stack>
-                <RedSensitivitySlider
+                <RedSensitivityControl
+                  auto={redAuto}
+                  onAutoChange={setRedAuto}
                   sensitivity={redSensitivity}
                   onSensitivityChange={setRedSensitivity}
                 />
@@ -364,7 +373,7 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
             </Dialog.Body>
             <Dialog.Footer>
               <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button colorPalette="purple" onClick={() => { setOpen(false); onStart(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, sensitivityToThreshold(redSensitivity), autofixErrors, aiCorrect); }}>
+              <Button colorPalette="purple" onClick={() => { setOpen(false); onStart(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, sensitivityToThreshold(redSensitivity), autofixErrors, aiCorrect, redAuto); }}>
                 Start Transcription
               </Button>
             </Dialog.Footer>
@@ -437,6 +446,7 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
 const ProjectList = () => {
   const [projectData, setProjectData] = useState({ owned: [], shared: [] });
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
+  const [statsLoaded, setStatsLoaded] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [newProject, setNewProject] = useState({
     name: "New Project",
@@ -456,6 +466,11 @@ const ProjectList = () => {
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [isDeletingSelected, setIsDeletingSelected] = useState(false);
+  const [isClearingSelected, setIsClearingSelected] = useState(false);
+  const [textActionsOpen, setTextActionsOpen] = useState(false);
+  const [textActions, setTextActions] = useState({ add: false, remove: false, strip: false });
+  const [isApplyingTextActions, setIsApplyingTextActions] = useState(false);
+  const [aiJob, setAiJob] = useState(null);
   const pollingRef = useRef(null);
   const transcribePollingRef = useRef(null);
   const navigate = useNavigate();
@@ -464,8 +479,11 @@ const ProjectList = () => {
   // Re-read the projects list and re-seed the job statuses from it. Used
   // wherever something finished that changes what the cards show (row counts,
   // job states) without a page reload.
+  // Two phases: the list itself (names, thumbnails, jobs) comes back at once;
+  // the per-project counts are the slow part, so they are fetched afterwards
+  // and merged in while the cards are already on screen.
   const refreshProjects = async () => {
-    const data = await fetchProjects();
+    const data = await fetchProjects(false);
     setProjectData(data);
     const statuses = {};
     const txStatuses = {};
@@ -475,6 +493,14 @@ const ProjectList = () => {
     });
     setIiifJobStatuses(statuses);
     setTranscribeJobStatuses(txStatuses);
+    setStatsLoaded(false);
+    fetchProjectsStats()
+      .then((stats) => {
+        const merge = (list) => list.map((p) => ({ ...p, ...(stats[p.id] || {}) }));
+        setProjectData((prev) => ({ owned: merge(prev.owned), shared: merge(prev.shared) }));
+        setStatsLoaded(true);
+      })
+      .catch((error) => console.error("Failed to load project statistics:", error));
     return data;
   };
 
@@ -594,7 +620,7 @@ const ProjectList = () => {
     };
   }, [transcribeJobStatuses]);
 
-  const handleStartTranscribe = async (projectId, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold = sensitivityToThreshold(DEFAULT_RED_SENSITIVITY), autofixErrors = true, aiCorrect = false) => {
+  const handleStartTranscribe = async (projectId, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold = sensitivityToThreshold(DEFAULT_RED_SENSITIVITY), autofixErrors = true, aiCorrect = false, redAuto = false) => {
     const parsedRangeFrom = Number(rangeFrom);
     const parsedRangeTo = Number(rangeTo);
     const project = [...projectData.owned, ...projectData.shared].find((entry) => entry.id === projectId);
@@ -626,7 +652,8 @@ const ProjectList = () => {
         undefined,
         undefined,
         autofixErrors,
-        aiCorrect
+        aiCorrect,
+        redAuto
       );
       setTranscribeJobStatuses((prev) => ({
         ...prev,
@@ -802,11 +829,8 @@ const ProjectList = () => {
   const handleDeleteProject = async (id) => {
     if (window.confirm("Are you sure you want to delete this project? This will permanently delete all images and data.")) {
       await deleteProject(id);
-      setProjectData(prev => ({
-        owned: prev.owned.filter(p => p.id !== id),
-        shared: prev.shared.filter(p => p.id !== id)
-      }));
       setSelectedIds((prev) => prev.filter((sid) => sid !== id));
+      await refreshProjects();
     }
   };
 
@@ -821,6 +845,25 @@ const ProjectList = () => {
     const allSelected = ownedIds.length > 0 && ownedIds.every((id) => selectedIds.includes(id));
     setSelectedIds(allSelected ? [] : ownedIds);
   };
+
+  const selectByFilter = (predicate) => {
+    setSelectedIds(projectData.owned.filter(predicate).map((p) => p.id));
+  };
+
+  const invertSelection = () => {
+    setSelectedIds((prev) =>
+      projectData.owned.filter((p) => !prev.includes(p.id)).map((p) => p.id)
+    );
+  };
+
+  const quickSelectFilters = [
+    { label: "transcribed", predicate: (p) => p.transcribed_count > 0 },
+    { label: "not transcribed", predicate: (p) => !p.transcribed_count },
+    { label: "filled table", predicate: (p) => p.content_count > 0 },
+    { label: "empty table", predicate: (p) => !p.content_count },
+    { label: "with images", predicate: (p) => p.image_count > 0 },
+    { label: "without images", predicate: (p) => !p.image_count },
+  ];
 
   const selectedProjects = projectData.owned.filter((p) => selectedIds.includes(p.id));
 
@@ -837,11 +880,8 @@ const ProjectList = () => {
     try {
       const idsToDelete = selectedProjects.map((p) => p.id);
       await Promise.all(idsToDelete.map((id) => deleteProject(id)));
-      setProjectData((prev) => ({
-        owned: prev.owned.filter((p) => !idsToDelete.includes(p.id)),
-        shared: prev.shared.filter((p) => !idsToDelete.includes(p.id)),
-      }));
       setSelectedIds([]);
+      await refreshProjects();
       toaster.create({
         title: "Projects deleted",
         description: `Deleted ${idsToDelete.length} project(s).`,
@@ -875,7 +915,7 @@ const ProjectList = () => {
         type: "success",
         duration: 4000,
       });
-      refreshProjects();
+      await refreshProjects();
     } catch (error) {
       toaster.create({
         title: "Error",
@@ -885,6 +925,148 @@ const ProjectList = () => {
       });
     }
   };
+
+  // Bulk version of handleClearTranscriptions: clears every selected project
+  // (or every owned project when nothing is selected) that actually has a
+  // manual transcription to clear.
+  const handleClearTranscriptionsBulk = async () => {
+    const pool = selectedIds.length > 0 ? selectedProjects : projectData.owned;
+    const targets = pool.filter((p) => p.transcribed_count > 0);
+    if (targets.length === 0) {
+      toaster.create({ title: "Nothing to clear", type: "info", duration: 3000 });
+      return;
+    }
+    if (
+      !window.confirm(
+        `Clear the manual transcription of ${targets.length} project(s)?\n\n` +
+        "This cannot be undone. The automatic (model) transcription is kept for each project and can still be reviewed or reapplied per page."
+      )
+    ) {
+      return;
+    }
+    setIsClearingSelected(true);
+    try {
+      const results = await Promise.allSettled(
+        targets.map((p) => clearProjectTranscriptions(p.id))
+      );
+      const failed = results.filter((r) => r.status === "rejected");
+      await refreshProjects();
+      if (failed.length > 0) {
+        toaster.create({
+          title: "Some projects failed",
+          description: `Cleared ${targets.length - failed.length} of ${targets.length} project(s). ${failed[0].reason?.message || ""}`,
+          type: "warning",
+          duration: 6000,
+        });
+      } else {
+        toaster.create({
+          title: "Transcriptions cleared",
+          description: `Cleared ${targets.length} project(s).`,
+          type: "success",
+          duration: 4000,
+        });
+      }
+    } finally {
+      setIsClearingSelected(false);
+    }
+  };
+
+  // Repairs pages transcribed earlier with the wrong settings. Needs an
+  // explicit selection: unlike the other bulk buttons there is no "All".
+  const handleApplyTextActions = async () => {
+    if (
+      !window.confirm(
+        `Apply the chosen changes to the transcriptions of ${selectedProjects.length} project(s)?\n\n` +
+        "This rewrites the saved text of every transcribed page and cannot be undone."
+      )
+    ) {
+      return;
+    }
+    setIsApplyingTextActions(true);
+    try {
+      const result = await applyTextActions({
+        projectIds: selectedProjects.map((p) => p.id),
+        addPageBreak: textActions.add,
+        removePageBreak: textActions.remove,
+        stripMarkup: textActions.strip,
+      });
+      setTextActionsOpen(false);
+      await refreshProjects();
+      toaster.create({
+        title: "Text actions applied",
+        description:
+          `Updated ${result.updated_pages} page(s) in ${result.projects.length} project(s).` +
+          (result.skipped.length ? ` Skipped ${result.skipped.length} (e.g. transcription in progress).` : ""),
+        type: result.skipped.length ? "warning" : "success",
+        duration: 6000,
+      });
+    } catch (e) {
+      toaster.create({ title: "Error", description: e.message, type: "error", duration: 5000 });
+    } finally {
+      setIsApplyingTextActions(false);
+    }
+  };
+
+  // Follow the bulk AI autofix while it runs, and pick it up again when the
+  // Advanced dialog is reopened after a page reload.
+  useEffect(() => {
+    if (!textActionsOpen && !aiJob?.running) return;
+    let timer;
+    const tick = async () => {
+      try {
+        const status = await getBulkAiAutofixStatus();
+        setAiJob((prev) => {
+          if (prev?.running && !status.running && status.status === "completed") {
+            toaster.create({
+              title: "AI autofix finished",
+              description: `Changed ${status.changed} of ${status.total} page(s).`,
+              type: "success",
+              duration: 6000,
+            });
+            refreshProjects();
+          }
+          return status;
+        });
+        if (status.running) timer = setTimeout(tick, 3000);
+      } catch (_) {}
+    };
+    tick();
+    return () => clearTimeout(timer);
+  }, [textActionsOpen, aiJob?.running]);
+
+  const handleStartAiAutofix = async () => {
+    const what = selectedIds.length > 0 ? `${selectedIds.length} selected project(s)` : "ALL your projects";
+    if (
+      !window.confirm(
+        `Send the transcribed text of ${what} through find/replace and AI autofix?\n\n` +
+        "This takes roughly 30 s per page, runs in the background, and rewrites the saved text of every changed page. It cannot be undone."
+      )
+    ) {
+      return;
+    }
+    try {
+      setAiJob(await startBulkAiAutofix(selectedIds));
+    } catch (e) {
+      toaster.create({ title: "Error", description: e.message, type: "error", duration: 5000 });
+    }
+  };
+
+  const textActionCheckbox = (key, label, exclusiveWith) => (
+    <Checkbox.Root
+      checked={textActions[key]}
+      onCheckedChange={(e) =>
+        setTextActions((prev) => ({
+          ...prev,
+          [key]: !!e.checked,
+          ...(e.checked && exclusiveWith ? { [exclusiveWith]: false } : {}),
+        }))
+      }
+    >
+      <Checkbox.HiddenInput />
+      <Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>
+      <Checkbox.Label>{label}</Checkbox.Label>
+    </Checkbox.Root>
+  );
 
   const handleShareProject = async (project) => {
     setSharingProject(project);
@@ -1076,6 +1258,9 @@ const ProjectList = () => {
             <FaStop /> Stop All ({activeJobCount})
           </Button>
         )}
+        <Button variant="outline" size="sm" onClick={() => setTextActionsOpen(true)}>
+          Advanced…
+        </Button>
       </HStack>
       
       {/* Owned Projects Section */}
@@ -1101,6 +1286,33 @@ const ProjectList = () => {
             {selectedIds.length > 0 && (
               <Text fontSize="sm" color="gray.600">{selectedIds.length} selected</Text>
             )}
+          </HStack>
+          <HStack mb={4} mt={-3} spacing={1} fontSize="xs" color="gray.500" wrap="wrap">
+            <Text as="span">select all:</Text>
+            {quickSelectFilters.map((f, i) => (
+              <Text as="span" key={f.label}>
+                {i > 0 && "· "}
+                <Text
+                  as="span"
+                  cursor="pointer"
+                  textDecoration="underline"
+                  _hover={{ color: "purple.600" }}
+                  onClick={() => selectByFilter(f.predicate)}
+                >
+                  {f.label}
+                </Text>
+              </Text>
+            ))}
+            <Text as="span">·</Text>
+            <Text
+              as="span"
+              cursor="pointer"
+              textDecoration="underline"
+              _hover={{ color: "purple.600" }}
+              onClick={invertSelection}
+            >
+              invert selection
+            </Text>
           </HStack>
           <Stack spacing={4}>
             {projectData.owned.map((project) => (
@@ -1165,6 +1377,9 @@ const ProjectList = () => {
                       {project.image_count > 0 && (
                         <>
                           <Text fontSize="sm" color="gray.600">{project.image_count} images</Text>
+                          {iiifJobStatuses[project.id]?.status === "completed" && (
+                            <FaCheckCircle color="var(--chakra-colors-green-600)" title="Download complete" />
+                          )}
                           {project.transcribed_count > 0 && (
                             <Text fontSize="sm" color="green.600">· {project.transcribed_count} transcribed</Text>
                           )}
@@ -1175,7 +1390,7 @@ const ProjectList = () => {
                         color={project.content_count > 0 ? "blue.600" : "gray.500"}
                       >
                         {project.image_count > 0 ? "· " : ""}
-                        {project.content_count ?? 0} rows in table
+                        {statsLoaded ? `${project.content_count ?? 0} rows in table` : "loading details…"}
                       </Text>
                     </HStack>
                     {project.transcription_models?.length > 0 && (
@@ -1188,6 +1403,7 @@ const ProjectList = () => {
                         </Text>
                       </HStack>
                     )}
+                    <ProjectRedLevel project={project} onChanged={refreshProjects} />
                   </Stack>
                   <HStack alignItems="flex-start">
                     {project.type === "iiif" && (
@@ -1201,7 +1417,7 @@ const ProjectList = () => {
                     <TranscribeProjectStatus
                       project={project}
                       jobStatus={transcribeJobStatuses[project.id]}
-                      onStart={(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold, autofixErrors, aiCorrect) => handleStartTranscribe(project.id, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold, autofixErrors, aiCorrect)}
+                      onStart={(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold, autofixErrors, aiCorrect, redAuto) => handleStartTranscribe(project.id, model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, redThreshold, autofixErrors, aiCorrect, redAuto)}
                       onCancel={() => handleCancelTranscribe(project.id)}
                     />
                     <ProcessTableDialog
@@ -1298,6 +1514,9 @@ const ProjectList = () => {
                       {project.image_count > 0 && (
                         <>
                           <Text fontSize="sm" color="gray.600">{project.image_count} images</Text>
+                          {iiifJobStatuses[project.id]?.status === "completed" && (
+                            <FaCheckCircle color="var(--chakra-colors-green-600)" title="Download complete" />
+                          )}
                           {project.transcribed_count > 0 && (
                             <Text fontSize="sm" color="green.600">· {project.transcribed_count} transcribed</Text>
                           )}
@@ -1308,7 +1527,7 @@ const ProjectList = () => {
                         color={project.content_count > 0 ? "blue.600" : "gray.500"}
                       >
                         {project.image_count > 0 ? "· " : ""}
-                        {project.content_count ?? 0} rows in table
+                        {statsLoaded ? `${project.content_count ?? 0} rows in table` : "loading details…"}
                       </Text>
                     </HStack>
                     {project.transcription_models?.length > 0 && (
@@ -1321,6 +1540,7 @@ const ProjectList = () => {
                         </Text>
                       </HStack>
                     )}
+                    <Text fontSize="xs" color="gray.600">Red level: {describeRedLevel(project)}</Text>
                     <Text fontSize="sm" color="gray.600">Shared with you</Text>
                   </Stack>
                   <HStack alignItems="flex-start">
@@ -1385,6 +1605,103 @@ const ProjectList = () => {
                   setConflictDialog({ open: false, projectId: null, imageCount: 0 });
                   handleServerIiifDownload(conflictDialog.projectId, "restart");
                 }}>Restart from page 1</Button>
+              </Dialog.Footer>
+            </Dialog.Content>
+          </Dialog.Positioner>
+        </Portal>
+      </Dialog.Root>
+
+      {/* Text actions dialog */}
+      <Dialog.Root
+        open={textActionsOpen}
+        onOpenChange={(e) => setTextActionsOpen(e.open)}
+        placement="center"
+        motionPreset="slide-in-bottom"
+      >
+        <Portal>
+          <Dialog.Backdrop />
+          <Dialog.Positioner>
+            <Dialog.Content>
+              <Dialog.Header>
+                <Dialog.Title>Advanced</Dialog.Title>
+                <Dialog.CloseTrigger asChild><CloseButton size="sm" /></Dialog.CloseTrigger>
+              </Dialog.Header>
+              <Dialog.Body>
+                <Stack spacing={4}>
+                  <Text fontSize="sm" color="gray.600">
+                    {selectedIds.length > 0
+                      ? `Applies to the ${selectedIds.length} selected project(s).`
+                      : "No projects selected - tick projects on the list to use the text actions."}
+                  </Text>
+                  <Stack spacing={3}>
+                    <Text fontWeight="bold">Fix transcribed text</Text>
+                    <Text fontSize="sm" color="gray.600">
+                      For manuscripts transcribed with the wrong settings. Applied to
+                      every transcribed page, including pages edited by hand.
+                    </Text>
+                    {textActionCheckbox("add", "Add the prayer separator ⏎ at the end of each page", "remove")}
+                    {textActionCheckbox("remove", "Remove the prayer separator ⏎ from the end of each page", "add")}
+                    {textActionCheckbox("strip", "Convert all rubric and function marks to plain text")}
+                    <Button
+                      alignSelf="flex-start"
+                      colorPalette="purple"
+                      loading={isApplyingTextActions}
+                      disabled={selectedIds.length === 0 || !(textActions.add || textActions.remove || textActions.strip)}
+                      onClick={handleApplyTextActions}
+                    >
+                      Apply
+                    </Button>
+                  </Stack>
+                  <Stack spacing={2}>
+                    <Text fontWeight="bold">AI autofix</Text>
+                    <Text fontSize="sm" color="gray.600">
+                      Runs find/replace and the AI correction over the transcribed text of
+                      the {selectedIds.length > 0 ? "selected" : "all"} project(s), in the background.
+                      The model's own automatic copy is not changed.
+                    </Text>
+                    {aiJob?.running ? (
+                      <HStack>
+                        <Text fontSize="sm" color="purple.600">
+                          Working… {aiJob.done}/{aiJob.total || "?"} pages, {aiJob.changed} changed
+                        </Text>
+                        <Button size="xs" variant="subtle" colorPalette="red" onClick={() => cancelBulkAiAutofix()}>
+                          <FaStop /> Stop
+                        </Button>
+                      </HStack>
+                    ) : (
+                      <>
+                        {aiJob?.status && (
+                          <Text fontSize="sm" color={aiJob.status === "failed" ? "red.600" : "gray.600"}>
+                            Last run: {aiJob.status} — {aiJob.done ?? 0}/{aiJob.total ?? 0} pages, {aiJob.changed ?? 0} changed
+                            {aiJob.error ? ` (${aiJob.error})` : ""}
+                          </Text>
+                        )}
+                        <Button alignSelf="flex-start" colorPalette="purple" onClick={handleStartAiAutofix}>
+                          Send {selectedIds.length > 0 ? `selected (${selectedIds.length})` : "all projects"} to AI autofix
+                        </Button>
+                      </>
+                    )}
+                  </Stack>
+                  <Stack spacing={2}>
+                    <Text fontWeight="bold">Clear transcription</Text>
+                    <Text fontSize="sm" color="gray.600">
+                      Clears the manual transcription; the automatic (model) copy is kept.
+                      {selectedIds.length === 0 ? " With nothing selected, this covers all your projects." : ""}
+                    </Text>
+                    <Button
+                      alignSelf="flex-start"
+                      variant="outline"
+                      colorPalette="orange"
+                      loading={isClearingSelected}
+                      onClick={() => { setTextActionsOpen(false); handleClearTranscriptionsBulk(); }}
+                    >
+                      Clear transcription {selectedIds.length > 0 ? `of selected (${selectedIds.length})` : "of all"}
+                    </Button>
+                  </Stack>
+                </Stack>
+              </Dialog.Body>
+              <Dialog.Footer gap={2}>
+                <Button variant="outline" onClick={() => setTextActionsOpen(false)}>Close</Button>
               </Dialog.Footer>
             </Dialog.Content>
           </Dialog.Positioner>

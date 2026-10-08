@@ -17,7 +17,7 @@ import {
   Checkbox,
 } from "@chakra-ui/react";
 import { toaster } from "@/components/ui/toaster";
-import { transcribeImage } from "../apiUtils";
+import { transcribeImage, fetchProject, calibrateProjectRedSensitivity } from "../apiUtils";
 import RedSensitivitySlider from "./RedSensitivitySlider";
 import ColumnSensitivitySlider from "./ColumnSensitivitySlider";
 import DeviceStatusBadge from "./DeviceStatusBadge";
@@ -70,6 +70,7 @@ const Transcribe = ({
   const [autofixErrors, setAutofixErrors] = useState(true);
   const [aiCorrect, setAiCorrect] = useState(false);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
+  const [isCalibratingRed, setIsCalibratingRed] = useState(false);
   const [columnSensitivity, setColumnSensitivity] = useState(DEFAULT_COLUMN_SENSITIVITY);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
@@ -78,6 +79,36 @@ const Transcribe = ({
   // Wall-clock time spent inside transcribeImage() calls this run, used to
   // show a running average seconds/page while the dialog is open.
   const [elapsedMs, setElapsedMs] = useState(0);
+
+  // Start from the level saved on the project (set by hand or determined
+  // automatically) rather than the global default.
+  useEffect(() => {
+    let cancelled = false;
+    fetchProject(projectId)
+      .then((p) => {
+        if (!cancelled && p.red_sensitivity != null) setRedSensitivity(p.red_sensitivity);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [projectId]);
+
+  const handleCalibrateRed = async () => {
+    setIsCalibratingRed(true);
+    try {
+      const result = await calibrateProjectRedSensitivity(projectId);
+      setRedSensitivity(result.red_sensitivity);
+      toaster.create({
+        title: "Red level determined",
+        description: `Set to ${Math.round(result.red_sensitivity)}% and saved on the project.`,
+        type: "success",
+        duration: 4000,
+      });
+    } catch (e) {
+      toaster.create({ title: "Error", description: e.message, type: "error", duration: 5000 });
+    } finally {
+      setIsCalibratingRed(false);
+    }
+  };
 
   // Update page count and end page when images change
   useEffect(() => {
@@ -325,7 +356,18 @@ const Transcribe = ({
             <RedSensitivitySlider
               sensitivity={redSensitivity}
               onSensitivityChange={setRedSensitivity}
-              disabled={isTranscribing}
+              disabled={isTranscribing || isCalibratingRed}
+              action={
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  onClick={handleCalibrateRed}
+                  loading={isCalibratingRed}
+                  disabled={isTranscribing}
+                >
+                  Determine automatically
+                </Button>
+              }
             />
             {isTranscribing && (
               <>

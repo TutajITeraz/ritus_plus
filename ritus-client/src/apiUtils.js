@@ -73,9 +73,13 @@ export const logout = () => {
   window.location.href = '/login';
 };
 
-export const fetchProjects = async () => {
+// withStats=false skips the per-project counts/models so the list returns
+// at once; pair it with fetchProjectsStats().
+export const fetchProjects = async (withStats = true) => {
   try {
-    const response = await apiRequest(`${SERVER_URL}/api/projects`);
+    const response = await apiRequest(
+      `${SERVER_URL}/api/projects${withStats ? "" : "?stats=0"}`
+    );
     if (!response.ok) throw new Error("Failed to fetch projects");
     return await response.json();
   } catch (error) {
@@ -87,6 +91,12 @@ export const fetchProjects = async () => {
     });
     throw error;
   }
+};
+
+export const fetchProjectsStats = async () => {
+  const response = await apiRequest(`${SERVER_URL}/api/projects/stats`);
+  if (!response.ok) throw new Error("Failed to fetch project statistics");
+  return await response.json();
 };
 
 export const createProject = async (projectData) => {
@@ -829,9 +839,10 @@ export const startBatchTranscribe = async (
   enhancedMultiColumn = false,
   columnGapRatio = 0.045,
   autofixErrors = true,
-  aiCorrect = false
+  aiCorrect = false,
+  redAuto = false
 ) => {
-  const payload = { model_name: modelName, mode, ignore_edges: ignoreEdges, add_page_break: addPageBreak, red_threshold: redThreshold, enhanced_multi_column: enhancedMultiColumn, column_gap_ratio: columnGapRatio, autofix_errors: autofixErrors, ai_correct: aiCorrect };
+  const payload = { red_auto: redAuto, model_name: modelName, mode, ignore_edges: ignoreEdges, add_page_break: addPageBreak, red_threshold: redThreshold, enhanced_multi_column: enhancedMultiColumn, column_gap_ratio: columnGapRatio, autofix_errors: autofixErrors, ai_correct: aiCorrect };
   if (mode === "range") {
     payload.range_from = rangeFrom;
     payload.range_to = rangeTo;
@@ -916,6 +927,7 @@ export const startBatchTranscribeAll = async ({
   autofixErrors = true,
   aiCorrect = false,
   includeCompleted = false,
+  redAuto = false,
 }) => {
   const response = await apiRequest(`${SERVER_URL}/api/batch-transcribe/all`, {
     method: "POST",
@@ -925,6 +937,7 @@ export const startBatchTranscribeAll = async ({
       ignore_edges: ignoreEdges,
       add_page_break: addPageBreak,
       red_threshold: redThreshold,
+      red_auto: redAuto,
       enhanced_multi_column: enhancedMultiColumn,
       column_gap_ratio: columnGapRatio,
       autofix_errors: autofixErrors,
@@ -1061,4 +1074,66 @@ export const refreshDictionaries = async ({ source, dryRun = false } = {}) => {
     throw new Error(payload?.error || "The dictionary refresh failed");
   }
   return payload;
+};
+
+/** Manual red level for a project (0-100), or null to return it to auto. */
+export const setProjectRedSensitivity = async (projectId, sensitivity) => {
+  const response = await apiRequest(
+    `${SERVER_URL}/api/projects/${projectId}/red-sensitivity`,
+    { method: "PUT", body: JSON.stringify({ sensitivity }) }
+  );
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Failed to save red level");
+  return data;
+};
+
+/**
+ * Repair already-transcribed pages of several projects.
+ * @param {object} options - projectIds, addPageBreak, removePageBreak, stripMarkup
+ */
+export const applyTextActions = async ({ projectIds, addPageBreak, removePageBreak, stripMarkup }) => {
+  const response = await apiRequest(`${SERVER_URL}/api/projects/text-actions`, {
+    method: "POST",
+    body: JSON.stringify({
+      project_ids: projectIds,
+      add_page_break: addPageBreak,
+      remove_page_break: removePageBreak,
+      strip_markup: stripMarkup,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Failed to apply text actions");
+  return data;
+};
+
+/** Work out a project's red level from sample pages and save it on the project. */
+export const calibrateProjectRedSensitivity = async (projectId) => {
+  const response = await apiRequest(
+    `${SERVER_URL}/api/projects/${projectId}/red-sensitivity/calibrate`,
+    { method: "POST" }
+  );
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Failed to determine the red level");
+  return data;
+};
+
+/** Bulk AI autofix of transcribed text. No ids = all of the user's projects. */
+export const startBulkAiAutofix = async (projectIds = []) => {
+  const response = await apiRequest(`${SERVER_URL}/api/projects/ai-autofix`, {
+    method: "POST",
+    body: JSON.stringify({ project_ids: projectIds }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Failed to start AI autofix");
+  return data;
+};
+
+export const getBulkAiAutofixStatus = async () => {
+  const response = await apiRequest(`${SERVER_URL}/api/projects/ai-autofix`);
+  if (!response.ok) throw new Error("Failed to get AI autofix status");
+  return await response.json();
+};
+
+export const cancelBulkAiAutofix = async () => {
+  await apiRequest(`${SERVER_URL}/api/projects/ai-autofix`, { method: "DELETE" });
 };

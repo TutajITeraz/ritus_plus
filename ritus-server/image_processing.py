@@ -97,42 +97,14 @@ def hsl_to_rgb(hsl):
     
     return (rgb * 255).astype(np.uint8)
 
-def split_line_boundary_by_color(color_image, line, line_index, window_size=80, red_threshold=5.0, debug_dir=None):
-    """
-    Crop, preprocess with polygon mask, split line into red/black segments based on redness,
-    and generate images with baseline/boundary outlines and a histogram plot.
-    
-    Args:
-        color_image: PIL Image in original color mode (e.g., RGB).
-        line: BaselineLine object with boundary and baseline coordinates.
-        line_index: Index of the line (for naming output files).
-        debug_dir: Optional directory to save debug images and histogram plots.
-        window_size: Size of the moving average window for denoising (default: 80).
-        red_threshold: Threshold for redness score to split lines (default: 5.0, ~80% UI sensitivity).
-    
-    Returns:
-        List of new BaselineLine objects with cropped coordinates and added 'color' attribute.
-    """
-    if red_threshold >= DISABLED_RED_THRESHOLD:
-        # Sensitivity is 0%: skip the color analysis entirely rather than run
-        # it only to have every column fail the (unreachable) threshold.
-        return [line]
+def line_redness_profile(color_image, line, line_index=0, window_size=80):
+    """Per-column redness of one text line, smoothed with a moving average.
 
-    if not hasattr(line, 'boundary') or not line.boundary or len(line.boundary) < 3:
-        logger.warning(f"No valid boundary found for line {line_index + 1}, skipping image save and analysis")
-        # Save debug image with original boundary
-
-    
-        # color_array = np.array(color_image)
-        # debug_image = cv2.cvtColor(color_array, cv2.COLOR_RGB2BGR)
-        # if line.boundary:
-        #     orig_boundary = np.array(line.boundary, dtype=np.int32)
-        #     cv2.polylines(debug_image, [orig_boundary], True, (0, 0, 0), 1)
-        # debug_image_pil = PILImage.fromarray(cv2.cvtColor(debug_image, cv2.COLOR_BGR2RGB))
-        # debug_image_path = os.path.join(debug_dir, f"line_{line_index + 1}_debug.png")
-        # debug_image_pil.save(debug_image_path)
-        return [line]
-    
+    Returns (left, top, width, height, denoised_redness): the crop's offset
+    and size in page coordinates plus the smoothed redness per column. Shared
+    by the line splitter and by red-level calibration, so both judge "red" by
+    exactly the same measure.
+    """
     # Derive bounding box from boundary coordinates
     x_coords, y_coords = zip(*line.boundary)
     padding = 10
@@ -193,12 +165,6 @@ def split_line_boundary_by_color(color_image, line, line_index, window_size=80, 
     #enhanced_image = masked_image
 
     # enhanced_array_cv = cv2.cvtColor(np.array(enhanced_image), cv2.COLOR_RGB2BGR)
-
-    # Save enhanced image (debug only)
-    if debug_dir:
-        image_path = os.path.join(debug_dir, f"line_{line_index + 1}.png")
-        #enhanced_image.save(image_path)
-        logger.info(f"Saved enhanced color image for line {line_index + 1} to {image_path}")
 
     # Verify hsl_enhanced dimensions
     hues, saturations, lightnesses = hsl_enhanced[:, :, 0], hsl_enhanced[:, :, 1], hsl_enhanced[:, :, 2]
@@ -266,6 +232,107 @@ def split_line_boundary_by_color(color_image, line, line_index, window_size=80, 
     # Denoise redness scores with moving average
     kernel = np.ones(min(window_size, width)) / min(window_size, width)  # Adjust window_size if width is smaller
     denoised_redness = np.convolve(redness_scores, kernel, mode='same')
+    return left, top, width, height, denoised_redness
+
+
+# Mirrors sensitivityToThreshold in ritus-client/src/utils/redSensitivity.js:
+# 80% sensitivity is threshold 5.0, falling off along a cubic below it.
+_RED_ANCHOR_SENSITIVITY = 80
+_RED_ANCHOR_THRESHOLD = 5.0
+_RED_GAMMA = 3
+DEFAULT_RED_SENSITIVITY = 80
+
+
+def red_sensitivity_to_threshold(sensitivity):
+    if sensitivity <= 0:
+        return DISABLED_RED_THRESHOLD
+    distance = (100 - sensitivity) / (100 - _RED_ANCHOR_SENSITIVITY)
+    return _RED_ANCHOR_THRESHOLD * distance ** _RED_GAMMA
+
+
+# Above this the threshold is so low (~0.08) that paper texture and ink shadows
+# count as red, so searching higher only finds noise.
+MAX_AUTO_RED_SENSITIVITY = 95
+RED_SAFETY_MARGIN = 5
+
+
+def pick_red_sensitivity(profiles, max_fraction, low=0, high=MAX_AUTO_RED_SENSITIVITY):
+    """Highest sensitivity in [low, high] at which at most max_fraction of the
+    sampled text columns count as red, found by binary search.
+
+    profiles: smoothed per-column redness curves (see line_redness_profile)
+    of every text line on the sample pages. A higher sensitivity can only turn
+    more columns red, so "too red" is monotonic and bisection applies. It can
+    land above the default as well as below: a faintly inked manuscript where
+    the default finds almost no red gets a more sensitive setting.
+
+    Returns (sensitivity, red_fraction_at_that_sensitivity); 0 (detection off)
+    when even the least sensitive step is already too red.
+    """
+    total = sum(len(p) for p in profiles)
+    if total == 0:
+        return DEFAULT_RED_SENSITIVITY, 0.0
+
+    def fraction(sensitivity):
+        threshold = red_sensitivity_to_threshold(sensitivity)
+        return sum(int(np.count_nonzero(p >= threshold)) for p in profiles) / total
+
+    if fraction(high) <= max_fraction:
+        return high, fraction(high)
+    # Invariant: `low` is acceptable (0 disables detection, so it always is),
+    # `high` is too red.
+    while high - low > 1:
+        mid = (low + high) // 2
+        if fraction(mid) <= max_fraction:
+            low = mid
+        else:
+            high = mid
+    # `low` sits right at the edge where the ink itself starts to turn red, so
+    # step back a little: a page a bit darker than the samples would tip over.
+    if low > 0:
+        low = max(0, low - RED_SAFETY_MARGIN)
+    return low, fraction(low)
+
+
+def split_line_boundary_by_color(color_image, line, line_index, window_size=80, red_threshold=5.0, debug_dir=None):
+    """
+    Crop, preprocess with polygon mask, split line into red/black segments based on redness,
+    and generate images with baseline/boundary outlines and a histogram plot.
+    
+    Args:
+        color_image: PIL Image in original color mode (e.g., RGB).
+        line: BaselineLine object with boundary and baseline coordinates.
+        line_index: Index of the line (for naming output files).
+        debug_dir: Optional directory to save debug images and histogram plots.
+        window_size: Size of the moving average window for denoising (default: 80).
+        red_threshold: Threshold for redness score to split lines (default: 5.0, ~80% UI sensitivity).
+    
+    Returns:
+        List of new BaselineLine objects with cropped coordinates and added 'color' attribute.
+    """
+    if red_threshold >= DISABLED_RED_THRESHOLD:
+        # Sensitivity is 0%: skip the color analysis entirely rather than run
+        # it only to have every column fail the (unreachable) threshold.
+        return [line]
+
+    if not hasattr(line, 'boundary') or not line.boundary or len(line.boundary) < 3:
+        logger.warning(f"No valid boundary found for line {line_index + 1}, skipping image save and analysis")
+        # Save debug image with original boundary
+
+    
+        # color_array = np.array(color_image)
+        # debug_image = cv2.cvtColor(color_array, cv2.COLOR_RGB2BGR)
+        # if line.boundary:
+        #     orig_boundary = np.array(line.boundary, dtype=np.int32)
+        #     cv2.polylines(debug_image, [orig_boundary], True, (0, 0, 0), 1)
+        # debug_image_pil = PILImage.fromarray(cv2.cvtColor(debug_image, cv2.COLOR_BGR2RGB))
+        # debug_image_path = os.path.join(debug_dir, f"line_{line_index + 1}_debug.png")
+        # debug_image_pil.save(debug_image_path)
+        return [line]
+    
+    left, top, width, height, denoised_redness = line_redness_profile(
+        color_image, line, line_index, window_size
+    )
 
     # Create histogram plot
     #fig, ax1 = plt.subplots(figsize=(8, 4))

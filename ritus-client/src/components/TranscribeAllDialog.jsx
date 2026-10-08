@@ -14,7 +14,7 @@ import {
 } from "@chakra-ui/react";
 import { toaster } from "@/components/ui/toaster";
 import { startBatchTranscribeAll } from "../apiUtils";
-import RedSensitivitySlider from "./RedSensitivitySlider";
+import RedSensitivityControl from "./RedSensitivityControl";
 import ColumnSensitivitySlider from "./ColumnSensitivitySlider";
 import {
   DEFAULT_RED_SENSITIVITY,
@@ -65,6 +65,7 @@ const TranscribeAllDialog = ({
   const [autofixErrors, setAutofixErrors] = useState(true);
   const [aiCorrect, setAiCorrect] = useState(false);
   const [redSensitivity, setRedSensitivity] = useState(DEFAULT_RED_SENSITIVITY);
+  const [redAuto, setRedAuto] = useState(true);
   const [columnSensitivity, setColumnSensitivity] = useState(DEFAULT_COLUMN_SENSITIVITY);
   const [includeCompleted, setIncludeCompleted] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
@@ -95,6 +96,7 @@ const TranscribeAllDialog = ({
         ignoreEdges: true,
         addPageBreak,
         redThreshold: sensitivityToThreshold(redSensitivity),
+        redAuto,
         enhancedMultiColumn,
         columnGapRatio: sensitivityToColumnGapRatio(columnSensitivity),
         autofixErrors,
@@ -329,7 +331,9 @@ const TranscribeAllDialog = ({
                   </Text>
                 </Stack>
 
-                <RedSensitivitySlider
+                <RedSensitivityControl
+                  auto={redAuto}
+                  onAutoChange={setRedAuto}
                   sensitivity={redSensitivity}
                   onSensitivityChange={setRedSensitivity}
                 />

@@ -154,7 +154,8 @@ const ProcessTableDialog = ({
       setRun((prev) =>
         prev.active ? { ...prev, stepProgress: status.progress || 0 } : prev
       );
-      if (status.status === "running" || status.status === "pending") continue;
+      // "interrupted": the server restarted and is about to run it again.
+      if (["running", "pending", "interrupted"].includes(status.status)) continue;
       return status;
     }
   }, []);

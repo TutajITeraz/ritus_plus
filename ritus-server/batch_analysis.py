@@ -604,9 +604,11 @@ def batch_process_project(project_id, similarity_threshold, phrases_csv="static/
             logger.info(f"Batch process cancelled for {project_id}")
             return None
 
-        # Clear existing content
+        # Replace the table in ONE transaction (the delete and every insert
+        # commit together at the end). A server restart half-way through used
+        # to leave the project with a truncated table, and the automatic
+        # resume would then have taken that truncated table as its input.
         db.session.query(Content).filter_by(project_id=project_id).delete()
-        db.session.commit()
 
         # Save results to Content
         total_rows = len(results)
@@ -625,7 +627,6 @@ def batch_process_project(project_id, similarity_threshold, phrases_csv="static/
             db.session.add(content)
             batch_process.processed_rows = i + 1
             batch_process.progress = 90 + min((i + 1) / total_rows * 10, 10) if total_rows > 0 else 100
-            db.session.commit()
 
         batch_process.status = "completed"
         batch_process.progress = 100.0

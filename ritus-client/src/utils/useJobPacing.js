@@ -7,12 +7,17 @@ import { useEffect, useRef, useState } from "react";
  * transitions into "running" from something else, so resuming an interrupted
  * job starts a fresh estimate instead of counting time it was paused.
  *
+ * avgSeconds is a cumulative average over the whole run (total elapsed time
+ * divided by pages completed since it started running), not just the most
+ * recently finished page - one slow or fast page nudges it but does not
+ * replace it. etaSeconds projects that average across the pages still left.
+ *
  * @param {boolean} isRunning
  * @param {number} current - pages completed so far, per the polled job status
- * @returns {number|null} average seconds per page, or null until there is
- *   at least one completed page to measure against
+ * @param {number} [total] - total pages the job expects to process, for ETA
+ * @returns {{avgSeconds: number|null, etaSeconds: number|null}}
  */
-export function useJobPacing(isRunning, current) {
+export function useJobPacing(isRunning, current, total = 0) {
   const startRef = useRef(null);
   const baseCountRef = useRef(0);
   const [avgSeconds, setAvgSeconds] = useState(null);
@@ -24,6 +29,7 @@ export function useJobPacing(isRunning, current) {
     }
     if (!isRunning) {
       startRef.current = null;
+      setAvgSeconds(null);
       return;
     }
     const done = current - baseCountRef.current;
@@ -32,5 +38,21 @@ export function useJobPacing(isRunning, current) {
     }
   }, [isRunning, current]);
 
-  return isRunning ? avgSeconds : null;
+  if (!isRunning) return { avgSeconds: null, etaSeconds: null };
+
+  const remaining = total > current ? total - current : 0;
+  const etaSeconds = avgSeconds != null && remaining > 0 ? avgSeconds * remaining : null;
+  return { avgSeconds, etaSeconds };
+}
+
+/** Formats a duration in seconds as e.g. "45s", "3m 20s", "1h 05m". */
+export function formatDuration(seconds) {
+  if (seconds == null || !Number.isFinite(seconds)) return null;
+  const total = Math.round(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
+  return `${s}s`;
 }

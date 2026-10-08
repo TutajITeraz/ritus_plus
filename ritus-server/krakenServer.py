@@ -7,6 +7,7 @@ import logging
 import logging.handlers
 import json
 import re
+import random
 from dataclasses import replace
 import cv2
 import torch
@@ -26,7 +27,7 @@ from flask_caching import Cache
 from config import SERVER_URL, ADMIN_USERNAME, ADMIN_PASSWORD, SECRET_KEY
 
 # Importy lokalne
-from models import db, User, Project, ProjectSharing, Image, Content, BatchProcessing, IiifDownloadJob, BatchTranscribeJob
+from models import db, User, Project, ProjectSharing, Image, Content, BatchProcessing, BulkAiJob, IiifDownloadJob, BatchTranscribeJob
 from download_iiif import run_iiif_download
 from transcription_autofix import apply_autofix
 from memory_governor import MemoryGovernor, available_memory_mb, process_rss_mb
@@ -170,7 +171,10 @@ def _promote_waiting_domain(domain):
                 return
 import batch_analysis
 from batch_analysis import batch_process_project
-from image_processing import split_line_boundary_by_color
+from image_processing import (
+    split_line_boundary_by_color, line_redness_profile, pick_red_sensitivity,
+    red_sensitivity_to_threshold, DEFAULT_RED_SENSITIVITY,
+)
 from multi_column_layout import reorder_lines_for_multi_column, detect_column_bands
 import layout_parser_preprocessing
 from ai_tools import gpt_autofix
@@ -318,6 +322,14 @@ _ADDED_JOB_COLUMNS = {
     },
     # Splits "what the model produced" from "what a human is editing" (see
     # Image in models.py) - older databases only ever had transcribed_text.
+    "batch_processing": {
+        "method": "VARCHAR(10)",
+        "auto_resume_count": "INTEGER DEFAULT 0",
+    },
+    "project": {
+        "red_sensitivity": "FLOAT",
+        "red_sensitivity_source": "VARCHAR(10)",
+    },
     "image": {
         "human_edited": "BOOLEAN DEFAULT 0",
         "auto_transcribed_text": "TEXT",
@@ -347,6 +359,15 @@ def ensure_job_columns():
         if added:
             db.session.commit()
             logger.info("Schema upgrade: added column(s) %s", ", ".join(added))
+        # Every per-project query filters on project_id; without these each
+        # one scans the whole (large) image table - ruinous at hundreds of
+        # projects. Idempotent, so safe on every start.
+        for table in ("image", "content", "project_sharing", "iiif_download_job", "batch_transcribe_job"):
+            if table in existing_tables:
+                db.session.execute(db.text(
+                    "CREATE INDEX IF NOT EXISTS ix_%s_project_id ON %s (project_id)" % (table, table)
+                ))
+        db.session.commit()
 
 
 def reconcile_stale_jobs():
@@ -396,6 +417,22 @@ def reconcile_stale_jobs():
                 "Server restarted while this download was running - resuming "
                 "from page %s." % ((job.current_page or 0) + 1)
             )
+
+        # Process Table analyses and the bulk AI autofix are threads too.
+        batch_stale = BatchProcessing.query.filter(
+            BatchProcessing.status.in_(("running", "pending"))
+        ).all()
+        for job in batch_stale:
+            job.status = STATUS_INTERRUPTED
+            job.error_message = "Server restarted during the analysis - it is run again from the start."
+        ai_stale = BulkAiJob.query.filter(BulkAiJob.status.in_(("running", "pending"))).all()
+        for job in ai_stale:
+            job.status = STATUS_INTERRUPTED
+            job.error_message = "Server restarted during AI autofix - continuing from page %s." % ((job.done or 0) + 1)
+        if batch_stale or ai_stale:
+            db.session.commit()
+            logger.warning("Startup reconciliation: marked %d table analysis(es) and %d AI autofix job(s) as interrupted",
+                           len(batch_stale), len(ai_stale))
 
         if transcribe_stale or iiif_stale:
             db.session.commit()
@@ -899,6 +936,43 @@ def transcribe_image_by_id(image_id, model_name, **kwargs):
             _page_admission.release_page_memory()
 
 
+def _ensure_baseline_model():
+    """Load the baseline (line) segmentation model if startup did not.
+    Returns None on success, or an (error message, http status) tuple."""
+    global baseline_model
+    if baseline_model is None:
+        logger.warning("Baseline model was not loaded at startup. Attempting to load now...")
+        path = MODEL_PATHS.get("blla.mlmodel")
+        if path:
+            try:
+                temp_model = vgsl.TorchVGSLModel.load_model(path)
+                logger.info(f"Raw baseline model type: {type(temp_model)}")
+
+                if temp_model is not None:
+                    if hasattr(temp_model, 'to'):
+                        converted_model = temp_model.to(device=selected_device)
+                        # If .to() returns None (in-place modification), use temp_model
+                        baseline_model = converted_model if converted_model is not None else temp_model
+                    else:
+                        baseline_model = temp_model
+
+                    logger.info(f"Baseline model loaded successfully on demand. Final Type: {type(baseline_model)}")
+                else:
+                    raise ValueError("vgsl.TorchVGSLModel.load_model returned None")
+
+            except Exception as e:
+                logger.error(f"Failed to load baseline model on demand: {e}")
+                return f"Failed to load baseline model: {e}", 500
+        else:
+            logger.error("Baseline model path not found! 'models/blla.mlmodel' is missing.")
+            return "Baseline model path not found", 500
+
+    if baseline_model is None:
+        logger.error("Baseline model is not loaded! Please check if 'models/blla.mlmodel' exists.")
+        return "Baseline model is not loaded", 500
+    return None
+
+
 def _transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0, enhanced_multi_column=False, column_gap_ratio=0.045, autofix_errors=True, ai_correct=False):
     global baseline_model, last_ocr_model_name, ocr_model, selected_device
     # See transcribe_image: a TrOCR model replaces only the recognizer, so
@@ -939,37 +1013,10 @@ def _transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_b
         ocr_image = ocr_image.convert("L")
 
     logger.info("Baseline segmentation...")
-    if baseline_model is None:
-        logger.warning("Baseline model was not loaded at startup. Attempting to load now...")
-        path = MODEL_PATHS.get("blla.mlmodel")
-        if path:
-            try:
-                temp_model = vgsl.TorchVGSLModel.load_model(path)
-                logger.info(f"Raw baseline model type: {type(temp_model)}")
-                
-                if temp_model is not None:
-                    if hasattr(temp_model, 'to'):
-                        converted_model = temp_model.to(device=selected_device)
-                        # If .to() returns None (in-place modification), use temp_model
-                        baseline_model = converted_model if converted_model is not None else temp_model
-                    else:
-                        baseline_model = temp_model
-                    
-                    logger.info(f"Baseline model loaded successfully on demand. Final Type: {type(baseline_model)}")
-                else:
-                    raise ValueError("vgsl.TorchVGSLModel.load_model returned None")
+    model_error = _ensure_baseline_model()
+    if model_error:
+        return model_error
 
-            except Exception as e:
-                logger.error(f"Failed to load baseline model on demand: {e}")
-                return f"Failed to load baseline model: {e}", 500
-        else:
-            logger.error("Baseline model path not found! 'models/blla.mlmodel' is missing.")
-            return "Baseline model path not found", 500
-
-    if baseline_model is None:
-        logger.error("Baseline model is not loaded! Please check if 'models/blla.mlmodel' exists.")
-        return "Baseline model is not loaded", 500
-        
     seg = blla.segment(ocr_image, model=baseline_model, device=selected_device, text_direction='horizontal-tb')
 
     # Optionally re-sort lines into a sensible reading order for multi-
@@ -1478,6 +1525,42 @@ def save_domain_config():
         return jsonify({"error": f"Failed to save config: {e}"}), 500
     return jsonify({"message": "Domain config saved"})
 
+def _launch_batch_process(batch_process_id, project_id, similarity_threshold, method):
+    """Run a Process Table analysis in a daemon thread."""
+    def run_batch_process():
+        with app.app_context():
+            logger.info("Inside app context, checking BatchProcessing")
+            try:
+                batch_process_project(project_id, similarity_threshold, method=method)
+                # End the worker's transaction first, so this reads the row
+                # as the cancel endpoint (a different session) left it.
+                db.session.commit()
+                batch_process = db.session.get(BatchProcessing, batch_process_id)
+                if batch_process:
+                    db.session.refresh(batch_process)
+                if batch_process and batch_process.status == "running":
+                    # Still running means it ran to the end; a cancel or a
+                    # failure has already put its own status on the row and
+                    # must not be overwritten with "completed" here.
+                    batch_process.status = "completed"
+                    db.session.commit()
+                    logger.info(f"Batch process completed for project ID {project_id}")
+                elif batch_process:
+                    logger.info(
+                        f"Batch process for project ID {project_id} ended with "
+                        f"status '{batch_process.status}'"
+                    )
+            except Exception as e:
+                logger.error(f"Batch process failed for project {project_id}: {str(e)}")
+                batch_process = db.session.get(BatchProcessing, batch_process_id)
+                if batch_process:
+                    batch_process.status = "failed"
+                    batch_process.error_message = str(e)
+                    db.session.commit()
+
+    Thread(target=run_batch_process, daemon=True).start()
+
+
 # Batch Processing Routes
 @app.route("/api/projects/<int:project_id>/batch-process", methods=["POST"])
 def start_batch_process(project_id):
@@ -1490,9 +1573,8 @@ def start_batch_process(project_id):
             logger.error(f"Invalid similarity threshold: {similarity_threshold}")
             return jsonify({"error": "Invalid similarity threshold (must be between 1 and 100)"}), 400
 
-        # Matching method: "ngram" (default) or "legacy". Carried through the
-        # worker thread's closure rather than stored on BatchProcessing, so
-        # selecting a method needs no schema change.
+        # Matching method: "ngram" (default) or "legacy". Stored on the row so
+        # a run interrupted by a server restart can be restarted identically.
         method = data.get("method", batch_analysis.DEFAULT_METHOD)
         if method not in (batch_analysis.METHOD_NGRAM, batch_analysis.METHOD_LEGACY):
             logger.error(f"Invalid matching method: {method}")
@@ -1506,45 +1588,14 @@ def start_batch_process(project_id):
         batch_process = BatchProcessing(
             project_id=project_id,
             status="running",
-            similarity_threshold=similarity_threshold
+            similarity_threshold=similarity_threshold,
+            method=method,
         )
         db.session.add(batch_process)
         db.session.commit()
 
-        # Start processing in a background thread
-        def run_batch_process(batch_process_id):
-            with app.app_context():
-                logger.info("Inside app context, checking BatchProcessing")
-                try:
-                    batch_process_project(project_id, similarity_threshold, method=method)
-                    # End the worker's transaction first, so this reads the row
-                    # as the cancel endpoint (a different session) left it.
-                    db.session.commit()
-                    batch_process = db.session.get(BatchProcessing, batch_process_id)
-                    if batch_process:
-                        db.session.refresh(batch_process)
-                    if batch_process and batch_process.status == "running":
-                        # Still running means it ran to the end; a cancel or a
-                        # failure has already put its own status on the row and
-                        # must not be overwritten with "completed" here.
-                        batch_process.status = "completed"
-                        db.session.commit()
-                        logger.info(f"Batch process completed for project ID {project_id}")
-                    elif batch_process:
-                        logger.info(
-                            f"Batch process for project ID {project_id} ended with "
-                            f"status '{batch_process.status}'"
-                        )
-                except Exception as e:
-                    logger.error(f"Batch process failed for project {project_id}: {str(e)}")
-                    batch_process = db.session.get(BatchProcessing, batch_process_id)
-                    if batch_process:
-                        batch_process.status = "failed"
-                        batch_process.error_message = str(e)
-                        db.session.commit()
-
         logger.info(f"Starting batch process for project ID {project_id}")
-        Thread(target=run_batch_process, args=(batch_process.id,), daemon=True).start()
+        _launch_batch_process(batch_process.id, project_id, similarity_threshold, method)
         return jsonify({
             "message": "Batch process started",
             "process_id": batch_process.id,
@@ -1745,6 +1796,110 @@ def cancel_iiif_download(project_id):
 # Background Transcription Runner
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Per-project red-ink calibration
+# ---------------------------------------------------------------------------
+
+CALIBRATION_PAGES = 3
+CALIBRATION_MAX_ATTEMPTS = 12
+CALIBRATION_MIN_LINES = 3  # fewer lines than this = an illustration/blank card
+DEFAULT_RED_MAX_PERCENT = 25.0
+
+
+def _red_max_fraction():
+    """Largest share of text allowed to be red, from the Settings page."""
+    try:
+        percent = float(_load_domain_config().get("red_max_fraction_percent", DEFAULT_RED_MAX_PERCENT))
+    except (TypeError, ValueError):
+        percent = DEFAULT_RED_MAX_PERCENT
+    return max(1.0, min(100.0, percent)) / 100.0
+
+
+def calibrate_red_sensitivity(project_id):
+    """Pick a red-detection sensitivity for one manuscript.
+
+    Segments a few random pages from the middle of the manuscript (the middle
+    avoids covers, title pages and blank flyleaves), skipping cards without
+    text, and lowers the sensitivity from the default until no more than the
+    configured share of the text counts as red - rubrics are always the
+    minority, so more than that means the ink itself is being picked up.
+
+    Returns (sensitivity, details) or (None, reason) when no usable page was
+    found; the caller then falls back to the default.
+    """
+    max_fraction = _red_max_fraction()
+    with _ocr_model_lock:
+        model_error = _ensure_baseline_model()
+    if model_error:
+        return None, model_error[0]
+
+    images = Image.query.filter_by(project_id=project_id).order_by(Image.id.asc()).all()
+    if not images:
+        return None, "project has no images"
+    n = len(images)
+    lo, hi = n // 4, max(n // 4 + 1, (3 * n) // 4)
+    middle = images[lo:hi]
+    rest = [img for img in images if img not in middle]
+    random.shuffle(middle)
+    random.shuffle(rest)
+    candidates = (middle + rest)[:CALIBRATION_MAX_ATTEMPTS]
+
+    profiles = []
+    used = []
+    for img in candidates:
+        if len(used) >= CALIBRATION_PAGES:
+            break
+        if not img.original or not os.path.exists(img.original):
+            continue
+        try:
+            color_image = PILImage.open(img.original)
+            gray = color_image.convert("L") if color_image.mode != "L" else color_image
+            seg = blla.segment(gray, model=baseline_model, device=selected_device, text_direction='horizontal-tb')
+            lines = [l for l in seg.lines if getattr(l, "boundary", None) and len(l.boundary) >= 3]
+            if len(lines) < CALIBRATION_MIN_LINES:
+                continue
+            page_profiles = []
+            for i, line in enumerate(lines):
+                try:
+                    page_profiles.append(line_redness_profile(color_image, line, i)[4])
+                except Exception as e:
+                    logger.debug("Calibration: skipping line %d of image %s: %s", i, img.id, e)
+            if page_profiles:
+                profiles.extend(page_profiles)
+                used.append(img.id)
+        except Exception as e:
+            logger.warning("Calibration: image %s failed: %s", img.id, e)
+
+    if not used:
+        return None, "no page with text found"
+    sensitivity, fraction = pick_red_sensitivity(profiles, max_fraction)
+    logger.info(
+        "Project %s red calibration: sensitivity %s%% (%.1f%% of text red, limit %.0f%%) from images %s",
+        project_id, sensitivity, fraction * 100, max_fraction * 100, used,
+    )
+    return float(sensitivity), {"images": used, "red_fraction": fraction}
+
+
+def resolve_red_threshold(project_id, fallback_threshold):
+    """Red threshold for an "automatic" run on this project.
+
+    A manual override always wins; otherwise the calibrated value is reused,
+    and calibrated (then saved on the project) the first time it is needed.
+    """
+    project = Project.query.get(project_id)
+    if project is None:
+        return fallback_threshold
+    if project.red_sensitivity is None:
+        sensitivity, info = calibrate_red_sensitivity(project_id)
+        if sensitivity is None:
+            logger.info("Project %s red calibration skipped (%s); using the default", project_id, info)
+            return red_sensitivity_to_threshold(DEFAULT_RED_SENSITIVITY)
+        project.red_sensitivity = sensitivity
+        project.red_sensitivity_source = "auto"
+        db.session.commit()
+    return red_sensitivity_to_threshold(project.red_sensitivity)
+
+
 def run_batch_transcribe(
     project_id,
     job_id,
@@ -1762,6 +1917,7 @@ def run_batch_transcribe(
     autofix_errors=True,
     ai_correct=False,
     resume_offset=0,
+    red_auto=False,
 ):
     """
     Transcribe all images in a project in a background thread.
@@ -1829,6 +1985,12 @@ def run_batch_transcribe(
         _page_admission.set_limit(workers)
 
         try:
+            if red_auto:
+                with flask_app.app_context():
+                    try:
+                        red_threshold = resolve_red_threshold(project_id, red_threshold)
+                    except Exception as e:
+                        logger.error("Red calibration failed for project %s: %s", project_id, e)
             with flask_app.app_context():
                 images = Image.query.filter_by(project_id=project_id).order_by(Image.id.asc()).all()
                 total = len(images)
@@ -1984,6 +2146,9 @@ def _parse_transcribe_options(body):
         "ignore_edges": _as_bool(body.get("ignore_edges"), False),
         "add_page_break": _as_bool(body.get("add_page_break"), False),
         "red_threshold": max(0.0, min(1_000_000.0, red_threshold)),
+        # True: ignore red_threshold and use the project's own level
+        # (manual override, else calibrated from sample pages).
+        "red_auto": _as_bool(body.get("red_auto"), False),
         "enhanced_multi_column": _as_bool(body.get("enhanced_multi_column"), False),
         "column_gap_ratio": max(0.015, min(0.165, column_gap_ratio)),
         "autofix_errors": _as_bool(body.get("autofix_errors"), True),
@@ -2039,6 +2204,7 @@ def _launch_transcribe_job(project_id, opts, resume_offset=0, auto_resumed=False
             opts["add_page_break"], opts["red_threshold"],
             opts["enhanced_multi_column"], opts["column_gap_ratio"],
             opts["autofix_errors"], opts["ai_correct"], resume_offset,
+            opts.get("red_auto", False),
         ),
         daemon=True,
     ).start()
@@ -2516,99 +2682,447 @@ def export_project_tables():
 
 # Project Routes
 
+def _project_stats(project_ids):
+    """Per-project counts and models for many projects at once, using a few
+    grouped queries instead of several queries per project (which made the
+    list crawl at a few hundred projects). Returns {project_id: {...}}."""
+    stats = {
+        pid: {
+            "image_count": 0,
+            "transcribed_count": 0,
+            "content_count": 0,
+            "transcription_models": [],
+        }
+        for pid in project_ids
+    }
+    if not project_ids:
+        return stats
+    has_text = db.and_(Image.transcribed_text.isnot(None), Image.transcribed_text != "")
+    for pid, total, transcribed in (
+        db.session.query(
+            Image.project_id,
+            db.func.count(Image.id),
+            db.func.sum(db.case((has_text, 1), else_=0)),
+        )
+        .filter(Image.project_id.in_(project_ids))
+        .group_by(Image.project_id)
+        .all()
+    ):
+        stats[pid]["image_count"] = total
+        stats[pid]["transcribed_count"] = int(transcribed or 0)
+    for pid, n in (
+        db.session.query(Content.project_id, db.func.count(Content.id))
+        .filter(Content.project_id.in_(project_ids))
+        .group_by(Content.project_id)
+        .all()
+    ):
+        stats[pid]["content_count"] = n
+    # Which model(s) produced the transcription currently shown - requires
+    # transcribed_text too, so a cleared project stops listing a model it no
+    # longer displays.
+    for pid, model in (
+        db.session.query(Image.project_id, Image.model_name)
+        .filter(Image.project_id.in_(project_ids), Image.model_name.isnot(None), has_text)
+        .distinct()
+        .all()
+    ):
+        stats[pid]["transcription_models"].append(model)
+    return stats
+
+
 def format_project(p, current_user):
     """Shared summary shape for a project: counts, models in use, and the
     live job status, used by both the project list and a single project's
     detail page so they never drift apart."""
-    first_image = Image.query.filter_by(project_id=p.id).order_by(Image.id.asc()).first()
-    thumbnail_url = (
-        f"{SERVER_URL}/{app.config['UPLOAD_FOLDER']}/project_{p.id}/{first_image.name}_{first_image.id}_thumbnail.jpg"
-        if first_image
-        else None
-    )
-    image_count = Image.query.filter_by(project_id=p.id).count()
-    transcribed_count = Image.query.filter(
-        Image.project_id == p.id,
-        Image.transcribed_text.isnot(None),
-        Image.transcribed_text != ""
-    ).count()
-    # Rows in the project's data table, shown on the projects list and
-    # used by "Process Table" to decide what already has data.
-    content_count = Content.query.filter_by(project_id=p.id).count()
-    # Which model(s) produced the automatic transcriptions currently on
-    # this project's pages - usually one, but pages can be re-run with
-    # a different model, so the list can have more than one entry.
-    transcription_models = [
-        row[0] for row in db.session.query(Image.model_name)
-        .filter(Image.project_id == p.id, Image.model_name.isnot(None))
-        .distinct()
-        .all()
-    ]
-    iiif_job = IiifDownloadJob.query.filter_by(project_id=p.id).first()
-    iiif_download_job = None
-    if iiif_job:
-        iiif_download_job = {
-            "status": iiif_job.status,
-            "current_page": iiif_job.current_page,
-            "total_pages": iiif_job.total_pages,
-            "start_page": iiif_job.start_page,
-            "error_message": iiif_job.error_message,
+    return format_projects([p], current_user, with_stats=True)[0]
+
+
+def format_projects(projects, current_user, with_stats=True):
+    """Summaries for many projects with a constant number of queries.
+    with_stats=False skips the expensive counts (served by /projects/stats)."""
+    ids = [p.id for p in projects]
+    thumbs = {}
+    iiif_jobs = {}
+    tx_jobs = {}
+    shares = {}
+    if ids:
+        first_ids = (
+            db.session.query(db.func.min(Image.id))
+            .filter(Image.project_id.in_(ids))
+            .group_by(Image.project_id)
+            .subquery()
+        )
+        for img in (
+            db.session.query(Image.id, Image.project_id, Image.name)
+            .filter(Image.id.in_(db.select(first_ids)))
+            .all()
+        ):
+            thumbs[img.project_id] = (
+                f"{SERVER_URL}/{app.config['UPLOAD_FOLDER']}/project_{img.project_id}/{img.name}_{img.id}_thumbnail.jpg"
+            )
+        for j in IiifDownloadJob.query.filter(IiifDownloadJob.project_id.in_(ids)).all():
+            iiif_jobs.setdefault(j.project_id, j)
+        for j in BatchTranscribeJob.query.filter(BatchTranscribeJob.project_id.in_(ids)).all():
+            tx_jobs.setdefault(j.project_id, j)
+        for s in ProjectSharing.query.filter(ProjectSharing.project_id.in_(ids)).all():
+            shares.setdefault(s.project_id, []).append(s.user_id)
+    stats = _project_stats(ids) if with_stats else {}
+
+    results = []
+    for p in projects:
+        iiif_job = iiif_jobs.get(p.id)
+        transcribe_job = tx_jobs.get(p.id)
+        result = {
+            "id": p.id,
+            "name": p.name,
+            "type": p.type,
+            "iiif_url": p.iiif_url,
+            "first_thumbnail": thumbs.get(p.id),
+            "owner_id": p.owner_id,
+            "is_owner": p.owner_id == current_user.id,
+            "red_sensitivity": p.red_sensitivity,
+            "red_sensitivity_source": p.red_sensitivity_source,
+            "iiif_download_job": {
+                "status": iiif_job.status,
+                "current_page": iiif_job.current_page,
+                "total_pages": iiif_job.total_pages,
+                "start_page": iiif_job.start_page,
+                "error_message": iiif_job.error_message,
+            } if iiif_job else None,
+            "batch_transcribe_job": {
+                "status": transcribe_job.status,
+                "current_image": transcribe_job.current_image,
+                "total_images": transcribe_job.total_images,
+                "model_name": transcribe_job.model_name,
+                "mode": transcribe_job.mode,
+                "error_message": transcribe_job.error_message,
+            } if transcribe_job else None,
         }
-    transcribe_job = BatchTranscribeJob.query.filter_by(project_id=p.id).first()
-    batch_transcribe_job = None
-    if transcribe_job:
-        batch_transcribe_job = {
-            "status": transcribe_job.status,
-            "current_image": transcribe_job.current_image,
-            "total_images": transcribe_job.total_images,
-            "model_name": transcribe_job.model_name,
-            "mode": transcribe_job.mode,
-            "error_message": transcribe_job.error_message,
-        }
-    result = {
-        "id": p.id,
-        "name": p.name,
-        "type": p.type,
-        "iiif_url": p.iiif_url,
-        "first_thumbnail": thumbnail_url,
-        "owner_id": p.owner_id,
-        "is_owner": p.owner_id == current_user.id,
-        "image_count": image_count,
-        "transcribed_count": transcribed_count,
-        "content_count": content_count,
-        "transcription_models": transcription_models,
-        "iiif_download_job": iiif_download_job,
-        "batch_transcribe_job": batch_transcribe_job,
-    }
-    if p.owner_id == current_user.id:
-        shared_user_ids = [s.user_id for s in ProjectSharing.query.filter_by(project_id=p.id).all()]
-        result["shared_users"] = shared_user_ids
-    return result
+        if with_stats:
+            result.update(stats[p.id])
+        if p.owner_id == current_user.id:
+            result["shared_users"] = shares.get(p.id, [])
+        results.append(result)
+    return results
+
+
+def _visible_projects(current_user):
+    owned = Project.query.filter_by(owner_id=current_user.id).all()
+    shared_ids = [ps.project_id for ps in ProjectSharing.query.filter_by(user_id=current_user.id).all()]
+    shared = Project.query.filter(Project.id.in_(shared_ids)).all() if shared_ids else []
+    return owned, shared
 
 
 @app.route("/api/projects", methods=["GET"])
 @jwt_required()
 def get_projects():
+    """?stats=0 returns the list without image/row counts and models, which
+    is what makes it instant; the client then fetches /api/projects/stats."""
     try:
         current_user = get_current_user()
         if not current_user:
             return jsonify({"error": "Authentication required"}), 401
 
-        # Get owned projects
-        owned_projects = Project.query.filter_by(owner_id=current_user.id).all()
-
-        # Get shared projects
-        shared_project_ids = [ps.project_id for ps in ProjectSharing.query.filter_by(user_id=current_user.id).all()]
-        shared_projects = Project.query.filter(Project.id.in_(shared_project_ids)).all() if shared_project_ids else []
-
-        owned_result = [format_project(p, current_user) for p in owned_projects]
-        shared_result = [format_project(p, current_user) for p in shared_projects]
+        with_stats = request.args.get("stats", "1") != "0"
+        owned_projects, shared_projects = _visible_projects(current_user)
+        owned_result = format_projects(owned_projects, current_user, with_stats)
+        shared_result = format_projects(shared_projects, current_user, with_stats)
 
         logger.info(f"Retrieved {len(owned_projects)} owned and {len(shared_projects)} shared projects for user {current_user.username}")
         return jsonify({"owned": owned_result, "shared": shared_result})
     except Exception as e:
         logger.error(f"Error in get_projects: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
+
+
+@app.route("/api/projects/stats", methods=["GET"])
+@jwt_required()
+def get_projects_stats():
+    try:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+        owned, shared = _visible_projects(current_user)
+        stats = _project_stats([p.id for p in owned + shared])
+        return jsonify({str(pid): v for pid, v in stats.items()})
+    except Exception as e:
+        logger.error(f"Error in get_projects_stats: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route("/api/projects/<int:project_id>/red-sensitivity/calibrate", methods=["POST"])
+@jwt_required()
+def calibrate_project_red_sensitivity(project_id):
+    """Work out the red level from sample pages now and save it on the
+    project, replacing any earlier value (manual ones included - the user
+    asked for it)."""
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+    project = Project.query.get_or_404(project_id)
+    try:
+        sensitivity, info = calibrate_red_sensitivity(project_id)
+    except Exception as e:
+        logger.exception("Red calibration failed for project %s", project_id)
+        return jsonify({"error": f"Calibration failed: {e}"}), 500
+    if sensitivity is None:
+        return jsonify({"error": f"Could not determine the red level: {info}"}), 422
+    project.red_sensitivity = sensitivity
+    project.red_sensitivity_source = "auto"
+    db.session.commit()
+    return jsonify({
+        "red_sensitivity": project.red_sensitivity,
+        "red_sensitivity_source": project.red_sensitivity_source,
+        "red_fraction": info["red_fraction"],
+    })
+
+
+@app.route("/api/projects/<int:project_id>/red-sensitivity", methods=["PUT"])
+@jwt_required()
+def set_project_red_sensitivity(project_id):
+    """Manual override of a project's red-detection level (0-100), or
+    {"sensitivity": null} to drop it so the next automatic run recalibrates."""
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+    if not check_project_access(project_id, current_user):
+        return jsonify({"error": "Access denied"}), 403
+    body = request.get_json(silent=True) or {}
+    value = body.get("sensitivity")
+    project = Project.query.get_or_404(project_id)
+    if value is None:
+        project.red_sensitivity = None
+        project.red_sensitivity_source = None
+    else:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return jsonify({"error": "sensitivity must be a number"}), 400
+        project.red_sensitivity = max(0.0, min(100.0, value))
+        project.red_sensitivity_source = "manual"
+    db.session.commit()
+    return jsonify({
+        "red_sensitivity": project.red_sensitivity,
+        "red_sensitivity_source": project.red_sensitivity_source,
+    })
+
+
+# Bulk AI autofix of already-transcribed text. One AI call per page (~30 s), so
+# this runs as a single background thread. Progress lives in the BulkAiJob row
+# (not in memory) so that a server restart can pick the job up again - see
+# auto_resume_interrupted_jobs.
+_bulk_ai_stop = threading.Event()
+_bulk_ai_start_lock = threading.Lock()
+
+
+def _bulk_ai_page_ids(project_ids):
+    """Every transcribed page of the projects, in project order then page
+    order - stable between runs, which is what lets `done` mean something
+    after a restart."""
+    page_ids = []
+    for pid in project_ids:
+        page_ids += [
+            i for (i,) in db.session.query(Image.id)
+            .filter(Image.project_id == pid,
+                    Image.transcribed_text.isnot(None),
+                    Image.transcribed_text != "")
+            .order_by(Image.id.asc()).all()
+        ]
+    return page_ids
+
+
+def _bulk_ai_summary(job):
+    if job is None:
+        return {"running": False}
+    return {
+        "running": job.status in ("pending", "running"),
+        "status": job.status,
+        "done": job.done or 0,
+        "total": job.total or 0,
+        "changed": job.changed or 0,
+        "projects": job.projects or 0,
+        "skipped": job.skipped or 0,
+        "error": job.error_message,
+    }
+
+
+def _run_bulk_ai_autofix(job_id, flask_app):
+    with flask_app.app_context():
+        job = BulkAiJob.query.get(job_id)
+        try:
+            project_ids = json.loads(job.project_ids_json)
+            page_ids = _bulk_ai_page_ids(project_ids)
+            job.total = len(page_ids)
+            job.status = "running"
+            db.session.commit()
+            for n in range(job.done or 0, len(page_ids)):
+                if _bulk_ai_stop.is_set():
+                    job.status = "cancelled"
+                    db.session.commit()
+                    return
+                img = Image.query.get(page_ids[n])
+                if img is not None and img.transcribed_text:
+                    old = img.transcribed_text
+                    # Same order as during transcription: the deterministic
+                    # find/replace first, so the model only judges what is left.
+                    new = ai_autofix_best_effort(apply_autofix(old))
+                    if new != old:
+                        # transcribed_text only: auto_transcribed_text stays the
+                        # model's raw output, and human_edited is left alone.
+                        img.transcribed_text = new
+                        job.changed = (job.changed or 0) + 1
+                # Page text and progress commit together, so `done` is exact
+                # and a restart never repeats or skips a page.
+                job.done = n + 1
+                db.session.commit()
+            job.status = "completed"
+            db.session.commit()
+        except Exception as e:
+            logger.exception("Bulk AI autofix failed")
+            db.session.rollback()
+            job = BulkAiJob.query.get(job_id)
+            if job is not None:
+                job.status = "failed"
+                job.error_message = str(e)
+                db.session.commit()
+        finally:
+            logger.info("Bulk AI autofix job %s ended", job_id)
+
+
+def _launch_bulk_ai_thread(job_id):
+    _bulk_ai_stop.clear()
+    Thread(target=_run_bulk_ai_autofix, args=(job_id, app), daemon=True).start()
+
+
+@app.route("/api/projects/ai-autofix", methods=["POST"])
+@jwt_required()
+def start_bulk_ai_autofix():
+    """Send the transcribed text of the given owned projects (all of them when
+    no ids are given) through find/replace + AI autofix, in the background."""
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+    body = request.get_json(silent=True) or {}
+    ids = body.get("project_ids")
+    owned = {p.id: p for p in Project.query.filter_by(owner_id=current_user.id).all()}
+    wanted = [int(i) for i in ids] if ids else list(owned)
+    busy = {
+        j.project_id for j in BatchTranscribeJob.query.filter(
+            BatchTranscribeJob.project_id.in_(wanted),
+            BatchTranscribeJob.status.in_(("running", "pending")),
+        ).all()
+    }
+    project_ids = [i for i in wanted if i in owned and i not in busy]
+    if not project_ids:
+        return jsonify({"error": "No eligible projects (transcription may be in progress)"}), 400
+    with _bulk_ai_start_lock:
+        if BulkAiJob.query.filter(BulkAiJob.status.in_(("pending", "running"))).first():
+            return jsonify({"error": "AI autofix is already running"}), 409
+        BulkAiJob.query.delete()  # only the latest run is kept
+        job = BulkAiJob(
+            owner_id=current_user.id, project_ids_json=json.dumps(project_ids),
+            status="pending", projects=len(project_ids), skipped=len(busy),
+        )
+        db.session.add(job)
+        db.session.commit()
+        _launch_bulk_ai_thread(job.id)
+    return jsonify(_bulk_ai_summary(job))
+
+
+@app.route("/api/projects/ai-autofix", methods=["GET"])
+@jwt_required()
+def get_bulk_ai_autofix():
+    return jsonify(_bulk_ai_summary(BulkAiJob.query.order_by(BulkAiJob.id.desc()).first()))
+
+
+@app.route("/api/projects/ai-autofix", methods=["DELETE"])
+@jwt_required()
+def cancel_bulk_ai_autofix():
+    _bulk_ai_stop.set()
+    return jsonify({"message": "Stopping after the current page"})
+
+
+PAGE_BREAK_MARK = "⏎"
+_MARKUP_TAG_RE = re.compile(r"</?(?:red|func)>", re.IGNORECASE)
+
+
+def _apply_text_actions(text, add_page_break, remove_page_break, strip_markup):
+    """Pure text transform behind the bulk "fix old transcriptions" actions."""
+    if not text:
+        return text
+    if strip_markup:
+        had = _MARKUP_TAG_RE.search(text) is not None
+        text = _MARKUP_TAG_RE.sub("", text)
+        if had:
+            # The tags sat between spaces, so removing them leaves doubles.
+            text = re.sub(r"[ \t]{2,}", " ", text)
+    if remove_page_break or add_page_break:
+        text = text.rstrip()
+        while text.endswith(PAGE_BREAK_MARK):
+            text = text[: -len(PAGE_BREAK_MARK)].rstrip()
+    if add_page_break and text:
+        text += PAGE_BREAK_MARK
+    return text.strip() if (strip_markup or remove_page_break or add_page_break) else text
+
+
+@app.route("/api/projects/text-actions", methods=["POST"])
+@jwt_required()
+def bulk_text_actions():
+    """Repair already-transcribed pages in the given (owned) projects:
+    add/remove the prayer separator at the end of each page and/or turn
+    <red>/<func> markup into plain text. Applied to both the working text and
+    the model's own copy so the two stay comparable. Projects with a
+    transcription running are skipped - the worker would overwrite the fix."""
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+    body = request.get_json(silent=True) or {}
+    add_pb = _as_bool(body.get("add_page_break"), False)
+    remove_pb = _as_bool(body.get("remove_page_break"), False)
+    strip = _as_bool(body.get("strip_markup"), False)
+    if add_pb and remove_pb:
+        return jsonify({"error": "Choose either adding or removing the page separator, not both"}), 400
+    if not (add_pb or remove_pb or strip):
+        return jsonify({"error": "No action selected"}), 400
+    ids = body.get("project_ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "project_ids is required"}), 400
+
+    updated_pages = 0
+    done, skipped = [], []
+    for pid in ids:
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            continue
+        project = Project.query.get(pid)
+        if project is None or project.owner_id != current_user.id:
+            skipped.append({"id": pid, "reason": "not your project"})
+            continue
+        job = BatchTranscribeJob.query.filter_by(project_id=pid).first()
+        if job and job.status in ("running", "pending"):
+            skipped.append({"id": pid, "name": project.name, "reason": "transcription in progress"})
+            continue
+        changed = 0
+        for img in Image.query.filter_by(project_id=pid).all():
+            touched = False
+            for field in ("transcribed_text", "auto_transcribed_text"):
+                old = getattr(img, field)
+                if not old:
+                    continue
+                new = _apply_text_actions(old, add_pb, remove_pb, strip)
+                if new != old:
+                    setattr(img, field, new)
+                    touched = True
+            changed += touched
+        db.session.commit()
+        updated_pages += changed
+        done.append(pid)
+    logger.info("Bulk text actions (add_pb=%s remove_pb=%s strip=%s) by %s: %d page(s) in %d project(s), %d skipped",
+                add_pb, remove_pb, strip, current_user.username, updated_pages, len(done), len(skipped))
+    return jsonify({"updated_pages": updated_pages, "projects": done, "skipped": skipped})
+
 
 @app.route("/api/projects", methods=["POST"])
 @jwt_required()
@@ -2936,6 +3450,11 @@ def clear_project_transcriptions(project_id):
     Only transcribed_text is cleared - auto_transcribed_text (the model's own
     output) and model_name are left alone, so nothing about what the OCR
     produced is lost; it can still be restored via overwrite-with-auto.
+
+    Also drops this project's BatchTranscribeJob row, if any: once
+    transcribed_text is blanked, a leftover "completed" record from a past
+    run would otherwise make the projects list keep claiming the project is
+    fully transcribed.
     """
     try:
         current_user = get_current_user()
@@ -2945,10 +3464,16 @@ def clear_project_transcriptions(project_id):
         if not check_project_access(project_id, current_user):
             return jsonify({"error": "Access denied"}), 403
 
+        existing_job = BatchTranscribeJob.query.filter_by(project_id=project_id).first()
+        if existing_job and existing_job.status in ACTIVE_TRANSCRIBE_STATUSES:
+            return jsonify({"error": "Cancel the running transcription job before clearing"}), 409
+
         cleared = Image.query.filter_by(project_id=project_id).update(
             {"transcribed_text": None, "human_edited": False},
             synchronize_session=False,
         )
+        if existing_job:
+            db.session.delete(existing_job)
         db.session.commit()
         logger.warning(
             "Project %s: cleared the manual transcription of %d image(s) "
@@ -3625,6 +4150,40 @@ def auto_resume_interrupted_jobs():
 
         if retired_dl:
             db.session.commit()
+
+        # Process Table analyses: no partial state worth keeping (the table is
+        # replaced in one transaction at the very end), so the run starts over.
+        # A run that dies the same way MAX_AUTO_RESUMES times is left alone.
+        for bp in BatchProcessing.query.filter_by(status=STATUS_INTERRUPTED).all():
+            if (bp.auto_resume_count or 0) >= MAX_AUTO_RESUMES:
+                bp.error_message = _give_up_message("analysis")
+                db.session.commit()
+                continue
+            bp.auto_resume_count = (bp.auto_resume_count or 0) + 1
+            bp.status = "running"
+            bp.progress = 0.0
+            bp.processed_rows = 0
+            bp.error_message = None
+            db.session.commit()
+            try:
+                _launch_batch_process(bp.id, bp.project_id, bp.similarity_threshold,
+                                      bp.method or batch_analysis.DEFAULT_METHOD)
+                logger.info("Automatic resume: restarted table analysis for project %s", bp.project_id)
+            except Exception:
+                logger.exception("Failed to auto-resume table analysis for project %s", bp.project_id)
+
+        for aj in BulkAiJob.query.filter_by(status=STATUS_INTERRUPTED).all():
+            if not _claim_auto_resume(aj, aj.done or 0):
+                aj.error_message = _give_up_message("AI autofix")
+                db.session.commit()
+                continue
+            aj.auto_resume_mark = aj.done or 0
+            aj.status = "pending"
+            aj.error_message = None
+            db.session.commit()
+            _launch_bulk_ai_thread(aj.id)
+            logger.info("Automatic resume: restarted AI autofix at page %s", (aj.done or 0) + 1)
+            break  # one at a time
 
         logger.info(
             "Automatic resume: restarted %d download(s) %s, queued %d behind a "

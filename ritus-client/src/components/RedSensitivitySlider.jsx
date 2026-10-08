@@ -1,6 +1,6 @@
 import { Box, HStack, Slider, Text } from "@chakra-ui/react";
 
-const RedSensitivitySlider = ({ sensitivity, onSensitivityChange, disabled = false }) => (
+const RedSensitivitySlider = ({ sensitivity, onSensitivityChange, disabled = false, action = null }) => (
   <Box>
     <Slider.Root
       min={0}
@@ -12,6 +12,7 @@ const RedSensitivitySlider = ({ sensitivity, onSensitivityChange, disabled = fal
     >
       <HStack justify="space-between">
         <Slider.Label>Red detection sensitivity</Slider.Label>
+        {action}
         <Text fontSize="sm" fontWeight="medium">
           {Math.round(sensitivity)}%
         </Text>
