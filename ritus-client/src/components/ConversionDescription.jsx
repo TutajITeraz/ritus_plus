@@ -134,59 +134,65 @@ export const UsuariumStructure_conv = {
 };
 
 // Cantus Index -> eCatalogus (Content) Structure.
-// Only fields with a clear, unambiguous counterpart are mapped here.
-// Fields left out (field_position, field_feast, field_mode, field_differentia,
-// field_finalis, field_differentia_database, field_image_link, field_melody,
-// field_melody_id, field_full_text) have no reliable equivalent in
-// ContentStructure - see the conversion report for details.
+// Decisions (see ecatalogus_import_cantus/README.md for the full table):
+//   mapped      folio, full_text, rubrics, notes, cantus_id, genre, marginalia,
+//               feast, mode, differentia_database, melody
+//   ignored     field_position (sequence replaces it), field_differentia (old),
+//               field_finalis, field_full_text_original, field_melody_id
+//   not a row   field_image_link (one URL per manuscript), field_imageref_from_chant
+//               (a Cantus image node id, not a page number - see the report)
+//   sequence    handled in Converter.jsx: rows are sorted by folio + per-folio
+//               sequence and numbered 1..n as sequence_in_ms.
 export const CantusStructure_conv = {
   field_folio: {
     ContentStructure: "where_in_ms_from",
   },
-  field_full_text_original: {
+  field_full_text: {
     ContentStructure: "formula_text_from_ms",
   },
   field_rubrics: {
-    ContentStructure: "rite_name_from_ms",
+    ContentStructure: "subrite_name_from_ms",
   },
   field_notes_chant: {
     ContentStructure: "comments",
   },
-  field_imageref_from_chant: {
-    ContentStructure: "digital_page_number",
-  },
+  // Every Cantus ID is kept as the edition index.
   field_cantus_id: {
-    ContentStructure: "reference_to_other_items",
-    mappingFunction: (row) => {
-      const value = row.field_cantus_id;
-      return value ? `CANTUS:${value}` : "";
-    },
+    ContentStructure: "edition_index",
   },
-  // field_office uses Cantus Database hour codes (V, C, M, L, ...) while
-  // ContentStructure's mass_hour uses a different code set (V1, C1, I, III, ...).
-  // Only the codes that are unambiguous under both vocabularies are mapped;
-  // the rest (e.g. "N" which could mean None or Nocturn) are left blank.
+  // Cantus Office codes (V, C, M, L, P ...) are not eCatalogus Mass/Hour codes.
+  // Only the codes that mean the same in both are mapped; the rest stay empty
+  // until eCatalogus decides how to hold Cantus offices.
   field_office: {
     ContentStructure: "mass_hour",
     mappingFile: "/data/mapping/cantus_office_to_mass_hour.tsv",
   },
-  // field_genre uses Cantus Database genre codes, which only partially overlap
-  // with ContentStructure's genre/function_id vocabularies (rite-specific,
-  // e.g. Ambrosian terms like "Ingressa"/"Confractorium"). Only exact,
-  // unambiguous code matches are mapped; subfunction_id and
-  // liturgical_genre_id are left unmapped as there is no reliable source data.
+  // Cantus genre code -> eCatalogus content function (existing, or the name
+  // proposed in 01_content_functions_to_create.tsv - it must be added to
+  // eCatalogus before the data is uploaded).
   field_genre: {
-    ContentStructure: ["genre", "function_id"],
-    mappingFile: {
-      genre: "/data/mapping/cantus_genre_to_genre.tsv",
-      function_id: "/data/mapping/cantus_genre_to_function_id.tsv",
-    },
+    ContentStructure: "function_id",
+    mappingFile: "/data/mapping/cantus_genre_to_function_id.tsv",
   },
-  // field_marginalia records physical position (Left/Right/Top/Bottom) as well
-  // as an explicit "Added" status. Only "Added" maps cleanly onto
-  // original_or_added; positional codes don't imply originality either way.
+  // Any value in Marginalia (Left/Right/Top/Bottom/Added) means the chant was
+  // written in the margin, i.e. added later.
   field_marginalia: {
     ContentStructure: "original_or_added",
-    mappingFile: "/data/mapping/cantus_marginalia_to_original_or_added.tsv",
+    mappingFunction: (row) => (String(row.field_marginalia ?? "").trim() ? "ADDED" : ""),
+  },
+  // Feast -> rite_id of the standardised rite name. Only feasts that already
+  // exist in eCatalogus resolve; the rest are listed in 02a_rite_names_to_create.tsv.
+  field_feast: {
+    ContentStructure: "rite_id",
+    mappingFile: "/data/mapping/cantus_feast_to_rite_id.tsv",
+  },
+  field_mode: {
+    ContentStructure: "chant_mode",
+  },
+  field_differentia_database: {
+    ContentStructure: "chant_differentia",
+  },
+  field_melody: {
+    ContentStructure: "melody",
   },
 };

@@ -39,6 +39,63 @@ BROWSER_HEADERS = {
 # Manifest helpers
 # ---------------------------------------------------------------------------
 
+# Page lists that are not on any IIIF server (e.g. the page images imported
+# from the Cantus database) are stored as a small IIIF v2 manifest next to the
+# project's images and referenced as  pages://<image host>/<project id>.
+# Using the IIIF job for them gives the same queueing per host, pacing,
+# resume and cancel as for a real manifest.
+LOCAL_MANIFEST_SCHEME = "pages://"
+LOCAL_MANIFEST_NAME = "pages_manifest.json"
+# Optional transcription text per page of a local manifest: {"<1-based page>": "text"}.
+LOCAL_TEXTS_NAME = "pages_text.json"
+
+
+def local_manifest_path(upload_folder, project_id):
+    return os.path.join(upload_folder, f"project_{project_id}", LOCAL_MANIFEST_NAME)
+
+
+def local_texts_path(upload_folder, project_id):
+    return os.path.join(upload_folder, f"project_{project_id}", LOCAL_TEXTS_NAME)
+
+
+def load_page_texts(upload_folder, project_id):
+    """Page texts saved with a local manifest ({} when there are none)."""
+    import json
+    try:
+        with open(local_texts_path(upload_folder, project_id), encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+def build_local_manifest(pages):
+    """pages: list of {"label", "url"} -> IIIF Presentation v2 manifest dict."""
+    return {
+        "@context": "http://iiif.io/api/presentation/2/context.json",
+        "@type": "sc:Manifest",
+        "sequences": [{
+            "@type": "sc:Sequence",
+            "canvases": [
+                {
+                    "@type": "sc:Canvas",
+                    "label": p["label"],
+                    "images": [{"resource": {"@id": p["url"]}}],
+                }
+                for p in pages
+            ],
+        }],
+    }
+
+
+def load_manifest(url, project_id, upload_folder, request_timeout=30):
+    """Local page-list manifest from disk, anything else over HTTP."""
+    if url.startswith(LOCAL_MANIFEST_SCHEME):
+        import json
+        with open(local_manifest_path(upload_folder, project_id), encoding="utf-8") as f:
+            return json.load(f)
+    return download_iiif_manifest(url, request_timeout=request_timeout)
+
+
 def download_iiif_manifest(url, headers=None, request_timeout=30):
     """Download and return a parsed IIIF manifest JSON."""
     logger.info(f"Downloading IIIF manifest from: {url}")
@@ -246,7 +303,7 @@ def run_iiif_download(
                 on_progress(0, 0, "cancelled")
                 return
             try:
-                manifest = download_iiif_manifest(iiif_url, request_timeout=request_timeout)
+                manifest = load_manifest(iiif_url, project_id, upload_folder, request_timeout=request_timeout)
                 break
             except Exception as e:
                 last_error = e
@@ -275,6 +332,11 @@ def run_iiif_download(
         pages_done = 0
 
         on_progress(start_page - 1, total_pages, "running")
+
+        page_texts = (
+            load_page_texts(upload_folder, project_id)
+            if iiif_url.startswith(LOCAL_MANIFEST_SCHEME) else {}
+        )
 
         # --- 3. Prepare output folder ---
         project_folder = os.path.join(upload_folder, f"project_{project_id}")
@@ -321,6 +383,13 @@ def run_iiif_download(
                         name=sanitized,
                         original=temp_path,
                     )
+                    # Text that came with the page list (the Cantus chants of the
+                    # page). It counts as human work: automatic transcription
+                    # must not overwrite it.
+                    page_text = page_texts.get(str(start_page + pages_done))
+                    if page_text:
+                        image_record.transcribed_text = page_text
+                        image_record.human_edited = True
                     db.session.add(image_record)
                     db.session.flush()
 

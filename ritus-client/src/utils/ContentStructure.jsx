@@ -483,6 +483,39 @@ const ContentStructure = [
     can_be_null: true,
     validationFunction: validateSelectOrList,
   },
+  // --- Fields for chants (filled by the Cantus Index conversion) ---
+  // eCatalogus has no counterpart yet: chant_mode and chant_differentia will
+  // become dictionaries, melody a UTF-8 text field (see ecatalogus_import_cantus/).
+  // They are kept as plain text until then and are not sent by the eCatalogus upload.
+  {
+    name: "chant_mode",
+    display_name: "Chant Mode",
+    type: "text",
+    editable: true,
+    can_be_null: true,
+    value: "",
+  },
+  {
+    name: "chant_differentia",
+    display_name: "Chant Differentia",
+    type: "text",
+    editable: true,
+    can_be_null: true,
+    value: "",
+  },
+  {
+    name: "melody",
+    display_name: "Melody",
+    type: "text",
+    editable: true,
+    can_be_null: true,
+    value: "",
+    width: 300,
+    style: {
+      whiteSpace: "normal",
+      wordWrap: "break-word",
+    },
+  },
   {
     name: 'text_standarization__usu_id',
     display_name: 'USU id',

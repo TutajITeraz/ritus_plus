@@ -768,6 +768,37 @@ export const startIiifDownload = async (projectId, confirm = null) => {
 };
 
 /**
+ * Give a project a plain list of page-image URLs to download (Cantus import).
+ * The download itself is then started with startIiifDownload.
+ * @param {number} projectId
+ * @param {{label: string, url: string}[]} pages
+ */
+export const setProjectPageList = async (projectId, pages) => {
+  const response = await apiRequest(
+    `${SERVER_URL}/api/projects/${projectId}/page-list`,
+    { method: "PUT", body: JSON.stringify({ pages }) }
+  );
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Failed to save the page list");
+  return data;
+};
+
+/**
+ * Append table rows to a project (no deleting), in chunks.
+ * @param {number} projectId
+ * @param {object[]} rows
+ */
+export const appendProjectContent = async (projectId, rows, chunkSize = 1000) => {
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const response = await apiRequest(
+      `${SERVER_URL}/api/projects/${projectId}/content/bulk`,
+      { method: "POST", body: JSON.stringify({ create: rows.slice(i, i + chunkSize) }) }
+    );
+    if (!response.ok) throw new Error("Failed to save table rows");
+  }
+};
+
+/**
  * Get current IIIF download job status for a project.
  * @param {number} projectId
  * @returns {Promise<{status, current_page, total_pages, start_page, error_message}>}

@@ -16,6 +16,7 @@ import {
   Spinner,
   Link,
   Checkbox,
+  Tabs,
 } from "@chakra-ui/react";
 import { LuUpload } from "react-icons/lu";
 import { FileUpload } from "@chakra-ui/react";
@@ -23,6 +24,7 @@ import Papa from "papaparse";
 import { toaster } from "@/components/ui/toaster";
 import { getAuthToken } from "../apiUtils";
 import { SERVER_URL } from "../config";
+import CantusImportPanel from "./CantusImportPanel";
 
 const getAuthHeaders = () => {
   const token = getAuthToken();
@@ -37,6 +39,8 @@ const BatchProjectCreator = ({ onProjectsCreated, triggerLabel = "Add Multiple P
   const [totalCount, setTotalCount] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [skipWithoutIIIF, setSkipWithoutIIIF] = useState(false);
+  const [tab, setTab] = useState("csv");
+  const [cantusBusy, setCantusBusy] = useState(false);
   const dialogRef = useRef(null);
 
   const handleCSVImport = async (files) => {
@@ -219,7 +223,9 @@ Another Project,`;
   return (
     <Dialog.Root
       open={isDialogOpen}
+      size={tab === "cantus" ? "lg" : "md"}
       onOpenChange={(e) => {
+        if (cantusBusy) return; // a Cantus import is creating projects
         setIsDialogOpen(e.open);
         if (!e.open) {
           setIsLoading(false);
@@ -228,6 +234,7 @@ Another Project,`;
           setTotalCount(0);
           setIsProcessing(false);
           setSkipWithoutIIIF(false);
+          setTab("csv");
         }
       }}
       placement="center"
@@ -244,12 +251,22 @@ Another Project,`;
         <Dialog.Positioner>
           <Dialog.Content ref={dialogRef}>
             <Dialog.Header>
-              <Dialog.Title>Add Multiple Projects from CSV</Dialog.Title>
+              <Dialog.Title>Add Multiple Projects</Dialog.Title>
               <Dialog.CloseTrigger asChild>
                 <CloseButton size="sm" />
               </Dialog.CloseTrigger>
             </Dialog.Header>
             <Dialog.Body>
+              <Tabs.Root value={tab} onValueChange={(e) => setTab(e.value)} variant="line">
+                <Tabs.List mb={4}>
+                  <Tabs.Trigger value="csv" disabled={isLoading || isProcessing || cantusBusy}>
+                    From CSV
+                  </Tabs.Trigger>
+                  <Tabs.Trigger value="cantus" disabled={isLoading || isProcessing || cantusBusy}>
+                    From Cantus Planus in Poloniae
+                  </Tabs.Trigger>
+                </Tabs.List>
+                <Tabs.Content value="csv" p={0}>
               <VStack align="start" spacing={4}>
                 <Box>
                   <Text mb={2} fontSize="sm" color="gray.600">
@@ -356,8 +373,17 @@ Another Project,`;
                   </>
                 )}
               </VStack>
+                </Tabs.Content>
+                <Tabs.Content value="cantus" p={0}>
+                  <CantusImportPanel
+                    onProjectsCreated={onProjectsCreated}
+                    onBusyChange={setCantusBusy}
+                    onClose={() => setIsDialogOpen(false)}
+                  />
+                </Tabs.Content>
+              </Tabs.Root>
             </Dialog.Body>
-            {!isLoading && !isProcessing && (
+            {tab === "csv" && !isLoading && !isProcessing && (
               <Dialog.Footer>
                 <Dialog.ActionTrigger asChild>
                   <Button variant="outline">Cancel</Button>

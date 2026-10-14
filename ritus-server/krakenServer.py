@@ -28,7 +28,7 @@ from config import SERVER_URL, ADMIN_USERNAME, ADMIN_PASSWORD, SECRET_KEY
 
 # Importy lokalne
 from models import db, User, Project, ProjectSharing, Image, Content, BatchProcessing, BulkAiJob, IiifDownloadJob, BatchTranscribeJob
-from download_iiif import run_iiif_download
+from download_iiif import run_iiif_download, build_local_manifest, local_manifest_path, local_texts_path, LOCAL_MANIFEST_SCHEME
 from transcription_autofix import apply_autofix
 from memory_governor import MemoryGovernor, available_memory_mb, process_rss_mb
 import trocr_recognizer
@@ -329,6 +329,7 @@ _ADDED_JOB_COLUMNS = {
     "project": {
         "red_sensitivity": "FLOAT",
         "red_sensitivity_source": "VARCHAR(10)",
+        "table_structure": "VARCHAR(20) NOT NULL DEFAULT 'content'",
     },
     "image": {
         "human_edited": "BOOLEAN DEFAULT 0",
@@ -1646,6 +1647,52 @@ def cancel_batch_process(project_id):
 # IIIF Background Download Routes
 # ---------------------------------------------------------------------------
 
+@app.route("/api/projects/<int:project_id>/page-list", methods=["PUT"])
+@jwt_required()
+def set_project_page_list(project_id):
+    """Give a project a plain list of page-image URLs to download (used by the
+    Cantus import, whose page images are not served over IIIF). The list is kept
+    as a small manifest on disk and the project gets a pages://<host>/<id> URL,
+    so POST .../iiif-download then downloads it like any other IIIF project
+    (queued per image host, paced by domain_config.json, resumable)."""
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+    project = Project.query.get_or_404(project_id)
+    if project.owner_id != current_user.id:
+        return jsonify({"error": "Only project owner can set the page list"}), 403
+
+    pages = (request.get_json(silent=True) or {}).get("pages")
+    if not isinstance(pages, list) or not pages:
+        return jsonify({"error": "pages must be a non-empty list"}), 400
+    clean = []
+    for p in pages:
+        url = str((p or {}).get("url", "")).strip()
+        if urlparse(url).scheme not in ("http", "https") or not urlparse(url).netloc:
+            return jsonify({"error": f"Invalid page URL: {url[:200]}"}), 400
+        clean.append({"label": str(p.get("label") or "page"), "url": url, "text": str(p.get("text") or "")})
+
+    path = local_manifest_path(app.config["UPLOAD_FOLDER"], project_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(build_local_manifest(clean), f, ensure_ascii=False)
+    # Optional page texts, applied to the images as they are downloaded.
+    texts = {str(i): p["text"] for i, p in enumerate(clean, start=1) if p["text"]}
+    texts_path = local_texts_path(app.config["UPLOAD_FOLDER"], project_id)
+    if texts:
+        with open(texts_path, "w", encoding="utf-8") as f:
+            json.dump(texts, f, ensure_ascii=False)
+    elif os.path.exists(texts_path):
+        os.remove(texts_path)
+
+    host = urlparse(clean[0]["url"]).netloc.lower()
+    project.type = "iiif"
+    project.iiif_url = f"{LOCAL_MANIFEST_SCHEME}{host}/{project_id}"
+    db.session.commit()
+    logger.info(f"Project {project_id}: page list with {len(clean)} pages from {host}")
+    return jsonify({"message": "Page list saved", "pages": len(clean), "iiif_url": project.iiif_url})
+
+
 @app.route("/api/projects/<int:project_id>/iiif-download", methods=["POST"])
 @jwt_required()
 def start_iiif_download(project_id):
@@ -2782,6 +2829,7 @@ def format_projects(projects, current_user, with_stats=True):
             "is_owner": p.owner_id == current_user.id,
             "red_sensitivity": p.red_sensitivity,
             "red_sensitivity_source": p.red_sensitivity_source,
+            "table_structure": p.table_structure or "content",
             "iiif_download_job": {
                 "status": iiif_job.status,
                 "current_page": iiif_job.current_page,
@@ -3124,6 +3172,9 @@ def bulk_text_actions():
     return jsonify({"updated_pages": updated_pages, "projects": done, "skipped": skipped})
 
 
+TABLE_STRUCTURES = ("content", "usuarium", "cantus")
+
+
 @app.route("/api/projects", methods=["POST"])
 @jwt_required()
 def create_project():
@@ -3137,6 +3188,7 @@ def create_project():
             name=data["name"],
             type=data.get("type"),
             iiif_url=data.get("iiif_url"),
+            table_structure=data.get("table_structure") if data.get("table_structure") in TABLE_STRUCTURES else "content",
             owner_id=current_user.id
         )
         db.session.add(project)
@@ -3203,6 +3255,8 @@ def update_project(id):
             return jsonify({"error": "Only project owner can update"}), 403
 
         data = request.json
+        if "table_structure" in data and data["table_structure"] not in TABLE_STRUCTURES:
+            return jsonify({"error": "Unknown table structure"}), 400
         for key, value in data.items():
             if key != 'owner_id':  # Prevent changing ownership
                 setattr(project, key, value)

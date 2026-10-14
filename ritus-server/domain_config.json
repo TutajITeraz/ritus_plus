@@ -9,5 +9,9 @@
   "gallica.bnf.fr": {
     "sleep_seconds": 1,
     "timeout": 60
+  },
+  "cantus.ispan.pl": {
+    "sleep_seconds": 1,
+    "timeout": 120
   }
 }

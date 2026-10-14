@@ -27,6 +27,8 @@ import UsuariumStructure from "../utils/UsuariumStructure";
 import CantusStructure from "../utils/CantusStructure";
 import {
   fetchProjectContent,
+  fetchProject,
+  updateProject,
   fetchImages,
   saveProjectContent,
   startBatchProcess,
@@ -34,6 +36,7 @@ import {
   cancelBatchProcess,
 } from "../apiUtils";
 import { buildRowsFromTranscription } from "../utils/transcriptionRows";
+import { canConvertStructures } from "../utils/tableStructures";
 
 import { RxTextAlignBottom } from "react-icons/rx";
 import { BsCloudArrowUpFill } from "react-icons/bs";
@@ -51,14 +54,6 @@ const generateEmptyRow = (structure) => {
   }
   return row;
 };
-
-// Structure pairs with a real field mapping defined in ConversionDescription.jsx.
-// content<->usuarium is fully bidirectional; cantus->content is currently
-// one-way only (see the Cantus Index conversion report for unmapped fields).
-const canConvertStructures = (from, to) =>
-  (["content", "usuarium"].includes(from) &&
-    ["content", "usuarium"].includes(to)) ||
-  (from === "cantus" && to === "content");
 
 const hasMeaningfulData = (data) => {
   return data.some((row) =>
@@ -100,6 +95,7 @@ const TableEditor = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [shouldLoadContent, setShouldLoadContent] = useState(!!projectId);
   const pollingRef = useRef(null);
+  const savedStructureRef = useRef("content");
   const batchDialogRef = useRef(null);
   // Portal container for the method dropdown: it must be a real DOM node inside
   // the dialog, or the popover renders behind the modal backdrop. Dialog.Root is
@@ -250,6 +246,13 @@ const TableEditor = () => {
     }
     try {
       setIsLoading(true);
+      // The rows carry no marker of their own: the project says which
+      // structure they are stored in.
+      const project = await fetchProject(projectId);
+      const loadedKey = structures[project.table_structure] ? project.table_structure : "content";
+      const loadedStructure = structures[loadedKey];
+      setStructureKey(loadedKey);
+      savedStructureRef.current = loadedKey;
       const content = await fetchProjectContent(projectId);
       console.log("Fetched content:", content);
       let tableData = content.map((row, index) => ({
@@ -258,13 +261,13 @@ const TableEditor = () => {
         _internalId: row.id || Date.now() + index,
       }));
       tableData.forEach((row) => {
-        currentStructure.forEach((col) => {
+        loadedStructure.forEach((col) => {
           if (row[col.name] === undefined) {
             row[col.name] = col.value ?? "";
           }
         });
       });
-      const seqCol = currentStructure.find((col) => col.type === "sequence");
+      const seqCol = loadedStructure.find((col) => col.type === "sequence");
       if (seqCol) {
         tableData.forEach((row, index) => {
           if (row[seqCol.name] == null || row[seqCol.name] === "") {
@@ -274,7 +277,7 @@ const TableEditor = () => {
           }
         });
       }
-      const newData = tableData.length > 0 ? tableData : [generateEmptyRow(currentStructure)];
+      const newData = tableData.length > 0 ? tableData : [generateEmptyRow(loadedStructure)];
       setData(newData);
       console.log("Set initial data:", newData);
     } catch (error) {
@@ -378,6 +381,11 @@ const TableEditor = () => {
         loading: { title: "Uploading...", description: "Please wait" },
       });
       await savePromise;
+      // Only when it changed (only the owner may change project fields).
+      if (structureKey !== savedStructureRef.current) {
+        await updateProject(projectId, { table_structure: structureKey });
+        savedStructureRef.current = structureKey;
+      }
     } catch (error) {
       console.error("Failed to save content:", error);
       toaster.create({

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Dialog,
   Portal,
@@ -9,13 +9,14 @@ import {
   VStack,
   Text,
 } from "@chakra-ui/react";
-import Papa from "papaparse";
 import { toaster } from "@/components/ui/toaster";
 import {
   ContentStructure_conv,
   UsuariumStructure_conv,
   CantusStructure_conv,
 } from "./ConversionDescription";
+import { sortCantusRows } from "../utils/cantusSequence";
+import { convertRows, createMappingFetcher } from "../utils/convertRows";
 
 const CONVERSION_MAPS = {
   content: ContentStructure_conv,
@@ -43,141 +44,28 @@ const Converter = ({
   //const [similarityThreshold, setSimilarityThreshold] = useState(75);
   const [isConverting, setIsConverting] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [mappingCache, setMappingCache] = useState(new Map());
+  // One fetcher for the component's lifetime: shares each mapping file's request.
+  const fetchMappingFile = useRef(createMappingFetcher()).current;
 
   const conversionMap = CONVERSION_MAPS[sourceStructureKey] || {};
   const targetStructureName = STRUCTURE_NAMES[targetStructureKey];
-
-  const fetchMappingFile = useCallback(async (filePath) => {
-    if (mappingCache.has(filePath)) {
-      return mappingCache.get(filePath);
-    }
-    try {
-      const response = await fetch(`${filePath}`);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch mapping file: ${filePath}`);
-      }
-      const text = await response.text();
-      const parsed = Papa.parse(text, {
-        header: true,
-        skipEmptyLines: true,
-      }).data;
-      const mapping = new Map(
-        parsed.map((row) => [row.source, row.target])
-      );
-      setMappingCache((prev) => new Map(prev).set(filePath, mapping));
-      console.log(`Fetched mapping file ${filePath}:`, mapping);
-      return mapping;
-    } catch (error) {
-      console.error(`Error fetching mapping file ${filePath}:`, error);
-      return new Map();
-    }
-  }, [mappingCache]);
 
   const convertData = useCallback(async () => {
     setIsConverting(true);
     setProgress(0);
     try {
-      const newData = await Promise.all(
-        sourceData.map(async (sourceRow, index) => {
-          //console.log(`Converting row ${index + 1}:`, sourceRow);
-          const newRow = { _internalId: sourceRow._internalId || Date.now() + index };
-          
-          // Initialize target row with default values
-          targetStructure.forEach((col) => {
-            newRow[col.name] = col.value ?? "";
-          });
-
-          // Process each mapping
-          for (const [sourceField, mapping] of Object.entries(conversionMap)) {
-            const targetField = Array.isArray(mapping[targetStructureName])
-              ? mapping[targetStructureName]
-              : [mapping[targetStructureName]];
-            const value = sourceRow[sourceField];
-
-            //console.log(`Processing ${sourceField} to ${targetField.join(", ")}:`, { value });
-
-            if (mapping.mappingFunction) {
-              const result = mapping.mappingFunction(sourceRow);
-              //console.log(`Applied mapping function for ${sourceField}:`, result);
-              if (typeof result === "object") {
-                Object.entries(result).forEach(([key, val]) => {
-                  newRow[key] = val;
-                  //console.log(`Set ${key} = ${val} from ${sourceField}`);
-                });
-              } else {
-                targetField.forEach((field) => {
-                  newRow[field] = result;
-                  //console.log(`Set ${field} = ${result} from ${sourceField}`);
-                });
-              }
-            } else if (mapping.mappingFile) {
-              if (typeof mapping.mappingFile === "object") {
-                // Handle multi-field mapping with selective mapping files
-                const promises = targetField.map(async (field) => {
-                  const filePath = mapping.mappingFile[field];
-                  if (filePath) {
-                    // Field has a mapping file, apply mapping
-                    const map = await fetchMappingFile(filePath);
-                    const mappedValue = map.get(value) || "";
-                    if (mappedValue && !newRow[field]) {
-                      newRow[field] = mappedValue;
-                      //console.log(`Mapped ${sourceField} to ${field} using file ${filePath}: ${mappedValue}`);
-                    }
-                  } else {
-                    // No mapping file for this field, use direct mapping if not already set
-                    if (value && !newRow[field]) {
-                      newRow[field] = value;
-                      //console.log(`Direct mapping ${sourceField} to ${field}: ${value}`);
-                    }
-                  }
-                });
-                await Promise.all(promises);
-              } else {
-                // Single mapping file for all target fields
-                const map = await fetchMappingFile(mapping.mappingFile);
-                targetField.forEach((field) => {
-                  const mappedValue = map.get(value) || "";
-                  if (mappedValue && !newRow[field]) {
-                    newRow[field] = mappedValue;
-                    //console.log(`Mapped ${sourceField} to ${field} using file ${mapping.mappingFile}: ${mappedValue}`);
-                  }
-                });
-              }
-            } else if (mapping[targetStructureName]) {
-              //console.log(`Direct mapping ${sourceField} to ${targetField.join(", ")}: ${value ?? ""}`);
-              targetField.forEach((field) => {
-                if (value && !newRow[field]) {
-                  newRow[field] = value;
-                  //console.log(`Set ${field} = ${value} from ${sourceField}`);
-                }
-              });
-            } else {
-              //console.log(`No action for mapping ${sourceField}`);
-            }
-          }
-
-          // Handle sequence column
-          const seqCol = targetStructure.find((col) => col.type === "sequence");
-          if (seqCol) {
-            newRow[seqCol.name] = sourceRow.sequence_in_ms || index + 1;
-            //console.log(`Set sequence column ${seqCol.name} = ${newRow[seqCol.name]}`);
-          }
-
-          setProgress(((index + 1) / sourceData.length) * 100);
-          //console.log(`Converted row ${index + 1}:`, newRow);
-          return newRow;
-        })
-      );
-
-      // Update sequences
-      const seqCol = targetStructure.find((col) => col.type === "sequence")?.name;
-      if (seqCol) {
-        newData.forEach((row, idx) => {
-          row[seqCol] = idx + 1;
-          console.log(`Updated sequence for row ${idx + 1}: ${seqCol} = ${idx + 1}`);
-        });
-      }
+      // Cantus numbers chants per folio; put the rows in book order first so the
+      // running sequence_in_ms assigned below is correct for the whole manuscript.
+      const orderedSource =
+        sourceStructureKey === "cantus" ? sortCantusRows(sourceData) : sourceData;
+      const newData = await convertRows({
+        sourceRows: orderedSource,
+        conversionMap,
+        targetStructure,
+        targetStructureName,
+        fetchMappingFile,
+        onProgress: setProgress,
+      });
 
       console.log("Final converted data:", newData);
       setData(newData);

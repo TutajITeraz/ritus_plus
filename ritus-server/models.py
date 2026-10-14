@@ -34,6 +34,10 @@ class Project(db.Model):
     # sample pages) or 'manual' (the user's override, never recalibrated).
     red_sensitivity = db.Column(db.Float)
     red_sensitivity_source = db.Column(db.String(10))
+    # Which table structure the project's rows are stored in: 'content'
+    # (eCatalogus), 'usuarium' or 'cantus' (Cantus Index). Rows carry no marker
+    # of their own, so the editor and the bulk converter read it from here.
+    table_structure = db.Column(db.String(20), nullable=False, default='content', server_default='content')
     contents = db.relationship('Content', backref='project', cascade='all, delete-orphan')
     batch_processes = db.relationship('BatchProcessing', backref='project', cascade='all, delete-orphan')
     images = db.relationship('Image', backref='project', cascade='all, delete-orphan')

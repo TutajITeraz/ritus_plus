@@ -60,7 +60,14 @@ import {
 } from "../utils/redSensitivity";
 import { modelLabel } from "../utils/modelLabels";
 import { useJobPacing, formatDuration } from "../utils/useJobPacing";
+import { STRUCTURE_LABELS } from "../utils/tableStructures";
+import { createMappingFetcher } from "../utils/convertRows";
+import { planTableConversion, convertProjectTable, structureOf } from "../utils/bulkTableConversion";
 import DeviceStatusBadge from "../components/DeviceStatusBadge";
+
+const structureCollection = createListCollection({
+  items: Object.entries(STRUCTURE_LABELS).map(([value, label]) => ({ label, value })),
+});
 
 const typeCollection = createListCollection({
   items: [
@@ -470,6 +477,8 @@ const ProjectList = () => {
   const [textActionsOpen, setTextActionsOpen] = useState(false);
   const [textActions, setTextActions] = useState({ add: false, remove: false, strip: false });
   const [isApplyingTextActions, setIsApplyingTextActions] = useState(false);
+  const [convertTarget, setConvertTarget] = useState("content");
+  const [convertProgress, setConvertProgress] = useState(null); // { done, total } while running
   const [aiJob, setAiJob] = useState(null);
   const pollingRef = useRef(null);
   const transcribePollingRef = useRef(null);
@@ -929,6 +938,43 @@ const ProjectList = () => {
   // Bulk version of handleClearTranscriptions: clears every selected project
   // (or every owned project when nothing is selected) that actually has a
   // manual transcription to clear.
+  const handleConvertTables = async () => {
+    const plan = planTableConversion(selectedProjects, convertTarget);
+    if (plan.convert.length === 0) return;
+    const label = STRUCTURE_LABELS[convertTarget];
+    if (
+      !window.confirm(
+        `Convert the table of ${plan.convert.length} project(s) to ${label}?\n\n` +
+        "The saved table is replaced. Columns without a counterpart in the new structure are dropped, " +
+        "and the conversion cannot be undone."
+      )
+    ) {
+      return;
+    }
+    const fetchMapping = createMappingFetcher();
+    const failed = [];
+    setConvertProgress({ done: 0, total: plan.convert.length });
+    for (const project of plan.convert) {
+      try {
+        await convertProjectTable(project, convertTarget, fetchMapping);
+      } catch (e) {
+        console.error(`Table conversion failed for project ${project.id}:`, e);
+        failed.push(`${project.name}: ${e.message}`);
+      }
+      setConvertProgress((prev) => ({ ...prev, done: prev.done + 1 }));
+    }
+    setConvertProgress(null);
+    await refreshProjects();
+    toaster.create({
+      title: failed.length ? "Some tables failed" : "Tables converted",
+      description: failed.length
+        ? `Converted ${plan.convert.length - failed.length} of ${plan.convert.length}. ${failed[0]}`
+        : `${plan.convert.length} table(s) converted to ${label}.`,
+      type: failed.length ? "warning" : "success",
+      duration: 6000,
+    });
+  };
+
   const handleClearTranscriptionsBulk = async () => {
     const pool = selectedIds.length > 0 ? selectedProjects : projectData.owned;
     const targets = pool.filter((p) => p.transcribed_count > 0);
@@ -1212,7 +1258,7 @@ const ProjectList = () => {
           </Portal>
         </Dialog.Root>
         <BatchProjectCreator 
-          onProjectsCreated={() => fetchProjects().then(setProjectData)}
+          onProjectsCreated={() => refreshProjects()}
         />
         <Button variant="outline" size="sm" onClick={handleDownloadAll}>
           <FaDownload /> {selectedIds.length > 0 ? `Download Selected (${selectedIds.length})` : "Download All"}
@@ -1696,6 +1742,69 @@ const ProjectList = () => {
                       onClick={() => { setTextActionsOpen(false); handleClearTranscriptionsBulk(); }}
                     >
                       Clear transcription {selectedIds.length > 0 ? `of selected (${selectedIds.length})` : "of all"}
+                    </Button>
+                  </Stack>
+                  <Stack spacing={2}>
+                    <Text fontWeight="bold">Convert tables</Text>
+                    <Text fontSize="sm" color="gray.600">
+                      Converts the saved table of the selected projects to another structure
+                      (Cantus Index → eCatalogus, eCatalogus ↔ Usuarium).
+                    </Text>
+                    <Select.Root
+                      collection={structureCollection}
+                      value={[convertTarget]}
+                      onValueChange={(details) => setConvertTarget(details.value[0])}
+                      maxW="280px"
+                    >
+                      <Select.HiddenSelect />
+                      <Select.Control>
+                        <Select.Trigger>
+                          <Select.ValueText placeholder="Convert to…" />
+                        </Select.Trigger>
+                        <Select.IndicatorGroup>
+                          <Select.Indicator />
+                        </Select.IndicatorGroup>
+                      </Select.Control>
+                      <Select.Positioner>
+                        <Select.Content>
+                          {structureCollection.items.map((item) => (
+                            <Select.Item item={item} key={item.value}>
+                              {item.label}
+                              <Select.ItemIndicator />
+                            </Select.Item>
+                          ))}
+                        </Select.Content>
+                      </Select.Positioner>
+                    </Select.Root>
+                    {selectedIds.length > 0 && (() => {
+                      const plan = planTableConversion(selectedProjects, convertTarget);
+                      return (
+                        <Text fontSize="sm" color="gray.600">
+                          {plan.convert.length} will be converted
+                          {plan.same.length > 0 ? `, ${plan.same.length} already in this structure` : ""}
+                          {plan.unsupported.length > 0
+                            ? `, ${plan.unsupported.length} cannot be converted (${[...new Set(plan.unsupported.map((p) => STRUCTURE_LABELS[structureOf(p)]))].join(", ")} → ${STRUCTURE_LABELS[convertTarget]} has no mapping)`
+                            : ""}
+                          .
+                        </Text>
+                      );
+                    })()}
+                    {convertProgress && (
+                      <Text fontSize="sm" color="purple.600">
+                        Converting… {convertProgress.done}/{convertProgress.total}
+                      </Text>
+                    )}
+                    <Button
+                      alignSelf="flex-start"
+                      colorPalette="purple"
+                      loading={!!convertProgress}
+                      disabled={
+                        selectedIds.length === 0 ||
+                        planTableConversion(selectedProjects, convertTarget).convert.length === 0
+                      }
+                      onClick={handleConvertTables}
+                    >
+                      Convert {selectedIds.length > 0 ? `selected (${selectedIds.length})` : "selected"} to {STRUCTURE_LABELS[convertTarget]}
                     </Button>
                   </Stack>
                 </Stack>

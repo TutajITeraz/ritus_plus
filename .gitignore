@@ -241,3 +241,5 @@ Common transcription errors.xlsx
 # (regenerate with: cd ritus-server && python tests/build_fill_oracle.py)
 /ritus-server/tests/oracle_raw.json
 /ritus-server/tests/oracle_norm.json
+/ecatalogus_import_cantus
+ritus-server/scripts/cantus_to_ecatalogus_prep.py
