@@ -56,7 +56,6 @@ const debounce = (func, wait) => {
 
 // Calculate row height based on Text column content
 const getRowHeight = (text) => {
-  const maxWidth = 200; // Text column maxWidth
   const charsPerLine = 30; // Approx characters per line at 200px
   const lineHeight = 20; // Height per line
   const padding = 10; // Padding for cell

@@ -9,7 +9,7 @@ const validateFolio = (value, row, index) => {
   return isValidFolio(value) ? null : `Invalid folio at row ${index + 1}`;
 };
 
-const validateSelectOrList = (value, row, index) => {
+const validateSelectOrList = (value) => {
   if (value == null || value === "") return null;
   // Validation is handled elsewhere using dictionaries
   return null;

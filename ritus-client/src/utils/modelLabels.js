@@ -13,6 +13,13 @@ export const MODEL_LABELS = {
   "german_handwriting.mlmodel": "German Handwriting",
   "en_best.mlmodel": "Modern English Print",
   "TrOCR_Manicule_2026_Latin_Medieval": "TrOCR Manicule (Latin Medieval HTR)",
+  "claude-sonnet-5-5": "Claude Sonnet 5.5 (API)",
+  "claude-opus-5-5": "Claude Opus 5.5 (API)",
 };
 
 export const modelLabel = (modelName) => MODEL_LABELS[modelName] || modelName;
+
+// Claude models read the whole page in one API call and return finished,
+// tagged text, so the line-pipeline options (edges, columns, red threshold,
+// find/replace, AI correct) do not apply to them.
+export const isClaudeModel = (modelName) => typeof modelName === "string" && modelName.startsWith("claude-");

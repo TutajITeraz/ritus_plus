@@ -58,7 +58,9 @@ import {
   DEFAULT_RED_SENSITIVITY,
   sensitivityToThreshold,
 } from "../utils/redSensitivity";
-import { modelLabel } from "../utils/modelLabels";
+import { modelLabel, isClaudeModel } from "../utils/modelLabels";
+import { useModelCollection } from "../utils/claudeAvailability";
+import ClaudeModelNote from "../components/ClaudeModelNote";
 import { useJobPacing, formatDuration } from "../utils/useJobPacing";
 import { STRUCTURE_LABELS } from "../utils/tableStructures";
 import { createMappingFetcher } from "../utils/convertRows";
@@ -159,21 +161,21 @@ const IiifProjectStatus = ({ project, jobStatus, onDownload, onCancel }) => {
 // ---------------------------------------------------------------------------
 // Models list (mirrors Transcribe.jsx)
 // ---------------------------------------------------------------------------
-const transcribeModels = createListCollection({
-  items: [
-    { label: "Tridis Medieval EarlyModern", value: "Tridis_Medieval_EarlyModern.mlmodel" },
-    { label: "Cremma Generic 1.0.1", value: "cremma-generic-1.0.1.mlmodel" },
-    { label: "ManuMcFondue", value: "ManuMcFondue.mlmodel" },
-    { label: "Catmus Medieval", value: "catmus-medieval.mlmodel" },
-    { label: "CATMUS Print Model", value: "catmus-print-fondue-large.mlmodel" },
-    { label: "McCATMuS (16th-21st c. Polyglot)", value: "McCATMuS_nfd_nofix_V1.mlmodel" },
-    { label: "LECTAUREP (French Admin)", value: "lectaurep_base.mlmodel" },
-    { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
-    { label: "German Handwriting", value: "german_handwriting.mlmodel" },
-    { label: "Modern English Print", value: "en_best.mlmodel" },
-    { label: "TrOCR Manicule (Latin Medieval HTR)", value: "TrOCR_Manicule_2026_Latin_Medieval" },
-  ],
-});
+const transcribeModelItems = [
+  { label: "Tridis Medieval EarlyModern", value: "Tridis_Medieval_EarlyModern.mlmodel" },
+  { label: "Cremma Generic 1.0.1", value: "cremma-generic-1.0.1.mlmodel" },
+  { label: "ManuMcFondue", value: "ManuMcFondue.mlmodel" },
+  { label: "Catmus Medieval", value: "catmus-medieval.mlmodel" },
+  { label: "CATMUS Print Model", value: "catmus-print-fondue-large.mlmodel" },
+  { label: "McCATMuS (16th-21st c. Polyglot)", value: "McCATMuS_nfd_nofix_V1.mlmodel" },
+  { label: "LECTAUREP (French Admin)", value: "lectaurep_base.mlmodel" },
+  { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
+  { label: "German Handwriting", value: "german_handwriting.mlmodel" },
+  { label: "Modern English Print", value: "en_best.mlmodel" },
+  { label: "TrOCR Manicule (Latin Medieval HTR)", value: "TrOCR_Manicule_2026_Latin_Medieval" },
+  { label: "Claude Sonnet 5.5 (API)", value: "claude-sonnet-5-5" },
+  { label: "Claude Opus 5.5 (API)", value: "claude-opus-5-5" },
+];
 
 // ---------------------------------------------------------------------------
 // Per-project transcription status widget
@@ -181,6 +183,8 @@ const transcribeModels = createListCollection({
 const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
   const [open, setOpen] = useState(false);
   const [model, setModel] = useState("TrOCR_Manicule_2026_Latin_Medieval");
+  const isClaude = isClaudeModel(model);
+  const transcribeModels = useModelCollection(transcribeModelItems);
   const [mode, setMode] = useState("skip");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
   const [addPageBreak, setAddPageBreak] = useState(true);
@@ -330,15 +334,17 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
                     </Box>
                   </HStack>
                 )}
-                <Stack>
-                    <Checkbox.Root checked={ignoreEdges} onCheckedChange={(e) => setIgnoreEdges(e.checked)}>
-                        <Checkbox.HiddenInput />
-                        <Checkbox.Control>
-                            <Checkbox.Indicator />
-                        </Checkbox.Control>
-                        <Checkbox.Label>Ignore lines touching edges</Checkbox.Label>
-                    </Checkbox.Root>
-                </Stack>
+                {!isClaude && (
+                  <Stack>
+                      <Checkbox.Root checked={ignoreEdges} onCheckedChange={(e) => setIgnoreEdges(e.checked)}>
+                          <Checkbox.HiddenInput />
+                          <Checkbox.Control>
+                              <Checkbox.Indicator />
+                          </Checkbox.Control>
+                          <Checkbox.Label>Ignore lines touching edges</Checkbox.Label>
+                      </Checkbox.Root>
+                  </Stack>
+                )}
                 <Stack>
                     <Checkbox.Root checked={addPageBreak} onCheckedChange={(e) => setAddPageBreak(e.checked)}>
                         <Checkbox.HiddenInput />
@@ -348,39 +354,45 @@ const TranscribeProjectStatus = ({ project, jobStatus, onStart, onCancel }) => {
                         <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
                     </Checkbox.Root>
                 </Stack>
-                <Stack>
-                    <Checkbox.Root checked={autofixErrors} onCheckedChange={(e) => setAutofixErrors(e.checked)}>
-                        <Checkbox.HiddenInput />
-                        <Checkbox.Control>
-                            <Checkbox.Indicator />
-                        </Checkbox.Control>
-                        <Checkbox.Label>Automatically find and replace common mistakes</Checkbox.Label>
-                    </Checkbox.Root>
-                </Stack>
-                <Stack>
-                    <Checkbox.Root checked={aiCorrect} onCheckedChange={(e) => setAiCorrect(e.checked)}>
-                        <Checkbox.HiddenInput />
-                        <Checkbox.Control>
-                            <Checkbox.Indicator />
-                        </Checkbox.Control>
-                        <Checkbox.Label>Correct each page with AI</Checkbox.Label>
-                    </Checkbox.Root>
-                    <Text fontSize="xs" color="gray.600" pl="6">
-                      Always runs find and replace first. Adds roughly 30s per page; if the
-                      AI is unavailable the find/replace result is kept.
-                    </Text>
-                </Stack>
-                <RedSensitivityControl
-                  auto={redAuto}
-                  onAutoChange={setRedAuto}
-                  sensitivity={redSensitivity}
-                  onSensitivityChange={setRedSensitivity}
-                />
+                {isClaude ? (
+                  <ClaudeModelNote />
+                ) : (
+                  <>
+                    <Stack>
+                        <Checkbox.Root checked={autofixErrors} onCheckedChange={(e) => setAutofixErrors(e.checked)}>
+                            <Checkbox.HiddenInput />
+                            <Checkbox.Control>
+                                <Checkbox.Indicator />
+                            </Checkbox.Control>
+                            <Checkbox.Label>Automatically find and replace common mistakes</Checkbox.Label>
+                        </Checkbox.Root>
+                    </Stack>
+                    <Stack>
+                        <Checkbox.Root checked={aiCorrect} onCheckedChange={(e) => setAiCorrect(e.checked)}>
+                            <Checkbox.HiddenInput />
+                            <Checkbox.Control>
+                                <Checkbox.Indicator />
+                            </Checkbox.Control>
+                            <Checkbox.Label>Correct each page with AI</Checkbox.Label>
+                        </Checkbox.Root>
+                        <Text fontSize="xs" color="gray.600" pl="6">
+                          Always runs find and replace first. Adds roughly 30s per page; if the
+                          AI is unavailable the find/replace result is kept.
+                        </Text>
+                    </Stack>
+                    <RedSensitivityControl
+                      auto={redAuto}
+                      onAutoChange={setRedAuto}
+                      sensitivity={redSensitivity}
+                      onSensitivityChange={setRedSensitivity}
+                    />
+                  </>
+                )}
               </Stack>
             </Dialog.Body>
             <Dialog.Footer>
               <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button colorPalette="purple" onClick={() => { setOpen(false); onStart(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, sensitivityToThreshold(redSensitivity), autofixErrors, aiCorrect, redAuto); }}>
+              <Button colorPalette="purple" onClick={() => { setOpen(false); onStart(model, mode, ignoreEdges, rangeFrom, rangeTo, addPageBreak, sensitivityToThreshold(redSensitivity), !isClaude && autofixErrors, !isClaude && aiCorrect, !isClaude && redAuto); }}>
                 Start Transcription
               </Button>
             </Dialog.Footer>
@@ -555,7 +567,7 @@ const ProjectList = () => {
           try {
             const status = await getIiifDownloadStatus(projectId);
             updates[projectId] = status;
-          } catch (_) {}
+          } catch { /* leave this project's status unchanged */ }
         })
       );
       setIiifJobStatuses((prev) => ({ ...prev, ...updates }));
@@ -604,7 +616,7 @@ const ProjectList = () => {
           try {
             const status = await getBatchTranscribeStatus(projectId);
             updates[projectId] = status;
-          } catch (_) {}
+          } catch { /* leave this project's status unchanged */ }
         })
       );
       setTranscribeJobStatuses((prev) => ({ ...prev, ...updates }));
@@ -1074,7 +1086,7 @@ const ProjectList = () => {
           return status;
         });
         if (status.running) timer = setTimeout(tick, 3000);
-      } catch (_) {}
+      } catch { /* stop polling on error */ }
     };
     tick();
     return () => clearTimeout(timer);

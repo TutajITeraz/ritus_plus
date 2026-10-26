@@ -220,14 +220,14 @@ export const uploadImages = async (projectId, formData, onProgress) => {
         try {
           const response = JSON.parse(xhr.responseText);
           resolve(response);
-        } catch (e) {
+        } catch {
           reject(new Error("Invalid JSON response"));
         }
       } else {
         try {
           const errorData = JSON.parse(xhr.responseText);
           reject(new Error(errorData.message || "Upload failed"));
-        } catch (e) {
+        } catch {
           reject(new Error("Upload failed"));
         }
       }
@@ -314,15 +314,9 @@ export const overwriteImageWithAuto = async (imageId) => {
 // Fetches whether this server is transcribing on GPU or CPU. Fixed for the
 // lifetime of the server process, so callers can fetch it once and cache it.
 export const fetchTranscribeDeviceStatus = async () => {
-  try {
-    const response = await apiRequest(`${SERVER_URL}/api/transcribe/device-status`);
-    if (!response.ok) throw new Error("Failed to fetch device status");
-    return await response.json();
-  } catch (error) {
-    // Silent: this is a status hint, not something worth interrupting the
-    // user's transcription flow over.
-    throw error;
-  }
+  const response = await apiRequest(`${SERVER_URL}/api/transcribe/device-status`);
+  if (!response.ok) throw new Error("Failed to fetch device status");
+  return await response.json();
 };
 
 export const transcribeImage = async (imageId, modelName, ignoreEdges = true, addPageBreak = false, redThreshold = 5.0, enhancedMultiColumn = false, columnGapRatio = 0.045, autofixErrors = true, aiCorrect = false) => {
@@ -959,6 +953,7 @@ export const startBatchTranscribeAll = async ({
   aiCorrect = false,
   includeCompleted = false,
   redAuto = false,
+  projectIds = null,
 }) => {
   const response = await apiRequest(`${SERVER_URL}/api/batch-transcribe/all`, {
     method: "POST",
@@ -974,6 +969,8 @@ export const startBatchTranscribeAll = async ({
       autofix_errors: autofixErrors,
       ai_correct: aiCorrect,
       include_completed: includeCompleted,
+      // null = every owned project; a list scopes the run (Transcribe Selected).
+      ...(projectIds ? { project_ids: projectIds } : {}),
     }),
   });
   const data = await response.json();
@@ -1078,6 +1075,40 @@ export const saveDomainConfig = async (config) => {
   if (!response.ok) throw new Error("Failed to save domain config");
   return await response.json();
 };
+
+/* ------------------------------------------------------------------ *
+ * Claude API key, sharing and usage (per user)
+ * ------------------------------------------------------------------ */
+
+const claudeRequest = async (path, options = {}) => {
+  const response = await apiRequest(`${SERVER_URL}/api/claude/${path}`, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Claude settings request failed");
+  return data;
+};
+
+/** Own key (masked), who it is shared with, the key in use, its usage (24h and total) and estimated credit. */
+export const getClaudeSettings = () => claudeRequest("settings");
+
+/** Store (and validate) the caller's Anthropic API key. */
+export const setClaudeKey = (apiKey) =>
+  claudeRequest("key", { method: "PUT", body: JSON.stringify({ api_key: apiKey }) });
+
+export const deleteClaudeKey = () => claudeRequest("key", { method: "DELETE" });
+
+/** Clear the usage log of the caller's own key; the credit estimate is kept. */
+export const resetClaudeUsage = () => claudeRequest("usage", { method: "DELETE" });
+
+/** Who may transcribe with the caller's key: everyone, or the listed user ids. */
+export const setClaudeSharing = (shareWithAll, userIds) =>
+  claudeRequest("sharing", {
+    method: "PUT",
+    body: JSON.stringify({ share_with_all: shareWithAll, user_ids: userIds }),
+  });
+
+/** The balance the Anthropic Console shows now (USD); null clears it. */
+export const setClaudeCredit = (balanceUsd) =>
+  claudeRequest("credit", { method: "PUT", body: JSON.stringify({ balance_usd: balanceUsd }) });
 
 /* ------------------------------------------------------------------ *
  * eCatalogus dictionaries (admin)

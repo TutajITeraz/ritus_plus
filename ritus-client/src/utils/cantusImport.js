@@ -13,7 +13,7 @@ export const parseCantusExport = (text) => {
   let data;
   try {
     data = JSON.parse(text);
-  } catch (e) {
+  } catch {
     throw new Error("This is not a JSON file.");
   }
   if (

@@ -26,10 +26,11 @@ import {
 } from "../apiUtils";
 import { useAuth } from "../App";
 import ECatalogusDictionaries from "../components/ECatalogusDictionaries";
+import ClaudeSettings from "../components/ClaudeSettings";
 
 const UserDetails = () => {
   const [users, setUsers] = useState([]);
-  const [projects, setProjects] = useState([]);
+  const [, setProjects] = useState([]);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
@@ -255,6 +256,9 @@ const UserDetails = () => {
           </Box>
         </VStack>
       )}
+
+      {/* Claude API key, sharing and usage – every user */}
+      <ClaudeSettings />
 
       {/* Create User Dialog */}
       <Dialog.Root

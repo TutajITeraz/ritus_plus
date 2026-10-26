@@ -88,6 +88,9 @@ run_cmd "pip install git+https://github.com/mittagessen/party.git"
 print_and_log "Installing openai and httpx..."
 run_cmd "pip install openai==1.55.3 httpx==0.27.2 --force-reinstall --quiet"
 
+print_and_log "Installing anthropic and cryptography (Claude transcription, encrypted API keys)..."
+run_cmd "pip install anthropic cryptography"
+
 print_and_log "Installing flask_caching..."
 run_cmd "pip install flask_caching"
 

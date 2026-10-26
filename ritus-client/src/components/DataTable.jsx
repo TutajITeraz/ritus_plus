@@ -323,7 +323,6 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
   const [loadingCSV, setLoadingCSV] = useState(false);
   const [csvParseError, setCsvParseError] = useState(null);
   const [isPostImport, setIsPostImport] = useState(false);
-  const [autoFillOpen, setAutoFillOpen] = useState(false);
   const [autoFillColumn, setAutoFillColumn] = useState(null);
   const [replaceExisting, setReplaceExisting] = useState(false);
   const [similarityThreshold, setSimilarityThreshold] = useState(50);
@@ -349,7 +348,7 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
   const [autoFillDialogOpen, setAutoFillDialogOpen] = useState(false);
   const autoFillContentRef = useRef(null);
   const gridRef = useRef(null);
-  const [selectedCell, setSelectedCell] = useState(null);
+  const [, setSelectedCell] = useState(null);
   const levenshteinCache = useRef(new Map());
   // Separate cache for the n-gram matcher: it keys on NORMALIZED text, so its
   // entries must not be mixed with the legacy algorithm's raw-text keys.
@@ -1237,11 +1236,6 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
       (col) => visibleColumns[col.name]
     );
     const defaultWidth = 100;
-    const charsPerLine = {
-      300: 40,
-      200: 25,
-      100: 12,
-    };
 
     return [
       {
@@ -1259,7 +1253,7 @@ const DataTable = ({ tableStructure, data = [], setData, structureKey = "content
         editable: col.editable !== false,
         cellClass: (row) =>
           cellErrors.has(`${row._internalId}-${col.name}`) ? "error-cell" : "",
-        renderCell: ({ row, rowIdx }) => {
+        renderCell: ({ row }) => {
           const cellError = cellErrors.get(`${row._internalId}-${col.name}`);
           const isMultiline =
             col.style?.wordWrap === "break-word" ||

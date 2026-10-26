@@ -18,7 +18,6 @@ import {
   Progress,
   Select,
   RadioGroup,
-  createListCollection,
   Checkbox,
 } from "@chakra-ui/react";
 import { RiFileEditFill } from "react-icons/ri";
@@ -63,25 +62,27 @@ import {
 } from "../utils/columnSensitivity";
 import TranscriptionEditor from "./TranscriptionEditor";
 import AIAutoFixModal from "./AIAutoFixModal";
+import ClaudeModelNote from "./ClaudeModelNote";
 import DeviceStatusBadge from "./DeviceStatusBadge";
 import { useJobPacing, formatDuration } from "../utils/useJobPacing";
-import { modelLabel } from "../utils/modelLabels";
+import { modelLabel, isClaudeModel } from "../utils/modelLabels";
+import { useModelCollection } from "../utils/claudeAvailability";
 
-const transcribeModels = createListCollection({
-  items: [
-    { label: "Tridis Medieval EarlyModern", value: "Tridis_Medieval_EarlyModern.mlmodel" },
-    { label: "Cremma Generic 1.0.1", value: "cremma-generic-1.0.1.mlmodel" },
-    { label: "ManuMcFondue", value: "ManuMcFondue.mlmodel" },
-    { label: "Catmus Medieval", value: "catmus-medieval.mlmodel" },
-    { label: "CATMUS Print Model", value: "catmus-print-fondue-large.mlmodel" },
-    { label: "McCATMuS (16th-21st c. Polyglot)", value: "McCATMuS_nfd_nofix_V1.mlmodel" },
-    { label: "LECTAUREP (French Admin)", value: "lectaurep_base.mlmodel" },
-    { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
-    { label: "German Handwriting", value: "german_handwriting.mlmodel" },
-    { label: "Modern English Print", value: "en_best.mlmodel" },
-    { label: "TrOCR Manicule (Latin Medieval HTR)", value: "TrOCR_Manicule_2026_Latin_Medieval" },
-  ],
-});
+const transcribeModelItems = [
+  { label: "Tridis Medieval EarlyModern", value: "Tridis_Medieval_EarlyModern.mlmodel" },
+  { label: "Cremma Generic 1.0.1", value: "cremma-generic-1.0.1.mlmodel" },
+  { label: "ManuMcFondue", value: "ManuMcFondue.mlmodel" },
+  { label: "Catmus Medieval", value: "catmus-medieval.mlmodel" },
+  { label: "CATMUS Print Model", value: "catmus-print-fondue-large.mlmodel" },
+  { label: "McCATMuS (16th-21st c. Polyglot)", value: "McCATMuS_nfd_nofix_V1.mlmodel" },
+  { label: "LECTAUREP (French Admin)", value: "lectaurep_base.mlmodel" },
+  { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
+  { label: "German Handwriting", value: "german_handwriting.mlmodel" },
+  { label: "Modern English Print", value: "en_best.mlmodel" },
+  { label: "TrOCR Manicule (Latin Medieval HTR)", value: "TrOCR_Manicule_2026_Latin_Medieval" },
+  { label: "Claude Sonnet 5.5 (API)", value: "claude-sonnet-5-5" },
+  { label: "Claude Opus 5.5 (API)", value: "claude-opus-5-5" },
+];
 
 const Sidebar = ({
   project,
@@ -110,6 +111,8 @@ const Sidebar = ({
   const [transcribeJob, setTranscribeJob] = useState(null);
   const [transcribeDialogOpen, setTranscribeDialogOpen] = useState(false);
   const [transcribeModel, setTranscribeModel] = useState("TrOCR_Manicule_2026_Latin_Medieval");
+  const isClaude = isClaudeModel(transcribeModel);
+  const transcribeModels = useModelCollection(transcribeModelItems);
   const [transcribeMode, setTranscribeMode] = useState("skip");
   const [ignoreEdges, setIgnoreEdges] = useState(true);
   const [addPageBreak, setAddPageBreak] = useState(true);
@@ -200,7 +203,7 @@ const Sidebar = ({
             });
           }
         }
-      } catch (_) {}
+      } catch { /* transient poll failure; retry on next tick */ }
     }, 3000);
     return () => {
       clearInterval(iiifPollRef.current);
@@ -229,7 +232,7 @@ const Sidebar = ({
             });
           }
         }
-      } catch (_) {}
+      } catch { /* transient poll failure; retry on next tick */ }
     }, 3000);
     return () => {
       clearInterval(transcribePollRef.current);
@@ -296,7 +299,8 @@ const Sidebar = ({
                   ...img,
                   transcribed_text: transcriptionText,
                   line_count: transcriptionText.split("\n").length,
-                  human_edited: true,
+                  // Saving an empty text clears the protection on the server.
+                  human_edited: !!response.image?.human_edited,
                 }
               : img
           )
@@ -338,7 +342,7 @@ const Sidebar = ({
         aiFixedText,
         selectedImageId: selectedImage?.id,
       });
-      await updateImage(selectedImage.id, {
+      const response = await updateImage(selectedImage.id, {
         transcribed_text: aiFixedText,
       });
       setImages(
@@ -348,7 +352,7 @@ const Sidebar = ({
                 ...img,
                 transcribed_text: aiFixedText,
                 line_count: aiFixedText.split("\n").length,
-                human_edited: true,
+                human_edited: !!response?.image?.human_edited,
               }
             : img
         )
@@ -431,9 +435,9 @@ const Sidebar = ({
       setImages([]);
       setMainImage(null);
       // Fully delete the IIIF job record so Resume can't pick up a stale page offset
-      try { await resetIiifJob(projectId); } catch (_) {}
+      try { await resetIiifJob(projectId); } catch { /* nothing to reset */ }
       setIiifJob(null);
-    } catch (error) {
+    } catch {
       toaster.create({
         title: "Delete Error",
         description: "Failed to delete all images",
@@ -484,9 +488,9 @@ const Sidebar = ({
         sensitivityToThreshold(redSensitivity),
         enhancedMultiColumn,
         sensitivityToColumnGapRatio(columnSensitivity),
-        autofixErrors,
-        aiCorrect,
-        redAuto
+        !isClaude && autofixErrors,
+        !isClaude && aiCorrect,
+        !isClaude && redAuto
       );
       setTranscribeJob({
         status: "running",
@@ -578,7 +582,7 @@ const Sidebar = ({
         type: "success",
         duration: 4000,
       });
-    } catch (_) {
+    } catch {
       // overwriteImageWithAuto already shows an error toast
     }
   };
@@ -1096,15 +1100,17 @@ const Sidebar = ({
                       </Box>
                     </HStack>
                   )}
-                  <Stack>
-                      <Checkbox.Root checked={ignoreEdges} onCheckedChange={(e) => setIgnoreEdges(e.checked)}>
-                          <Checkbox.HiddenInput />
-                          <Checkbox.Control>
-                              <Checkbox.Indicator />
-                          </Checkbox.Control>
-                          <Checkbox.Label>Ignore short lines near borders (margin notes/noise)</Checkbox.Label>
-                      </Checkbox.Root>
-                  </Stack>
+                  {!isClaude && (
+                    <Stack>
+                        <Checkbox.Root checked={ignoreEdges} onCheckedChange={(e) => setIgnoreEdges(e.checked)}>
+                            <Checkbox.HiddenInput />
+                            <Checkbox.Control>
+                                <Checkbox.Indicator />
+                            </Checkbox.Control>
+                            <Checkbox.Label>Ignore short lines near borders (margin notes/noise)</Checkbox.Label>
+                        </Checkbox.Root>
+                    </Stack>
+                  )}
                   <Stack>
                       <Checkbox.Root checked={addPageBreak} onCheckedChange={(e) => setAddPageBreak(e.checked)}>
                           <Checkbox.HiddenInput />
@@ -1114,49 +1120,55 @@ const Sidebar = ({
                           <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
                       </Checkbox.Root>
                   </Stack>
-                  <Stack>
-                      <Checkbox.Root checked={enhancedMultiColumn} onCheckedChange={(e) => setEnhancedMultiColumn(e.checked)}>
-                          <Checkbox.HiddenInput />
-                          <Checkbox.Control>
-                              <Checkbox.Indicator />
-                          </Checkbox.Control>
-                          <Checkbox.Label>Enhanced multi column detection</Checkbox.Label>
-                      </Checkbox.Root>
-                  </Stack>
-                  {enhancedMultiColumn && (
-                    <ColumnSensitivitySlider
-                      sensitivity={columnSensitivity}
-                      onSensitivityChange={setColumnSensitivity}
-                    />
+                  {isClaude ? (
+                    <ClaudeModelNote />
+                  ) : (
+                    <>
+                      <Stack>
+                          <Checkbox.Root checked={enhancedMultiColumn} onCheckedChange={(e) => setEnhancedMultiColumn(e.checked)}>
+                              <Checkbox.HiddenInput />
+                              <Checkbox.Control>
+                                  <Checkbox.Indicator />
+                              </Checkbox.Control>
+                              <Checkbox.Label>Enhanced multi column detection</Checkbox.Label>
+                          </Checkbox.Root>
+                      </Stack>
+                      {enhancedMultiColumn && (
+                        <ColumnSensitivitySlider
+                          sensitivity={columnSensitivity}
+                          onSensitivityChange={setColumnSensitivity}
+                        />
+                      )}
+                      <Stack>
+                          <Checkbox.Root checked={autofixErrors} onCheckedChange={(e) => setAutofixErrors(e.checked)}>
+                              <Checkbox.HiddenInput />
+                              <Checkbox.Control>
+                                  <Checkbox.Indicator />
+                              </Checkbox.Control>
+                              <Checkbox.Label>Automatically find and replace common mistakes</Checkbox.Label>
+                          </Checkbox.Root>
+                      </Stack>
+                      <Stack>
+                          <Checkbox.Root checked={aiCorrect} onCheckedChange={(e) => setAiCorrect(e.checked)}>
+                              <Checkbox.HiddenInput />
+                              <Checkbox.Control>
+                                  <Checkbox.Indicator />
+                              </Checkbox.Control>
+                              <Checkbox.Label>Correct each page with AI</Checkbox.Label>
+                          </Checkbox.Root>
+                          <Text fontSize="xs" color="gray.600" pl="6">
+                            Always runs find and replace first. Adds roughly 30s per page; if the
+                            AI is unavailable the find/replace result is kept.
+                          </Text>
+                      </Stack>
+                      <RedSensitivityControl
+                        auto={redAuto}
+                        onAutoChange={setRedAuto}
+                        sensitivity={redSensitivity}
+                        onSensitivityChange={setRedSensitivity}
+                      />
+                    </>
                   )}
-                  <Stack>
-                      <Checkbox.Root checked={autofixErrors} onCheckedChange={(e) => setAutofixErrors(e.checked)}>
-                          <Checkbox.HiddenInput />
-                          <Checkbox.Control>
-                              <Checkbox.Indicator />
-                          </Checkbox.Control>
-                          <Checkbox.Label>Automatically find and replace common mistakes</Checkbox.Label>
-                      </Checkbox.Root>
-                  </Stack>
-                  <Stack>
-                      <Checkbox.Root checked={aiCorrect} onCheckedChange={(e) => setAiCorrect(e.checked)}>
-                          <Checkbox.HiddenInput />
-                          <Checkbox.Control>
-                              <Checkbox.Indicator />
-                          </Checkbox.Control>
-                          <Checkbox.Label>Correct each page with AI</Checkbox.Label>
-                      </Checkbox.Root>
-                      <Text fontSize="xs" color="gray.600" pl="6">
-                        Always runs find and replace first. Adds roughly 30s per page; if the
-                        AI is unavailable the find/replace result is kept.
-                      </Text>
-                  </Stack>
-                  <RedSensitivityControl
-                    auto={redAuto}
-                    onAutoChange={setRedAuto}
-                    sensitivity={redSensitivity}
-                    onSensitivityChange={setRedSensitivity}
-                  />
                 </Stack>
               </Dialog.Body>
               <Dialog.Footer>

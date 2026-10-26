@@ -9,7 +9,7 @@ import {
   Image,
   Alert,
 } from "@chakra-ui/react";
-import { login as apiLogin, getCurrentUser } from "../apiUtils";
+import { login as apiLogin } from "../apiUtils";
 import { useAuth } from "../App";
 
 const Login = () => {

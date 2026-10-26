@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef } from "react";
 import {
   Dialog,
   Portal,
@@ -33,7 +33,6 @@ const STRUCTURE_NAMES = {
 const Converter = ({
   open,
   onClose,
-  sourceStructure,
   targetStructure,
   sourceData,
   setData,
@@ -103,7 +102,7 @@ const Converter = ({
   return (
     <Dialog.Root
       open={open}
-      onOpenChange={(e) => !isConverting && onClose()}
+      onOpenChange={() => !isConverting && onClose()}
       placement="center"
       motionPreset="slide-in-bottom"
       unmountOnExit

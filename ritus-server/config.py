@@ -8,7 +8,7 @@ ADMIN_PASSWORD = "de$tination1SUnknown"  # Change this in production!
 # JWT Secret Key
 SECRET_KEY = "lfh-45-fs-4sfs-43ts-43gs-jyt5-zrqw3-gsfs"  # Change this in production!
 
-# Local Ollama model for AI Autofix (production: gemma4:26b)
+# Local Ollama model for AI Autofix (production: gemma4:26b / gemma4:12b-it-qat / gemma4:e4b)
 OLLAMA_MODEL = "gemma4:e4b"
 
 # Fraction of GPU memory kraken transcription is allowed to claim (0.0-1.0).

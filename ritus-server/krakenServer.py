@@ -27,11 +27,12 @@ from flask_caching import Cache
 from config import SERVER_URL, ADMIN_USERNAME, ADMIN_PASSWORD, SECRET_KEY
 
 # Importy lokalne
-from models import db, User, Project, ProjectSharing, Image, Content, BatchProcessing, BulkAiJob, IiifDownloadJob, BatchTranscribeJob
+from models import db, User, Project, ProjectSharing, Image, Content, BatchProcessing, BulkAiJob, IiifDownloadJob, BatchTranscribeJob, ClaudeKey, ClaudeKeyShare, ClaudeUsage
 from download_iiif import run_iiif_download, build_local_manifest, local_manifest_path, local_texts_path, LOCAL_MANIFEST_SCHEME
 from transcription_autofix import apply_autofix
 from memory_governor import MemoryGovernor, available_memory_mb, process_rss_mb
 import trocr_recognizer
+import claude_transcriber
 
 # Registry of stop events keyed by project_id for IIIF background downloads
 _iiif_stop_events = {}
@@ -974,8 +975,47 @@ def _ensure_baseline_model():
     return None
 
 
-def _transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0, enhanced_multi_column=False, column_gap_ratio=0.045, autofix_errors=True, ai_correct=False):
+def _transcribe_image_by_claude(image_id, model_name, user_id, add_page_break):
+    """Whole-page transcription through the Anthropic API.
+
+    No segmentation, colour split or line recognition happens here: Claude sees
+    the page and returns the finished text with <red>/<func>/<subrub> tags, so
+    ignore_edges, red_threshold and the column options do not apply. Neither do
+    the find/replace and AI-correct passes: their rules target kraken's
+    line-recognition errors and would only second-guess Claude's reading.
+    Returns the same shapes as _transcribe_image_by_id (a dict, or an
+    (error, status) tuple).
+    """
+    image_record = Image.query.get_or_404(image_id)
+    image_path = image_record.original
+    if not os.path.exists(image_path):
+        logger.error(f"Image file not found at {image_path}")
+        return f"Image file not found at {image_path}", 404
+    if user_id is None:
+        return "Claude transcription needs a user to take the API key from", 400
+    try:
+        transcribed_text = claude_transcriber.transcribe_page(image_path, model_name, user_id)
+    except claude_transcriber.ClaudeError as e:
+        logger.error("Claude transcription of image %s failed: %s", image_id, e)
+        return str(e), e.status
+
+    if add_page_break:
+        transcribed_text += "⏎"
+
+    final_text = transcribed_text.strip()
+    image_record.auto_transcribed_text = final_text
+    image_record.model_name = model_name
+    image_record.auto_transcribed_at = _datetime.utcnow()
+    if not image_record.human_edited:
+        image_record.transcribed_text = final_text
+    db.session.commit()
+    return {"text": transcribed_text, "lines": []}
+
+
+def _transcribe_image_by_id(image_id, model_name, ignore_edges=False, add_page_break=False, red_threshold=5.0, enhanced_multi_column=False, column_gap_ratio=0.045, autofix_errors=True, ai_correct=False, user_id=None):
     global baseline_model, last_ocr_model_name, ocr_model, selected_device
+    if claude_transcriber.is_claude_model(model_name):
+        return _transcribe_image_by_claude(image_id, model_name, user_id, add_page_break)
     # See transcribe_image: a TrOCR model replaces only the recognizer, so
     # everything below (segmentation, colour split, autofix) is unchanged.
     use_trocr = trocr_recognizer.is_trocr_model(model_name)
@@ -1392,6 +1432,15 @@ def delete_user(user_id):
             shutil.rmtree(project_folder)
         db.session.delete(project)
     
+    # SQLite does not enforce ON DELETE CASCADE here, so remove the user's
+    # Claude key (with its shares and usage log) and the shares they received.
+    own_key = ClaudeKey.query.filter_by(owner_id=user_id).first()
+    if own_key:
+        ClaudeUsage.query.filter_by(key_id=own_key.id).delete()
+        ClaudeKeyShare.query.filter_by(key_id=own_key.id).delete()
+        db.session.delete(own_key)
+    ClaudeKeyShare.query.filter_by(user_id=user_id).delete()
+
     # Delete the user (this will also delete any remaining relationships via cascade)
     db.session.delete(user)
     db.session.commit()
@@ -1965,6 +2014,7 @@ def run_batch_transcribe(
     ai_correct=False,
     resume_offset=0,
     red_auto=False,
+    user_id=None,
 ):
     """
     Transcribe all images in a project in a background thread.
@@ -2032,7 +2082,8 @@ def run_batch_transcribe(
         _page_admission.set_limit(workers)
 
         try:
-            if red_auto:
+            # Claude finds rubrics itself; calibrating red for it is wasted work.
+            if red_auto and not claude_transcriber.is_claude_model(model_name):
                 with flask_app.app_context():
                     try:
                         red_threshold = resolve_red_threshold(project_id, red_threshold)
@@ -2043,10 +2094,10 @@ def run_batch_transcribe(
                 total = len(images)
 
                 if mode == "skip":
-                    to_process_ids = [img.id for img in images if not img.transcribed_text]
+                    to_process_ids = [img.id for img in images if not _page_done(img)]
                 elif mode == "continue":
                     first_idx = next(
-                        (i for i, img in enumerate(images) if not img.transcribed_text),
+                        (i for i, img in enumerate(images) if not _page_done(img)),
                         len(images)
                     )
                     to_process_ids = [img.id for img in images[first_idx:]]
@@ -2089,9 +2140,13 @@ def run_batch_transcribe(
 
             completed_count = [already_done]
             count_lock = threading.Lock()
+            # Set when the Claude key itself is the problem (rejected, out of
+            # credit, not shared any more): every further page would fail the
+            # same way and spend nothing useful, so the job stops and says why.
+            fatal_error = []
 
             def process_image(image_id):
-                if stop_event.is_set():
+                if stop_event.is_set() or fatal_error:
                     return
                 with flask_app.app_context():
                     try:
@@ -2105,9 +2160,12 @@ def run_batch_transcribe(
                             column_gap_ratio=column_gap_ratio,
                             autofix_errors=autofix_errors,
                             ai_correct=ai_correct,
+                            user_id=user_id,
                         )
                         if isinstance(result, tuple):
                             logger.error(f"Transcription failed for image {image_id}: {result[0]}")
+                            if claude_transcriber.is_claude_model(model_name) and result[1] in (401, 402, 403):
+                                fatal_error.append(result[0])
                     except Exception as e:
                         logger.error(f"Error transcribing image {image_id}: {e}")
                 with count_lock:
@@ -2128,7 +2186,9 @@ def run_batch_transcribe(
                         break
                     executor.submit(process_image, iid)
 
-            if stop_event.is_set():
+            if fatal_error:
+                update_job(completed_count[0], total, "failed", error=fatal_error[0])
+            elif stop_event.is_set():
                 update_job(completed_count[0], total, "cancelled")
             else:
                 update_job(total, total, "completed")
@@ -2200,7 +2260,37 @@ def _parse_transcribe_options(body):
         "column_gap_ratio": max(0.015, min(0.165, column_gap_ratio)),
         "autofix_errors": _as_bool(body.get("autofix_errors"), True),
         "ai_correct": _as_bool(body.get("ai_correct"), False),
+        # Whose Claude API key a Claude model transcribes with. Set by the
+        # route, and kept in options_json so a resumed job uses the same one.
+        "user_id": body.get("user_id"),
     }, None
+
+
+def _claude_precheck(opts, user):
+    """Refuse to start a Claude job the user has no API key for, and record
+    whose key it is. Returns an error response, or None when fine."""
+    opts["user_id"] = user.id
+    if not claude_transcriber.is_claude_model(opts["model_name"]):
+        return None
+    key, _source = claude_transcriber.resolve_key(user.id)
+    if key is None:
+        return jsonify({"error": "No Claude API key available. Add yours in Settings, or ask a colleague to share theirs."}), 402
+    return None
+
+
+def _page_done(img):
+    """Whether *img* already went through transcription. A page the model
+    read as blank keeps empty text, so the timestamp counts too - otherwise
+    skip/continue would redo it forever and its project never looks done."""
+    return bool(img.transcribed_text) or img.auto_transcribed_at is not None
+
+
+def _page_done_sql():
+    """SQL form of _page_done, for counting in queries."""
+    return db.or_(
+        db.and_(Image.transcribed_text.isnot(None), Image.transcribed_text != ""),
+        Image.auto_transcribed_at.isnot(None),
+    )
 
 
 def _launch_transcribe_job(project_id, opts, resume_offset=0, auto_resumed=False):
@@ -2251,7 +2341,7 @@ def _launch_transcribe_job(project_id, opts, resume_offset=0, auto_resumed=False
             opts["add_page_break"], opts["red_threshold"],
             opts["enhanced_multi_column"], opts["column_gap_ratio"],
             opts["autofix_errors"], opts["ai_correct"], resume_offset,
-            opts.get("red_auto", False),
+            opts.get("red_auto", False), opts.get("user_id"),
         ),
         daemon=True,
     ).start()
@@ -2294,6 +2384,9 @@ def start_batch_transcribe(project_id):
         )
 
     opts, error = _parse_transcribe_options(request.get_json(silent=True) or {})
+    if error:
+        return error
+    error = _claude_precheck(opts, current_user)
     if error:
         return error
 
@@ -2429,6 +2522,8 @@ def start_batch_transcribe_all():
                             whose pages are all transcribed are left alone.
                             "override" always includes them, since re-doing
                             finished manuscripts is the point of that mode.
+        project_ids       - optional list limiting the run to these projects
+                            (Transcribe Selected). Omitted means all owned.
     """
     current_user = get_current_user()
     if not current_user:
@@ -2442,11 +2537,21 @@ def start_batch_transcribe_all():
         return error
     if opts["mode"] == "range":
         return jsonify({"error": "range mode is per-project only"}), 400
+    error = _claude_precheck(opts, current_user)
+    if error:
+        return error
 
     override = opts["mode"] == "override"
     include_completed = _as_bool(body.get("include_completed"), override)
 
     owned_ids, _shared = _accessible_project_ids(current_user)
+    requested = body.get("project_ids")
+    if requested is not None:
+        try:
+            wanted = {int(pid) for pid in requested}
+        except (TypeError, ValueError):
+            return jsonify({"error": "project_ids must be a list of ids"}), 400
+        owned_ids = [pid for pid in owned_ids if pid in wanted]
     started, skipped = [], []
 
     for project_id in owned_ids:
@@ -2465,7 +2570,7 @@ def start_batch_transcribe_all():
         if not include_completed:
             untranscribed = Image.query.filter(
                 Image.project_id == project_id,
-                db.or_(Image.transcribed_text.is_(None), Image.transcribed_text == ""),
+                db.not_(_page_done_sql()),
             ).count()
             if untranscribed == 0:
                 skipped.append({"id": project_id, "name": name, "reason": "already fully transcribed"})
@@ -2744,12 +2849,11 @@ def _project_stats(project_ids):
     }
     if not project_ids:
         return stats
-    has_text = db.and_(Image.transcribed_text.isnot(None), Image.transcribed_text != "")
     for pid, total, transcribed in (
         db.session.query(
             Image.project_id,
             db.func.count(Image.id),
-            db.func.sum(db.case((has_text, 1), else_=0)),
+            db.func.sum(db.case((_page_done_sql(), 1), else_=0)),
         )
         .filter(Image.project_id.in_(project_ids))
         .group_by(Image.project_id)
@@ -2767,6 +2871,7 @@ def _project_stats(project_ids):
     # Which model(s) produced the transcription currently shown - requires
     # transcribed_text too, so a cleared project stops listing a model it no
     # longer displays.
+    has_text = db.and_(Image.transcribed_text.isnot(None), Image.transcribed_text != "")
     for pid, model in (
         db.session.query(Image.project_id, Image.model_name)
         .filter(Image.project_id.in_(project_ids), Image.model_name.isnot(None), has_text)
@@ -3433,7 +3538,9 @@ def update_image(image_id):
         # This route is how a human edits transcribed_text (the editor's Save
         # button, and AI Auto Fix's Save). From now on automatic transcription
         # leaves this page's transcribed_text alone - see _transcribe_image_by_id.
-        image.human_edited = True
+        # Saving an empty text is a reset, not an edit worth protecting, so the
+        # next automatic transcription may fill the page again.
+        image.human_edited = bool(transcribed_text and transcribed_text.strip())
         db.session.commit()
         logger.info(f"Updated image with ID {image_id} by user {current_user.username}")
         return jsonify({
@@ -3788,6 +3895,7 @@ def transcribe_by_id(image_id):
             column_gap_ratio=column_gap_ratio,
             autofix_errors=autofix_errors,
             ai_correct=ai_correct,
+            user_id=current_user.id,
         )
         if isinstance(result, tuple):
             logger.error(f"Error in transcribe_by_id for ID {image_id}: {result[0]}")
@@ -3828,6 +3936,186 @@ def transcribe_device_status():
         "is_gpu": is_gpu,
         "gpu_name": gpu_name,
     })
+
+# --------------------------------------------------------------------------- #
+# Claude API key, sharing and usage (per-user settings)
+# --------------------------------------------------------------------------- #
+
+def _claude_settings_payload(user):
+    own = ClaudeKey.query.filter_by(owner_id=user.id).first()
+    key, source = claude_transcriber.resolve_key(user.id)
+
+    payload = {
+        "models": [
+            {"id": mid, "label": label, "input_usd_per_mtok": inp, "output_usd_per_mtok": out}
+            for mid, (label, inp, out) in claude_transcriber.CLAUDE_MODELS.items()
+        ],
+        "own_key": None,
+        "active": None,
+        "users": [{"id": u.id, "username": u.username} for u in User.query.order_by(User.username).all() if u.id != user.id],
+    }
+
+    if own:
+        shared_ids = [sh.user_id for sh in ClaudeKeyShare.query.filter_by(key_id=own.id).all()]
+        payload["own_key"] = {
+            "hint": own.key_hint,
+            "share_with_all": bool(own.share_with_all),
+            "shared_with": shared_ids,
+        }
+
+    if key is not None:
+        # The key's owner sees who spent what; people using a shared key see
+        # the key's totals but not each other's activity.
+        usage = claude_transcriber.usage_summary(key, hours=24)
+        owner = User.query.get(key.owner_id)
+        labels = {mid: label for mid, (label, _i, _o) in claude_transcriber.CLAUDE_MODELS.items()}
+        names = {u.id: u.username for u in User.query.all()} if source == "own" else {}
+
+        def period(b):
+            out = {
+                **b["total"],
+                "by_model": [
+                    {"model": m, "label": labels.get(m, m), **s}
+                    for m, s in sorted(b["by_model"].items(), key=lambda kv: -kv[1]["cost_usd"])
+                ],
+            }
+            if source == "own":
+                out["by_user"] = [
+                    {"user_id": uid, "username": names.get(uid, str(uid)), **s}
+                    for uid, s in sorted(b["by_user"].items(), key=lambda kv: -kv[1]["cost_usd"])
+                ]
+            return out
+
+        active = {
+            "source": source,
+            "owner": owner.username if owner else None,
+            "usage_24h": period(usage["recent"]),
+            "usage_total": period(usage["all_time"]),
+            "usage_since": usage["first_at"],
+            "credit": claude_transcriber.estimated_credit(key),
+        }
+        payload["active"] = active
+    return payload
+
+
+@app.route("/api/claude/settings", methods=["GET"])
+@jwt_required()
+def claude_settings():
+    user = get_current_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+    return jsonify(_claude_settings_payload(user))
+
+
+@app.route("/api/claude/key", methods=["PUT"])
+@jwt_required()
+def claude_set_key():
+    user = get_current_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+    api_key = ((request.get_json(silent=True) or {}).get("api_key") or "").strip()
+    if not api_key.startswith("sk-ant-") or len(api_key) < 20:
+        return jsonify({"error": "That does not look like an Anthropic API key (it starts with sk-ant-)"}), 400
+    try:
+        claude_transcriber.validate_key(api_key)
+        encrypted = claude_transcriber.encrypt_key(api_key)
+    except claude_transcriber.ClaudeError as e:
+        return jsonify({"error": str(e)}), e.status if e.status in (400, 401, 403) else 502
+
+    key = ClaudeKey.query.filter_by(owner_id=user.id).first()
+    if key is None:
+        key = ClaudeKey(owner_id=user.id, encrypted_key=encrypted, key_hint=claude_transcriber.key_hint(api_key))
+        db.session.add(key)
+    else:
+        key.encrypted_key = encrypted
+        key.key_hint = claude_transcriber.key_hint(api_key)
+    db.session.commit()
+    logger.info("User %s stored a Claude API key", user.username)
+    return jsonify(_claude_settings_payload(user))
+
+
+@app.route("/api/claude/key", methods=["DELETE"])
+@jwt_required()
+def claude_delete_key():
+    user = get_current_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+    key = ClaudeKey.query.filter_by(owner_id=user.id).first()
+    if key:
+        ClaudeUsage.query.filter_by(key_id=key.id).delete()
+        ClaudeKeyShare.query.filter_by(key_id=key.id).delete()
+        db.session.delete(key)
+        db.session.commit()
+        logger.info("User %s removed their Claude API key", user.username)
+    return jsonify(_claude_settings_payload(user))
+
+
+@app.route("/api/claude/usage", methods=["DELETE"])
+@jwt_required()
+def claude_reset_usage():
+    """Clear the usage log of the caller's own key (the credit estimate is kept)."""
+    user = get_current_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+    key = ClaudeKey.query.filter_by(owner_id=user.id).first()
+    if key is None:
+        return jsonify({"error": "Add your own API key first"}), 400
+    claude_transcriber.reset_usage(key)
+    logger.info("User %s reset the usage log of their Claude API key", user.username)
+    return jsonify(_claude_settings_payload(user))
+
+
+@app.route("/api/claude/sharing", methods=["PUT"])
+@jwt_required()
+def claude_set_sharing():
+    """Body: {share_with_all: bool, user_ids: [int]} - who may transcribe with the caller's key."""
+    user = get_current_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+    key = ClaudeKey.query.filter_by(owner_id=user.id).first()
+    if key is None:
+        return jsonify({"error": "Add your own API key first"}), 400
+    body = request.get_json(silent=True) or {}
+    try:
+        user_ids = {int(i) for i in body.get("user_ids", [])}
+    except (TypeError, ValueError):
+        return jsonify({"error": "user_ids must be a list of integers"}), 400
+    valid = {u.id for u in User.query.filter(User.id.in_(user_ids)).all()} - {user.id} if user_ids else set()
+
+    key.share_with_all = _as_bool(body.get("share_with_all"), False)
+    ClaudeKeyShare.query.filter_by(key_id=key.id).delete()
+    for uid in valid:
+        db.session.add(ClaudeKeyShare(key_id=key.id, user_id=uid))
+    db.session.commit()
+    return jsonify(_claude_settings_payload(user))
+
+
+@app.route("/api/claude/credit", methods=["PUT"])
+@jwt_required()
+def claude_set_credit():
+    """Body: {balance_usd: number|null} - the balance the Console shows right now."""
+    user = get_current_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+    key = ClaudeKey.query.filter_by(owner_id=user.id).first()
+    if key is None:
+        return jsonify({"error": "Add your own API key first"}), 400
+    value = (request.get_json(silent=True) or {}).get("balance_usd")
+    if value in (None, ""):
+        key.credit_balance_usd = None
+        key.credit_balance_set_at = None
+    else:
+        try:
+            balance = float(value)
+        except (TypeError, ValueError):
+            return jsonify({"error": "balance_usd must be a number"}), 400
+        if balance < 0:
+            return jsonify({"error": "balance_usd cannot be negative"}), 400
+        key.credit_balance_usd = balance
+        key.credit_balance_set_at = _datetime.utcnow()
+    db.session.commit()
+    return jsonify(_claude_settings_payload(user))
+
 
 # Static File Serving
 @app.route("/project/<path:path>")

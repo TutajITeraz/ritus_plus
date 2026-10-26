@@ -147,3 +147,38 @@ class BatchTranscribeJob(db.Model):
     error_message = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=db.func.now())
     updated_at = db.Column(db.DateTime, default=db.func.now(), onupdate=db.func.now())
+
+class ClaudeKey(db.Model):
+    """A user's Anthropic API key (at most one per user), encrypted at rest.
+    The owner can share it: with everyone (share_with_all) or with chosen
+    users (ClaudeKeyShare rows)."""
+    id = db.Column(db.Integer, primary_key=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, unique=True)
+    encrypted_key = db.Column(db.Text, nullable=False)
+    key_hint = db.Column(db.String(32))
+    share_with_all = db.Column(db.Boolean, nullable=False, default=False)
+    # Anthropic has no API for the prepaid balance, so the owner types in the
+    # figure shown in the Console; remaining credit is estimated from it.
+    credit_balance_usd = db.Column(db.Float)
+    credit_balance_set_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class ClaudeKeyShare(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    key_id = db.Column(db.Integer, db.ForeignKey('claude_key.id', ondelete='CASCADE'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+
+
+class ClaudeUsage(db.Model):
+    """One Claude API call: who made it, on which key, what it cost."""
+    id = db.Column(db.Integer, primary_key=True)
+    key_id = db.Column(db.Integer, db.ForeignKey('claude_key.id', ondelete='CASCADE'), nullable=False, index=True)
+    user_id = db.Column(db.Integer, nullable=False)
+    model = db.Column(db.String(50), nullable=False)
+    input_tokens = db.Column(db.Integer, default=0)
+    output_tokens = db.Column(db.Integer, default=0)
+    cache_read_tokens = db.Column(db.Integer, default=0)
+    cache_write_tokens = db.Column(db.Integer, default=0)
+    cost_usd = db.Column(db.Float, default=0.0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)

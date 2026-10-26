@@ -5,18 +5,7 @@ const isInteger = (value) => {
   return Number.isInteger(Number(value));
 };
 
-const isFloat = (value) => {
-  if (value === "" || value == null) return true;
-  return !isNaN(parseFloat(value)) && isFinite(parseFloat(value));
-};
-
-const isValidFolio = (value) => {
-  if (value === "" || value == null) return true;
-  const regex = /^\d+(\.[12])?$|^\d+[rv]$/;
-  return regex.test(value);
-};
-
-const validateSelectOrList = (value, row, index) => {
+const validateSelectOrList = (value) => {
   if (value == null || value === "") return null;
   // Validation is handled elsewhere using dictionaries
   return null;
@@ -29,7 +18,7 @@ const ContentStructure = [
     type: "number",
     editable: true,
     can_be_null: true,
-    validationFunction: (value, row, index) =>
+    validationFunction: (value, _row, index) =>
       value == null || value === ""
         ? null
         : isInteger(value)
@@ -154,7 +143,7 @@ const ContentStructure = [
     type: "sequence",
     editable: true,
     can_be_null: false,
-    validationFunction: (value, row, index) => {
+    validationFunction: (value) => {
       if (value == null || value === "") return "Must not be empty";
       if (isNaN(value) || !Number.isInteger(Number(value)))
         return "Must be an integer";
@@ -227,7 +216,7 @@ const ContentStructure = [
     dictionary_key_col: "id",
     dictionary_display_col: "text",
     dictionary_export_col: "text",
-    validationFunction: (value, row, index) =>
+    validationFunction: (value, _row, index) =>
       value == null || value === ""
         ? null
         : isInteger(value)
@@ -240,7 +229,7 @@ const ContentStructure = [
     value: "",
     can_be_null: true,
     type: "number",
-    validationFunction: (value, row, index) =>
+    validationFunction: (value, _row, index) =>
       value == null || value === ""
         ? null
         : isInteger(value)
@@ -300,7 +289,7 @@ const ContentStructure = [
     can_be_null: true,
     type: "select",
     dictionary: "functions.csv",
-    validationFunction: (value, row, index) => {
+    validationFunction: (value) => {
       if (value == null || value === "") return null;
       // Validation is handled in validateRow using dictionaries
       return null;
@@ -313,7 +302,7 @@ const ContentStructure = [
     can_be_null: true,
     type: "select",
     dictionary: "functions.csv",
-    validationFunction: (value, row, index) => {
+    validationFunction: (value) => {
       if (value == null || value === "") return null;
       // Validation is handled in validateRow using dictionaries
       return null;
@@ -326,7 +315,7 @@ const ContentStructure = [
     can_be_null: true,
     type: "select",
     dictionary: "liturgical_genres.tsv",
-    validationFunction: (value, row, index) => {
+    validationFunction: (value) => {
       if (value == null || value === "") return null;
       // Validation is handled in validateRow using dictionaries
       return null;
@@ -339,7 +328,7 @@ const ContentStructure = [
     can_be_null: true,
     type: "select",
     dictionary: "music_notation.tsv",
-    validationFunction: (value, row, index) => {
+    validationFunction: (value) => {
       if (value == null || value === "") return null;
       // Validation is handled in validateRow using dictionaries
       return null;
@@ -351,7 +340,7 @@ const ContentStructure = [
     value: "",
     can_be_null: true,
     type: "number",
-    validationFunction: (value, row, index) =>
+    validationFunction: (value, _row, index) =>
       value == null || value === ""
         ? null
         : isInteger(value)
@@ -365,7 +354,7 @@ const ContentStructure = [
     can_be_null: true,
     type: "select",
     dictionary: "sections.tsv",
-    validationFunction: (value, row, index) => {
+    validationFunction: (value) => {
       if (value == null || value === "") return null;
       // Validation is handled in validateRow using dictionaries
       return null;
@@ -378,7 +367,7 @@ const ContentStructure = [
     can_be_null: true,
     type: "select",
     dictionary: "sections.tsv",
-    validationFunction: (value, row, index) => {
+    validationFunction: (value) => {
       if (value == null || value === "") return null;
       // Validation is handled in validateRow using dictionaries
       return null;

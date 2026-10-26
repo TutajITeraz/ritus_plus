@@ -13,7 +13,6 @@ import {
   HStack,
   Progress,
   Select,
-  createListCollection,
   Checkbox,
 } from "@chakra-ui/react";
 import { toaster } from "@/components/ui/toaster";
@@ -21,6 +20,9 @@ import { transcribeImage, fetchProject, calibrateProjectRedSensitivity } from ".
 import RedSensitivitySlider from "./RedSensitivitySlider";
 import ColumnSensitivitySlider from "./ColumnSensitivitySlider";
 import DeviceStatusBadge from "./DeviceStatusBadge";
+import ClaudeModelNote from "./ClaudeModelNote";
+import { isClaudeModel } from "../utils/modelLabels";
+import { useModelCollection } from "../utils/claudeAvailability";
 import {
   DEFAULT_RED_SENSITIVITY,
   sensitivityToThreshold,
@@ -33,24 +35,24 @@ import {
 // Utility function to sleep for a given number of milliseconds
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const models = createListCollection({
-  items: [
-    {
-      label: "Tridis Medieval EarlyModern",
-      value: "Tridis_Medieval_EarlyModern.mlmodel",
-    },
-    { label: "Cremma Generic 1.0.1", value: "cremma-generic-1.0.1.mlmodel" },
-    { label: "ManuMcFondue", value: "ManuMcFondue.mlmodel" },
-    { label: "Catmus Medieval", value: "catmus-medieval.mlmodel" },
-    { label: "CATMUS Print Model", value: "catmus-print-fondue-large.mlmodel" },
-    { label: "McCATMuS (16th-21st c. Polyglot)", value: "McCATMuS_nfd_nofix_V1.mlmodel" },
-    { label: "LECTAUREP (French Admin)", value: "lectaurep_base.mlmodel" },
-    { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
-    { label: "German Handwriting", value: "german_handwriting.mlmodel" },
-    { label: "Modern English Print", value: "en_best.mlmodel" },
-    { label: "TrOCR Manicule (Latin Medieval HTR)", value: "TrOCR_Manicule_2026_Latin_Medieval" },
-  ],
-});
+const modelItems = [
+  {
+    label: "Tridis Medieval EarlyModern",
+    value: "Tridis_Medieval_EarlyModern.mlmodel",
+  },
+  { label: "Cremma Generic 1.0.1", value: "cremma-generic-1.0.1.mlmodel" },
+  { label: "ManuMcFondue", value: "ManuMcFondue.mlmodel" },
+  { label: "Catmus Medieval", value: "catmus-medieval.mlmodel" },
+  { label: "CATMUS Print Model", value: "catmus-print-fondue-large.mlmodel" },
+  { label: "McCATMuS (16th-21st c. Polyglot)", value: "McCATMuS_nfd_nofix_V1.mlmodel" },
+  { label: "LECTAUREP (French Admin)", value: "lectaurep_base.mlmodel" },
+  { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
+  { label: "German Handwriting", value: "german_handwriting.mlmodel" },
+  { label: "Modern English Print", value: "en_best.mlmodel" },
+  { label: "TrOCR Manicule (Latin Medieval HTR)", value: "TrOCR_Manicule_2026_Latin_Medieval" },
+  { label: "Claude Sonnet 5.5 (API)", value: "claude-sonnet-5-5" },
+  { label: "Claude Opus 5.5 (API)", value: "claude-opus-5-5" },
+];
 
 const Transcribe = ({
   images,
@@ -64,6 +66,8 @@ const Transcribe = ({
   const [startPage, setStartPage] = useState(initialStartPage);
   const [endPage, setEndPage] = useState(images.length);
   const [model, setModel] = useState("TrOCR_Manicule_2026_Latin_Medieval");
+  const isClaude = isClaudeModel(model);
+  const models = useModelCollection(modelItems);
   const [ignoreEdges, setIgnoreEdges] = useState(true);
   const [addPageBreak, setAddPageBreak] = useState(true);
   const [enhancedMultiColumn, setEnhancedMultiColumn] = useState(false);
@@ -154,8 +158,8 @@ const Transcribe = ({
             sensitivityToThreshold(redSensitivity),
             enhancedMultiColumn,
             sensitivityToColumnGapRatio(columnSensitivity),
-            autofixErrors,
-            aiCorrect
+            !isClaude && autofixErrors,
+            !isClaude && aiCorrect
           );
           if (result.status === "success") {
             transcribedCount += 1;
@@ -297,15 +301,17 @@ const Transcribe = ({
                 </Portal>
               </Select.Root>
             </Box>
-            <Box>
-              <Checkbox.Root checked={ignoreEdges} onCheckedChange={(e) => setIgnoreEdges(e.checked)} disabled={isTranscribing}>
-                  <Checkbox.HiddenInput />
-                  <Checkbox.Control>
-                      <Checkbox.Indicator />
-                  </Checkbox.Control>
-                  <Checkbox.Label>Ignore lines touching edges</Checkbox.Label>
-              </Checkbox.Root>
-            </Box>
+            {!isClaude && (
+              <Box>
+                <Checkbox.Root checked={ignoreEdges} onCheckedChange={(e) => setIgnoreEdges(e.checked)} disabled={isTranscribing}>
+                    <Checkbox.HiddenInput />
+                    <Checkbox.Control>
+                        <Checkbox.Indicator />
+                    </Checkbox.Control>
+                    <Checkbox.Label>Ignore lines touching edges</Checkbox.Label>
+                </Checkbox.Root>
+              </Box>
+            )}
             <Box>
               <Checkbox.Root checked={addPageBreak} onCheckedChange={(e) => setAddPageBreak(e.checked)} disabled={isTranscribing}>
                   <Checkbox.HiddenInput />
@@ -315,60 +321,66 @@ const Transcribe = ({
                   <Checkbox.Label>Add a prayer separator ⏎ at the end of each page</Checkbox.Label>
               </Checkbox.Root>
             </Box>
-            <Box>
-              <Checkbox.Root checked={enhancedMultiColumn} onCheckedChange={(e) => setEnhancedMultiColumn(e.checked)} disabled={isTranscribing}>
-                  <Checkbox.HiddenInput />
-                  <Checkbox.Control>
-                      <Checkbox.Indicator />
-                  </Checkbox.Control>
-                  <Checkbox.Label>Enhanced multi column detection</Checkbox.Label>
-              </Checkbox.Root>
-            </Box>
-            <Box>
-              <Checkbox.Root checked={autofixErrors} onCheckedChange={(e) => setAutofixErrors(e.checked)} disabled={isTranscribing}>
-                  <Checkbox.HiddenInput />
-                  <Checkbox.Control>
-                      <Checkbox.Indicator />
-                  </Checkbox.Control>
-                  <Checkbox.Label>Automatically find and replace common mistakes</Checkbox.Label>
-              </Checkbox.Root>
-            </Box>
-            <Box>
-              <Checkbox.Root checked={aiCorrect} onCheckedChange={(e) => setAiCorrect(e.checked)} disabled={isTranscribing}>
-                  <Checkbox.HiddenInput />
-                  <Checkbox.Control>
-                      <Checkbox.Indicator />
-                  </Checkbox.Control>
-                  <Checkbox.Label>Correct each page with AI</Checkbox.Label>
-              </Checkbox.Root>
-              <Text fontSize="xs" color="gray.600" pl="6">
-                Always runs find and replace first. Adds roughly 30s per page; if the
-                AI is unavailable the find/replace result is kept.
-              </Text>
-            </Box>
-            {enhancedMultiColumn && (
-              <ColumnSensitivitySlider
-                sensitivity={columnSensitivity}
-                onSensitivityChange={setColumnSensitivity}
-                disabled={isTranscribing}
-              />
+            {isClaude ? (
+              <ClaudeModelNote />
+            ) : (
+              <>
+                <Box>
+                  <Checkbox.Root checked={enhancedMultiColumn} onCheckedChange={(e) => setEnhancedMultiColumn(e.checked)} disabled={isTranscribing}>
+                      <Checkbox.HiddenInput />
+                      <Checkbox.Control>
+                          <Checkbox.Indicator />
+                      </Checkbox.Control>
+                      <Checkbox.Label>Enhanced multi column detection</Checkbox.Label>
+                  </Checkbox.Root>
+                </Box>
+                <Box>
+                  <Checkbox.Root checked={autofixErrors} onCheckedChange={(e) => setAutofixErrors(e.checked)} disabled={isTranscribing}>
+                      <Checkbox.HiddenInput />
+                      <Checkbox.Control>
+                          <Checkbox.Indicator />
+                      </Checkbox.Control>
+                      <Checkbox.Label>Automatically find and replace common mistakes</Checkbox.Label>
+                  </Checkbox.Root>
+                </Box>
+                <Box>
+                  <Checkbox.Root checked={aiCorrect} onCheckedChange={(e) => setAiCorrect(e.checked)} disabled={isTranscribing}>
+                      <Checkbox.HiddenInput />
+                      <Checkbox.Control>
+                          <Checkbox.Indicator />
+                      </Checkbox.Control>
+                      <Checkbox.Label>Correct each page with AI</Checkbox.Label>
+                  </Checkbox.Root>
+                  <Text fontSize="xs" color="gray.600" pl="6">
+                    Always runs find and replace first. Adds roughly 30s per page; if the
+                    AI is unavailable the find/replace result is kept.
+                  </Text>
+                </Box>
+                {enhancedMultiColumn && (
+                  <ColumnSensitivitySlider
+                    sensitivity={columnSensitivity}
+                    onSensitivityChange={setColumnSensitivity}
+                    disabled={isTranscribing}
+                  />
+                )}
+                <RedSensitivitySlider
+                  sensitivity={redSensitivity}
+                  onSensitivityChange={setRedSensitivity}
+                  disabled={isTranscribing || isCalibratingRed}
+                  action={
+                    <Button
+                      size="xs"
+                      variant="subtle"
+                      onClick={handleCalibrateRed}
+                      loading={isCalibratingRed}
+                      disabled={isTranscribing}
+                    >
+                      Determine automatically
+                    </Button>
+                  }
+                />
+              </>
             )}
-            <RedSensitivitySlider
-              sensitivity={redSensitivity}
-              onSensitivityChange={setRedSensitivity}
-              disabled={isTranscribing || isCalibratingRed}
-              action={
-                <Button
-                  size="xs"
-                  variant="subtle"
-                  onClick={handleCalibrateRed}
-                  loading={isCalibratingRed}
-                  disabled={isTranscribing}
-                >
-                  Determine automatically
-                </Button>
-              }
-            />
             {isTranscribing && (
               <>
                 <Progress.Root

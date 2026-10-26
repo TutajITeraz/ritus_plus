@@ -1,5 +1,5 @@
 // components/ImageArea.jsx
-import { useState, useEffect } from "react";
+import { useEffect } from "react";
 import {
   Box,
   Badge,

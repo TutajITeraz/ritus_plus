@@ -22,7 +22,7 @@ const validateNonEmptyText = (value, row, index) => {
   return null;
 };
 
-const validateSelectOrList = (value, row, index) => {
+const validateSelectOrList = (value) => {
   if (value == null || value === "") return null;
   // Validation is handled elsewhere using dictionaries
   return null;

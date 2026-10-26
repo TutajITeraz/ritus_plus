@@ -7,7 +7,7 @@ import ProjectDetail from "./pages/ProjectDetail";
 import TableEditor from "./pages/TableEditor";
 import Login from "./pages/Login";
 import UserDetails from "./pages/UserDetails";
-import { getCurrentUser, logout } from "./apiUtils";
+import { getCurrentUser } from "./apiUtils";
 
 // Authentication Context
 const AuthContext = createContext({

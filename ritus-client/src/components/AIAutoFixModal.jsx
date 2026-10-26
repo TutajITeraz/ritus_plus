@@ -90,7 +90,7 @@ const AIAutoFixModal = ({
   return (
     <Popover.Root
       open={isOpen}
-      onOpenChange={(e) => onClose()}
+      onOpenChange={() => onClose()}
       positioning={{ placement: "right", overflowPadding: 16 }}
       lazyMount
       unmountOnExit

@@ -148,6 +148,9 @@ run_cmd ".venv/bin/pip install 'transformers>=5,<6' --quiet"
 print_and_log "Installing optional dependencies (backports.tarfile, httpx, openai)..."
 run_cmd ".venv/bin/pip install backports.tarfile httpx openai --force-reinstall --quiet"
 
+print_and_log "Installing anthropic and cryptography (Claude transcription, encrypted API keys)..."
+run_cmd ".venv/bin/pip install anthropic cryptography --quiet"
+
 print_and_log "Reinstalling numpy==2.2.6 to ensure compatibility (party/openai reinstalls above can pull in a different numpy)..."
 run_cmd ".venv/bin/pip install --force-reinstall numpy==2.2.6 --quiet"
 

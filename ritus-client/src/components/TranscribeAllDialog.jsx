@@ -7,7 +7,6 @@ import {
   Stack,
   Text,
   Select,
-  createListCollection,
   RadioGroup,
   HStack,
   Checkbox,
@@ -16,6 +15,9 @@ import { toaster } from "@/components/ui/toaster";
 import { startBatchTranscribeAll } from "../apiUtils";
 import RedSensitivityControl from "./RedSensitivityControl";
 import ColumnSensitivitySlider from "./ColumnSensitivitySlider";
+import ClaudeModelNote from "./ClaudeModelNote";
+import { isClaudeModel } from "../utils/modelLabels";
+import { useModelCollection } from "../utils/claudeAvailability";
 import {
   DEFAULT_RED_SENSITIVITY,
   sensitivityToThreshold,
@@ -25,21 +27,21 @@ import {
   sensitivityToColumnGapRatio,
 } from "../utils/columnSensitivity";
 
-const models = createListCollection({
-  items: [
-    { label: "Tridis Medieval EarlyModern", value: "Tridis_Medieval_EarlyModern.mlmodel" },
-    { label: "Cremma Generic 1.0.1", value: "cremma-generic-1.0.1.mlmodel" },
-    { label: "ManuMcFondue", value: "ManuMcFondue.mlmodel" },
-    { label: "Catmus Medieval", value: "catmus-medieval.mlmodel" },
-    { label: "CATMUS Print Model", value: "catmus-print-fondue-large.mlmodel" },
-    { label: "McCATMuS (16th-21st c. Polyglot)", value: "McCATMuS_nfd_nofix_V1.mlmodel" },
-    { label: "LECTAUREP (French Admin)", value: "lectaurep_base.mlmodel" },
-    { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
-    { label: "German Handwriting", value: "german_handwriting.mlmodel" },
-    { label: "Modern English Print", value: "en_best.mlmodel" },
-    { label: "TrOCR Manicule (Latin Medieval HTR)", value: "TrOCR_Manicule_2026_Latin_Medieval" },
-  ],
-});
+const modelItems = [
+  { label: "Tridis Medieval EarlyModern", value: "Tridis_Medieval_EarlyModern.mlmodel" },
+  { label: "Cremma Generic 1.0.1", value: "cremma-generic-1.0.1.mlmodel" },
+  { label: "ManuMcFondue", value: "ManuMcFondue.mlmodel" },
+  { label: "Catmus Medieval", value: "catmus-medieval.mlmodel" },
+  { label: "CATMUS Print Model", value: "catmus-print-fondue-large.mlmodel" },
+  { label: "McCATMuS (16th-21st c. Polyglot)", value: "McCATMuS_nfd_nofix_V1.mlmodel" },
+  { label: "LECTAUREP (French Admin)", value: "lectaurep_base.mlmodel" },
+  { label: "Lucien Peraire (French Handwriting)", value: "peraire2_ft_MMCFR.mlmodel" },
+  { label: "German Handwriting", value: "german_handwriting.mlmodel" },
+  { label: "Modern English Print", value: "en_best.mlmodel" },
+  { label: "TrOCR Manicule (Latin Medieval HTR)", value: "TrOCR_Manicule_2026_Latin_Medieval" },
+  { label: "Claude Sonnet 5.5 (API)", value: "claude-sonnet-5-5" },
+  { label: "Claude Opus 5.5 (API)", value: "claude-opus-5-5" },
+];
 
 /**
  * TranscribeAllDialog
@@ -59,6 +61,8 @@ const TranscribeAllDialog = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [model, setModel] = useState("TrOCR_Manicule_2026_Latin_Medieval");
+  const isClaude = isClaudeModel(model);
+  const models = useModelCollection(modelItems);
   const [mode, setMode] = useState("skip");
   const [addPageBreak, setAddPageBreak] = useState(true);
   const [enhancedMultiColumn, setEnhancedMultiColumn] = useState(false);
@@ -96,12 +100,15 @@ const TranscribeAllDialog = ({
         ignoreEdges: true,
         addPageBreak,
         redThreshold: sensitivityToThreshold(redSensitivity),
-        redAuto,
+        redAuto: !isClaude && redAuto,
         enhancedMultiColumn,
         columnGapRatio: sensitivityToColumnGapRatio(columnSensitivity),
-        autofixErrors,
-        aiCorrect,
+        autofixErrors: !isClaude && autofixErrors,
+        aiCorrect: !isClaude && aiCorrect,
         includeCompleted: effectiveIncludeCompleted,
+        // Always name the projects: the server would otherwise run every
+        // owned project, not just the ones this dialog was given.
+        projectIds: eligible.map((p) => p.id),
       });
       setOpen(false);
       const started = result.started || [];
@@ -290,53 +297,59 @@ const TranscribeAllDialog = ({
                   </Checkbox.Root>
                 </Stack>
 
-                <Stack>
-                  <Checkbox.Root checked={enhancedMultiColumn} onCheckedChange={(e) => setEnhancedMultiColumn(e.checked)}>
-                    <Checkbox.HiddenInput />
-                    <Checkbox.Control>
-                      <Checkbox.Indicator />
-                    </Checkbox.Control>
-                    <Checkbox.Label>Enhanced multi column detection</Checkbox.Label>
-                  </Checkbox.Root>
-                </Stack>
+                {isClaude ? (
+                  <ClaudeModelNote />
+                ) : (
+                  <>
+                    <Stack>
+                      <Checkbox.Root checked={enhancedMultiColumn} onCheckedChange={(e) => setEnhancedMultiColumn(e.checked)}>
+                        <Checkbox.HiddenInput />
+                        <Checkbox.Control>
+                          <Checkbox.Indicator />
+                        </Checkbox.Control>
+                        <Checkbox.Label>Enhanced multi column detection</Checkbox.Label>
+                      </Checkbox.Root>
+                    </Stack>
 
-                {enhancedMultiColumn && (
-                  <ColumnSensitivitySlider
-                    sensitivity={columnSensitivity}
-                    onSensitivityChange={setColumnSensitivity}
-                  />
+                    {enhancedMultiColumn && (
+                      <ColumnSensitivitySlider
+                        sensitivity={columnSensitivity}
+                        onSensitivityChange={setColumnSensitivity}
+                      />
+                    )}
+
+                    <Stack>
+                      <Checkbox.Root checked={autofixErrors} onCheckedChange={(e) => setAutofixErrors(e.checked)}>
+                        <Checkbox.HiddenInput />
+                        <Checkbox.Control>
+                          <Checkbox.Indicator />
+                        </Checkbox.Control>
+                        <Checkbox.Label>Automatically find and replace common mistakes</Checkbox.Label>
+                      </Checkbox.Root>
+                    </Stack>
+
+                    <Stack>
+                      <Checkbox.Root checked={aiCorrect} onCheckedChange={(e) => setAiCorrect(e.checked)}>
+                        <Checkbox.HiddenInput />
+                        <Checkbox.Control>
+                          <Checkbox.Indicator />
+                        </Checkbox.Control>
+                        <Checkbox.Label>Correct each page with AI</Checkbox.Label>
+                      </Checkbox.Root>
+                      <Text fontSize="xs" color="gray.600" pl="6">
+                        Always runs find and replace first. Adds roughly 30s per page; if the
+                        AI is unavailable the find/replace result is kept.
+                      </Text>
+                    </Stack>
+
+                    <RedSensitivityControl
+                      auto={redAuto}
+                      onAutoChange={setRedAuto}
+                      sensitivity={redSensitivity}
+                      onSensitivityChange={setRedSensitivity}
+                    />
+                  </>
                 )}
-
-                <Stack>
-                  <Checkbox.Root checked={autofixErrors} onCheckedChange={(e) => setAutofixErrors(e.checked)}>
-                    <Checkbox.HiddenInput />
-                    <Checkbox.Control>
-                      <Checkbox.Indicator />
-                    </Checkbox.Control>
-                    <Checkbox.Label>Automatically find and replace common mistakes</Checkbox.Label>
-                  </Checkbox.Root>
-                </Stack>
-
-                <Stack>
-                  <Checkbox.Root checked={aiCorrect} onCheckedChange={(e) => setAiCorrect(e.checked)}>
-                    <Checkbox.HiddenInput />
-                    <Checkbox.Control>
-                      <Checkbox.Indicator />
-                    </Checkbox.Control>
-                    <Checkbox.Label>Correct each page with AI</Checkbox.Label>
-                  </Checkbox.Root>
-                  <Text fontSize="xs" color="gray.600" pl="6">
-                    Always runs find and replace first. Adds roughly 30s per page; if the
-                    AI is unavailable the find/replace result is kept.
-                  </Text>
-                </Stack>
-
-                <RedSensitivityControl
-                  auto={redAuto}
-                  onAutoChange={setRedAuto}
-                  sensitivity={redSensitivity}
-                  onSensitivityChange={setRedSensitivity}
-                />
               </Stack>
             </Dialog.Body>
             <Dialog.Footer>
